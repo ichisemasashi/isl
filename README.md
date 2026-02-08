@@ -7,7 +7,7 @@ ISLISPの標準仕様に従ったISLISP処理系を目指すプロジェクト�
 - REPL
 - ファイル実行
 - 基本特殊形式: `quote`, `if`, `cond`, `case`, `lambda`, `defglobal`, `defvar`, `setq`, `setf`, `defun`, `progn`, `let`, `let*`
-- 基本組み込み関数: 算術・比較・リスト・述語・`apply`/`funcall`・`format` など
+- 基本組み込み関数: 算術・比較・リスト・述語・文字列(`string=`/`string-concat`/`substring`/`length`)・`apply`/`funcall`・`format` など
 
 ## 実行方法
 ```sh

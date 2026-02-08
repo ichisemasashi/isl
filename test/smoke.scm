@@ -48,5 +48,12 @@
 (check "(1 2)" '(format nil "~S" '(1 2)))
 (check "A\nB~C" '(format nil "A~%B~~C"))
 (check '() '(format t "visible: ~A~%" "ok"))
+(check #t '(string= "abc" "abc"))
+(check #f '(string= "abc" "abd"))
+(check "abcdef" '(string-concat "ab" "cd" "ef"))
+(check "bc" '(substring "abcd" 1 3))
+(check "cd" '(substring "abcd" 2))
+(check 4 '(length "abcd"))
+(check 3 '(length '(1 2 3)))
 
 (display "smoke tests passed\n")

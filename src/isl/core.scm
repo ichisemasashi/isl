@@ -147,6 +147,33 @@
                   (write-char ch p)
                   (loop (+ i 1) rest))))))))
 
+(define (ensure-string x who)
+  (unless (string? x)
+    (error who "needs a string" x)))
+
+(define (ensure-nonnegative-integer x who)
+  (unless (and (integer? x) (>= x 0))
+    (error who "needs a non-negative integer" x)))
+
+(define (isl-substring s start end)
+  (ensure-string s "substring")
+  (ensure-nonnegative-integer start "substring")
+  (ensure-nonnegative-integer end "substring")
+  (let ((n (string-length s)))
+    (when (> start end)
+      (error "substring start must be <= end" start end))
+    (when (> end n)
+      (error "substring end out of range" end n))
+    (substring s start end)))
+
+(define (isl-length x)
+  (cond
+   ((string? x) (string-length x))
+   ((list? x) (length x))
+   ((vector? x) (vector-length x))
+   (else
+    (error "length supports string/list/vector only" x))))
+
 (define (bind-params! frame params args)
   (cond
    ((and (null? params) (null? args))
@@ -380,6 +407,25 @@
   (def 'numberp number?)
   (def 'symbolp symbol?)
   (def 'listp list?)
+  (def 'string=
+    (lambda (a b)
+      (ensure-string a "string=")
+      (ensure-string b "string=")
+      (string=? a b)))
+  (def 'string-concat
+    (lambda xs
+      (for-each (lambda (x) (ensure-string x "string-concat")) xs)
+      (apply string-append xs)))
+  (def 'substring
+    (lambda args
+      (cond
+       ((= (length args) 2)
+        (isl-substring (car args) (cadr args) (string-length (car args))))
+       ((= (length args) 3)
+        (isl-substring (car args) (cadr args) (caddr args)))
+       (else
+        (error "substring takes string start [end]" args)))))
+  (def 'length isl-length)
   (def 'print
     (lambda (x)
       (write x)
