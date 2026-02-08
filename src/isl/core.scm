@@ -57,6 +57,14 @@
               (cdr pair)
               (loop (frame-parent f)))))))
 
+(define (frame-bound? frame sym)
+  (let loop ((f frame))
+    (if (not f)
+        #f
+        (if (assoc sym (frame-bindings f))
+            #t
+            (loop (frame-parent f))))))
+
 (define (closure? obj)
   (and (vector? obj) (= (vector-length obj) 5) (eq? (vector-ref obj 0) 'closure)))
 
@@ -118,7 +126,7 @@
     (error "Attempt to call non-function" fn))))
 
 (define (special-form? sym)
-  (memq sym '(quote if lambda defglobal defver setq setf defun progn let let*)))
+  (memq sym '(quote if lambda defglobal defver defvar setq setf defun progn let let*)))
 
 (define (eval-special form env)
   (let ((op (car form))
@@ -163,6 +171,16 @@
              (frame-define! (global-frame env) sym val)
              sym)
            (error "defver takes symbol and expression" form)))
+      ((defvar)
+       (if (= (length args) 2)
+           (let ((sym (car args))
+                 (global (global-frame env)))
+             (unless (symbol? sym)
+               (error "defvar needs a symbol" sym))
+             (unless (frame-bound? global sym)
+               (frame-define! global sym (eval-islisp (cadr args) env)))
+             sym)
+           (error "defvar takes symbol and expression" form)))
       ((setq)
        (if (= (length args) 2)
            (let ((sym (car args))

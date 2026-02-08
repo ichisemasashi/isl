@@ -21,6 +21,7 @@
                    (setq g 20)
                    'ok))
 (check 7 '(progn (defver v 7) v))
+(check 1 '(progn (defvar dv 1) (defvar dv 99) dv))
 (check 5 '(let ((x 2) (y 3)) (+ x y)))
 (check 3 '(let* ((x 1) (y (+ x 2))) y))
 (check 42 '(progn (defver s 0) (setf s 42) s))
