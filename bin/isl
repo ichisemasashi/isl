@@ -1,0 +1,4 @@
+#!/usr/bin/env gosh
+(add-load-path "./src")
+(use isl.main)
+(exit (main (command-line)))
