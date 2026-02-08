@@ -432,6 +432,23 @@
           (loop (cons x acc))))))
 
 (define (repl env)
+  (define (write-result x)
+    (cond
+     ((closure? x)
+      (let ((name (closure-name x)))
+        (if name
+            (begin
+              (display "#<function ")
+              (display name)
+              (display ">"))
+            (display "#<closure>"))))
+     ((primitive? x)
+      (begin
+        (display "#<primitive ")
+        (display (primitive-name x))
+        (display ">")))
+     (else
+      (write x))))
   (display "ISLISP> ")
   (flush)
   (let ((x (read)))
@@ -445,6 +462,6 @@
                      (write e)
                      (newline)))
             (let ((result (eval-islisp x env)))
-              (write result)
+              (write-result result)
               (newline)))
           (repl env)))))
