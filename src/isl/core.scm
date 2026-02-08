@@ -99,6 +99,54 @@
 (define (eval-list xs env)
   (map (lambda (x) (eval-islisp x env)) xs))
 
+(define (write-to-string x)
+  (let ((p (open-output-string)))
+    (write x p)
+    (get-output-string p)))
+
+(define (display-to-string x)
+  (let ((p (open-output-string)))
+    (display x p)
+    (get-output-string p)))
+
+(define (render-format fmt args)
+  (unless (string? fmt)
+    (error "format control string must be a string" fmt))
+  (let ((p (open-output-string)))
+    (let loop ((i 0) (rest args))
+      (if (>= i (string-length fmt))
+          (begin
+            (unless (null? rest)
+              (error "too many arguments for format" rest))
+            (get-output-string p))
+          (let ((ch (string-ref fmt i)))
+            (if (char=? ch #\~)
+                (if (>= (+ i 1) (string-length fmt))
+                    (error "unterminated format directive" fmt)
+                    (let ((d (string-ref fmt (+ i 1))))
+                      (cond
+                       ((char=? d #\A)
+                        (when (null? rest)
+                          (error "too few arguments for format" fmt))
+                        (display (display-to-string (car rest)) p)
+                        (loop (+ i 2) (cdr rest)))
+                       ((char=? d #\S)
+                        (when (null? rest)
+                          (error "too few arguments for format" fmt))
+                        (display (write-to-string (car rest)) p)
+                        (loop (+ i 2) (cdr rest)))
+                       ((char=? d #\%)
+                        (newline p)
+                        (loop (+ i 2) rest))
+                       ((char=? d #\~)
+                        (write-char #\~ p)
+                        (loop (+ i 2) rest))
+                       (else
+                        (error "unsupported format directive" d)))))
+                (begin
+                  (write-char ch p)
+                  (loop (+ i 1) rest))))))))
+
 (define (bind-params! frame params args)
   (cond
    ((and (null? params) (null? args))
@@ -337,6 +385,25 @@
       (write x)
       (newline)
       x))
+  (def 'format
+    (lambda args
+      (cond
+       ((null? args)
+        (error "format needs at least a control string"))
+       ((string? (car args))
+        (let ((out (render-format (car args) (cdr args))))
+          (display out)
+          '()))
+       ((< (length args) 2)
+        (error "format needs destination and control string"))
+       ((eq? (car args) #t)
+        (let ((out (render-format (cadr args) (cddr args))))
+          (display out)
+          '()))
+       ((null? (car args))
+        (render-format (cadr args) (cddr args)))
+       (else
+        (error "unsupported format destination" (car args))))))
   (def 'not
     (lambda (x)
       (if (truthy? x) #f #t)))

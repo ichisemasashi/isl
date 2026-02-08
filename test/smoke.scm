@@ -44,5 +44,9 @@
                  (otherwise 'other)))
 (check #t '(not nil))
 (check #f '(not t))
+(check "Hello, ONE!" '(format nil "Hello, ~A!" "ONE"))
+(check "(1 2)" '(format nil "~S" '(1 2)))
+(check "A\nB~C" '(format nil "A~%B~~C"))
+(check '() '(format t "visible: ~A~%" "ok"))
 
 (display "smoke tests passed\n")
