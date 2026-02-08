@@ -27,5 +27,22 @@
 (check 42 '(progn (defglobal s 0) (setf s 42) s))
 (check '(9 . 2) '(progn (defglobal p (cons 1 2)) (setf (car p) 9) p))
 (check '(9 . 8) '(progn (defglobal p2 (cons 9 2)) (setf (cdr p2) 8) p2))
+(check 2 '(if nil 1 2))
+(check 'ok '(cond
+             ((= 1 2) 'ng)
+             ((= 2 2) 'ok)
+             (t 'ng2)))
+(check 'fallback '(cond
+                   (nil 'ng)
+                   (t 'fallback)))
+(check 'two '(case 2
+               ((1) 'one)
+               ((2 3) 'two)
+               (otherwise 'other)))
+(check 'other '(case 9
+                 ((1 2 3) 'small)
+                 (otherwise 'other)))
+(check #t '(not nil))
+(check #f '(not t))
 
 (display "smoke tests passed\n")

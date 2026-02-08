@@ -6,7 +6,7 @@ ISLISPの標準仕様に従ったISLISP処理系を目指すプロジェクト�
 ## 現在の実装範囲 (MVP)
 - REPL
 - ファイル実行
-- 基本特殊形式: `quote`, `if`, `lambda`, `defglobal`, `defvar`, `setq`, `setf`, `defun`, `progn`, `let`, `let*`
+- 基本特殊形式: `quote`, `if`, `cond`, `case`, `lambda`, `defglobal`, `defvar`, `setq`, `setf`, `defun`, `progn`, `let`, `let*`
 - 基本組み込み関数: 算術・比較・リスト・述語・`apply`/`funcall` など
 
 ## 実行方法
