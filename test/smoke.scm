@@ -20,5 +20,11 @@
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))
+(check 7 '(progn (defver v 7) v))
+(check 5 '(let ((x 2) (y 3)) (+ x y)))
+(check 3 '(let* ((x 1) (y (+ x 2))) y))
+(check 42 '(progn (defver s 0) (setf s 42) s))
+(check '(9 . 2) '(progn (defver p (cons 1 2)) (setf (car p) 9) p))
+(check '(9 . 8) '(progn (defver p2 (cons 9 2)) (setf (cdr p2) 8) p2))
 
 (display "smoke tests passed\n")
