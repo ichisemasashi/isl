@@ -9,6 +9,11 @@
       (error "assertion failed" form expected actual))))
 
 (check 3 '(+ 1 2))
+(check 2 '(mod 17 5))
+(check 2 '(floor (/ 7 3)))
+(check 3 '(ceiling (/ 7 3)))
+(check -2 '(truncate (/ -7 3)))
+(check 3 '(round (/ 11 4)))
 (check 120 '(progn
               (defun fact (n)
                 (if (= n 0)
