@@ -27,6 +27,31 @@
 (check 42 '(progn (defglobal s 0) (setf s 42) s))
 (check '(9 . 2) '(progn (defglobal p (cons 1 2)) (setf (car p) 9) p))
 (check '(9 . 8) '(progn (defglobal p2 (cons 9 2)) (setf (cdr p2) 8) p2))
+(check 10 '(progn
+             (defglobal wi 0)
+             (defglobal wsum 0)
+             (while (< wi 5)
+               (setq wsum (+ wsum wi))
+               (setq wi (+ wi 1)))
+             wsum))
+(check 6 '(progn
+            (defglobal li 0)
+            (defglobal lsum 0)
+            (loop (< li 4)
+              (setq lsum (+ lsum li))
+              (setq li (+ li 1)))
+            lsum))
+(check 120 '(do ((n 5 (- n 1))
+                 (acc 1 (* acc n)))
+                ((= n 0) acc)))
+(check 6 '(progn
+            (defglobal dlsum 0)
+            (dolist (x '(1 2 3) dlsum)
+              (setq dlsum (+ dlsum x)))))
+(check 10 '(progn
+             (defglobal dtsum 0)
+             (dotimes (i 5 dtsum)
+               (setq dtsum (+ dtsum i)))))
 (check 2 '(if nil 1 2))
 (check 'ok '(cond
              ((= 1 2) 'ng)
