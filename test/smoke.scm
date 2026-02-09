@@ -121,5 +121,12 @@
                   (if b b 'none))
                 (opt1 1)))
 (check 9 '(opt1 1 9))
+(check "Negative value" '(progn
+                           (defun double (x)
+                             (if (< x 0)
+                                 (return-from double "Negative value")
+                                 (* 2 x)))
+                           (double -3)))
+(check 8 '(double 4))
 
 (display "smoke tests passed\n")

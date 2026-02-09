@@ -497,11 +497,23 @@
      ((closure? current-fn)
       (let ((params (closure-params current-fn))
             (body (closure-body current-fn))
-            (fenv (closure-env current-fn)))
+            (fenv (closure-env current-fn))
+            (fname (closure-name current-fn)))
         (let ((param-spec (parse-params params)))
         (let ((call-env (make-frame fenv)))
           (bind-params! call-env param-spec current-args)
-          (let ((result (eval-sequence* body call-env #t)))
+          (let ((result
+                 (if fname
+                     (call/cc
+                      (lambda (escape)
+                        (dynamic-wind
+                          (lambda ()
+                            (set! *block-stack* (cons (cons fname escape) *block-stack*)))
+                          (lambda ()
+                            (eval-sequence* body call-env #t))
+                          (lambda ()
+                            (set! *block-stack* (cdr *block-stack*))))))
+                     (eval-sequence* body call-env #t))))
             (if (tail-call? result)
                 (loop (tail-call-fn result) (tail-call-args result))
                 result))))))
