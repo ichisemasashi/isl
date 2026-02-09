@@ -90,5 +90,17 @@
                       acc
                       (count-down (- n 1) (+ acc 1))))
                 (count-down 50000 0)))
+(check 120 '(progn
+               (defun factorial-t (n &optional (acc 1))
+                 (if (<= n 1)
+                     acc
+                     (factorial-t (- n 1) (* n acc))))
+               (factorial-t 5)))
+(check 600 '(factorial-t 5 5))
+(check 'none '(progn
+                (defun opt1 (a &optional b)
+                  (if b b 'none))
+                (opt1 1)))
+(check 9 '(opt1 1 9))
 
 (display "smoke tests passed\n")

@@ -87,8 +87,36 @@
 (define (primitive-proc p) (vector-ref p 2))
 
 (define (validate-params params)
-  (unless (and (list? params) (every symbol? params))
-    (error "Parameter list must be a list of symbols" params)))
+  (parse-params params)
+  params)
+
+(define (parse-params params)
+  (unless (list? params)
+    (error "Parameter list must be a list" params))
+  (let loop ((xs params)
+             (mode 'required)
+             (required '())
+             (optional '()))
+    (if (null? xs)
+        (list (reverse required) (reverse optional))
+        (let ((x (car xs)))
+          (cond
+           ((eq? x '&optional)
+            (when (eq? mode 'optional)
+              (error "Duplicate &optional in parameter list" params))
+            (loop (cdr xs) 'optional required optional))
+           ((eq? mode 'required)
+            (unless (symbol? x)
+              (error "Required parameter must be a symbol" x))
+            (loop (cdr xs) mode (cons x required) optional))
+           (else
+            (cond
+             ((symbol? x)
+              (loop (cdr xs) mode required (cons (list x #f '()) optional)))
+             ((and (list? x) (= (length x) 2) (symbol? (car x)))
+              (loop (cdr xs) mode required (cons (list (car x) #t (cadr x)) optional)))
+             (else
+              (error "Invalid &optional parameter specifier" x)))))))))
 
 (define (tail-call? obj)
   (and (vector? obj) (= (vector-length obj) 3) (eq? (vector-ref obj 0) 'tail-call)))
@@ -371,17 +399,36 @@
                       '()))))))
       (error "dotimes needs (var count [result]) and optional body" args)))
 
-(define (bind-params! frame params args)
-  (cond
-   ((and (null? params) (null? args))
-    frame)
-   ((null? params)
-    (error "Too many arguments" args))
-   ((null? args)
-    (error "Too few arguments" params))
-   (else
-    (frame-define! frame (car params) (car args))
-    (bind-params! frame (cdr params) (cdr args)))))
+(define (bind-params! frame param-spec args)
+  (let ((required (car param-spec))
+        (optional (cadr param-spec)))
+    (when (< (length args) (length required))
+      (error "Too few arguments" args))
+    (let bind-required ((rs required) (as args))
+      (if (null? rs)
+          (let bind-optional ((os optional) (rest as))
+            (if (null? os)
+                (if (null? rest)
+                    frame
+                    (error "Too many arguments" rest))
+                (let* ((entry (car os))
+                       (sym (car entry))
+                       (has-init (cadr entry))
+                       (init-form (caddr entry)))
+                  (if (null? rest)
+                      (begin
+                        (frame-define! frame
+                                       sym
+                                       (if has-init
+                                           (force-value (eval-islisp* init-form frame #f))
+                                           '()))
+                        (bind-optional (cdr os) rest))
+                      (begin
+                        (frame-define! frame sym (car rest))
+                        (bind-optional (cdr os) (cdr rest)))))))
+          (begin
+            (frame-define! frame (car rs) (car as))
+            (bind-required (cdr rs) (cdr as)))))))
 
 (define (apply-islisp fn args)
   (let loop ((current-fn fn)
@@ -393,13 +440,13 @@
       (let ((params (closure-params current-fn))
             (body (closure-body current-fn))
             (fenv (closure-env current-fn)))
-        (validate-params params)
+        (let ((param-spec (parse-params params)))
         (let ((call-env (make-frame fenv)))
-          (bind-params! call-env params current-args)
+          (bind-params! call-env param-spec current-args)
           (let ((result (eval-sequence* body call-env #t)))
             (if (tail-call? result)
                 (loop (tail-call-fn result) (tail-call-args result))
-                result)))))
+                result))))))
      (else
       (error "Attempt to call non-function" current-fn)))))
 
