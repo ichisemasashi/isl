@@ -22,6 +22,15 @@
 (define (set-frame-bindings! frame bindings)
   (vector-set! frame 1 bindings))
 
+(define (frame-find-pair frame sym)
+  (let loop ((f frame))
+    (if (not f)
+        #f
+        (let ((pair (assoc sym (frame-bindings f))))
+          (if pair
+              pair
+              (loop (frame-parent f)))))))
+
 (define (frame-define! frame sym val)
   (let ((bindings (frame-bindings frame)))
     (let loop ((xs bindings) (acc '()))
@@ -35,13 +44,10 @@
         (loop (cdr xs) (cons (car xs) acc)))))))
 
 (define (frame-set! frame sym val)
-  (let loop ((f frame))
-    (if (not f)
-        (error "Unbound variable" sym)
-        (let ((pair (assoc sym (frame-bindings f))))
-          (if pair
-              (set-cdr! pair val)
-              (loop (frame-parent f)))))))
+  (let ((pair (frame-find-pair frame sym)))
+    (if pair
+        (set-cdr! pair val)
+        (error "Unbound variable" sym))))
 
 (define (global-frame env)
   (let loop ((f env))
@@ -50,21 +56,149 @@
         f)))
 
 (define (frame-ref frame sym)
-  (let loop ((f frame))
-    (if (not f)
-        (error "Unbound variable" sym)
-        (let ((pair (assoc sym (frame-bindings f))))
-          (if pair
-              (cdr pair)
-              (loop (frame-parent f)))))))
+  (let ((pair (frame-find-pair frame sym)))
+    (if pair
+        (cdr pair)
+        (error "Unbound variable" sym))))
 
 (define (frame-bound? frame sym)
-  (let loop ((f frame))
-    (if (not f)
+  (if (frame-find-pair frame sym) #t #f))
+
+(define (assoc-string key alist)
+  (let loop ((xs alist))
+    (if (null? xs)
         #f
-        (if (assoc sym (frame-bindings f))
-            #t
-            (loop (frame-parent f))))))
+        (if (string=? key (caar xs))
+            (car xs)
+            (loop (cdr xs))))))
+
+(define *package-registry* '())
+(define *current-package* #f)
+
+(define (make-package name)
+  (vector 'package name '() '() '()))
+
+(define (package-name pkg) (vector-ref pkg 1))
+(define (package-internals pkg) (vector-ref pkg 2))
+(define (package-externals pkg) (vector-ref pkg 3))
+(define (package-uses pkg) (vector-ref pkg 4))
+(define (set-package-internals! pkg v) (vector-set! pkg 2 v))
+(define (set-package-externals! pkg v) (vector-set! pkg 3 v))
+(define (set-package-uses! pkg v) (vector-set! pkg 4 v))
+
+(define (normalize-package-name x)
+  (let ((s
+         (cond
+          ((symbol? x) (symbol->string x))
+          ((string? x) x)
+          (else
+           (error "package name must be symbol or string" x)))))
+    (list->string (map char-upcase (string->list s)))))
+
+(define (find-package name)
+  (let ((entry (assoc-string (normalize-package-name name) *package-registry*)))
+    (and entry (cdr entry))))
+
+(define (ensure-package! name)
+  (let* ((n (normalize-package-name name))
+         (p (find-package n)))
+    (if p
+        p
+        (let ((pkg (make-package n)))
+          (set! *package-registry* (cons (cons n pkg) *package-registry*))
+          pkg))))
+
+(define (package-internal-symbol pkg sym-name)
+  (let ((entry (assoc-string sym-name (package-internals pkg))))
+    (and entry (cdr entry))))
+
+(define (package-external-symbol pkg sym-name)
+  (let ((entry (assoc-string sym-name (package-externals pkg))))
+    (and entry (cdr entry))))
+
+(define (make-qualified-symbol pkg-name sym-name)
+  (string->symbol (string-append pkg-name "::" sym-name)))
+
+(define (package-intern! pkg sym-name)
+  (let ((entry (assoc-string sym-name (package-internals pkg))))
+    (if entry
+        (cdr entry)
+        (let ((qsym (make-qualified-symbol (package-name pkg) sym-name)))
+          (set-package-internals! pkg (cons (cons sym-name qsym) (package-internals pkg)))
+          qsym))))
+
+(define (package-export! pkg sym-or-name)
+  (let* ((sym-name (if (symbol? sym-or-name) (symbol->string sym-or-name) sym-or-name))
+         (sym (package-intern! pkg sym-name)))
+    (unless (assoc-string sym-name (package-externals pkg))
+      (set-package-externals! pkg (cons (cons sym-name sym) (package-externals pkg))))
+    sym))
+
+(define (package-use! pkg used-pkg)
+  (unless (memq used-pkg (package-uses pkg))
+    (set-package-uses! pkg (cons used-pkg (package-uses pkg)))))
+
+(define (package-import-symbol! pkg sym)
+  (let ((name (symbol->string sym)))
+    (unless (assoc-string name (package-internals pkg))
+      (set-package-internals! pkg (cons (cons name sym) (package-internals pkg))))
+    sym))
+
+(define (string-find-substr s pat)
+  (let ((n (string-length s))
+        (m (string-length pat)))
+    (let loop ((i 0))
+      (cond
+       ((> (+ i m) n) #f)
+       ((string=? (substring s i (+ i m)) pat) i)
+       (else (loop (+ i 1)))))))
+
+(define (symbol-split-package sym)
+  (let* ((s (symbol->string sym))
+         (idx2 (string-find-substr s "::")))
+    (if idx2
+        (list (substring s 0 idx2) (substring s (+ idx2 2) (string-length s)) 'internal)
+        (let ((idx1 (string-find-substr s ":")))
+          (if idx1
+              (list (substring s 0 idx1) (substring s (+ idx1 1) (string-length s)) 'external)
+              #f)))))
+
+(define (resolve-symbol-in-package sym)
+  (let ((split (symbol-split-package sym)))
+    (if split
+        (let* ((pkg (find-package (car split)))
+               (name (cadr split))
+               (kind (caddr split)))
+          (unless pkg
+            (error "Unknown package" (car split)))
+          (if (eq? kind 'internal)
+              (package-intern! pkg name)
+              (let ((x (package-external-symbol pkg name)))
+                (unless x
+                  (error "Symbol is not exported" sym))
+                x)))
+        (let* ((name (symbol->string sym))
+               (here *current-package*)
+               (internal (and here (or (package-internal-symbol here name)
+                                       (package-external-symbol here name)))))
+          (if internal
+              internal
+              (let ((hits
+                     (filter-map
+                      (lambda (pkg)
+                        (package-external-symbol pkg name))
+                      (if here (package-uses here) '()))))
+                (cond
+                 ((null? hits) (if here (package-intern! here name) sym))
+                 ((null? (cdr hits)) (car hits))
+                 (else (error "Ambiguous symbol reference" sym)))))))))
+
+(define (resolve-binding-symbol sym)
+  (unless (symbol? sym)
+    (error "binding name must be symbol" sym))
+  (when (keyword-symbol? sym)
+    (error "keyword cannot be used as binding name" sym))
+  (resolve-symbol-in-package sym))
 
 (define (closure? obj)
   (and (vector? obj) (= (vector-length obj) 5) (eq? (vector-ref obj 0) 'closure)))
@@ -346,7 +480,7 @@
 
 (define (eval-block args env tail?)
   (if (>= (length args) 1)
-      (let ((name (car args))
+      (let ((name (resolve-binding-symbol (car args)))
             (body (cdr args)))
         (unless (symbol? name)
           (error "block name must be a symbol" name))
@@ -462,6 +596,44 @@
                       '()))))))
       (error "dotimes needs (var count [result]) and optional body" args)))
 
+(define (eval-defpackage args)
+  (unless (>= (length args) 1)
+    (error "defpackage needs package name" args))
+  (let* ((name (car args))
+         (pkg (ensure-package! name)))
+    (for-each
+     (lambda (opt)
+       (unless (and (list? opt) (not (null? opt)))
+         (error "invalid defpackage option" opt))
+       (let ((tag (car opt))
+             (vals (cdr opt)))
+         (cond
+          ((eq? tag ':use)
+           (for-each
+            (lambda (x)
+              (package-use! pkg (ensure-package! x)))
+            vals))
+          ((eq? tag ':export)
+           (for-each
+            (lambda (x)
+              (unless (symbol? x)
+                (error "defpackage :export expects symbols" x))
+              (package-export! pkg x))
+            vals))
+          (else
+           (error "unsupported defpackage option" tag)))))
+     (cdr args))
+    (string->symbol (package-name pkg))))
+
+(define (eval-in-package args)
+  (unless (= (length args) 1)
+    (error "in-package takes exactly one argument" args))
+  (let ((pkg (find-package (car args))))
+    (unless pkg
+      (error "Unknown package in in-package" (car args)))
+    (set! *current-package* pkg)
+    (string->symbol (package-name pkg))))
+
 (define (bind-params! frame param-spec args)
   (let ((required (car param-spec))
         (optional (cadr param-spec)))
@@ -526,7 +698,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote if cond case loop while do dolist dotimes return-from go tagbody lambda defglobal defvar setq setf defun progn block let let*)))
+  (memq sym '(quote if cond case loop while do dolist dotimes return-from go tagbody lambda defpackage in-package defglobal defvar setq setf defun progn block let let*)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -598,7 +770,7 @@
        (eval-dotimes args env tail?))
       ((return-from)
        (if (or (= (length args) 1) (= (length args) 2))
-           (let* ((name (car args))
+           (let* ((name (resolve-binding-symbol (car args)))
                   (value (if (= (length args) 2)
                              (eval-islisp* (cadr args) env #f)
                              '())))
@@ -627,7 +799,7 @@
            (error "lambda needs params and body" form)))
       ((defglobal)
        (if (= (length args) 2)
-           (let ((sym (car args))
+           (let ((sym (resolve-binding-symbol (car args)))
                  (val (eval-islisp* (cadr args) env #f)))
              (unless (symbol? sym)
                (error "defglobal needs a symbol" sym))
@@ -637,7 +809,7 @@
            (error "defglobal takes symbol and expression" form)))
       ((defvar)
        (if (= (length args) 2)
-           (let ((sym (car args))
+           (let ((sym (resolve-binding-symbol (car args)))
                  (global (global-frame env)))
              (unless (symbol? sym)
                (error "defvar needs a symbol" sym))
@@ -647,7 +819,10 @@
            (error "defvar takes symbol and expression" form)))
       ((setq)
        (if (= (length args) 2)
-           (let ((sym (car args))
+           (let* ((raw (car args))
+                  (sym (if (frame-bound? env raw)
+                           raw
+                           (resolve-binding-symbol raw)))
                  (val (eval-islisp* (cadr args) env #f)))
              (unless (symbol? sym)
                (error "setq needs a symbol" sym))
@@ -660,7 +835,11 @@
                   (val (eval-islisp* (cadr args) env #f)))
              (cond
               ((symbol? place)
-               (frame-set! env place val)
+               (frame-set! env
+                           (if (frame-bound? env place)
+                               place
+                               (resolve-binding-symbol place))
+                           val)
                val)
               ((and (pair? place) (eq? (car place) 'car) (= (length place) 2))
                (let ((target (eval-islisp* (cadr place) env #f)))
@@ -675,7 +854,7 @@
            (error "setf takes place and expression" form)))
       ((defun)
        (if (>= (length args) 3)
-           (let ((name (car args))
+           (let ((name (resolve-binding-symbol (car args)))
                  (params (cadr args))
                  (body (cddr args)))
              (unless (symbol? name)
@@ -685,6 +864,10 @@
                (frame-define! (global-frame env) name fun)
                name))
            (error "defun needs name, params and body" form)))
+      ((defpackage)
+       (eval-defpackage args))
+      ((in-package)
+       (eval-in-package args))
       ((progn)
        (eval-sequence* args env tail?))
       ((block)
@@ -728,7 +911,10 @@
    ((symbol? form)
     (if (keyword-symbol? form)
         form
-        (frame-ref env form)))
+        (let ((pair (frame-find-pair env form)))
+          (if pair
+              (cdr pair)
+              (frame-ref env (resolve-symbol-in-package form))))))
    ((pair? form)
     (let ((op (car form))
           (args (cdr form)))
@@ -748,7 +934,10 @@
 
 (define (install-primitives! env)
   (define (def name proc)
-    (frame-define! env name (make-primitive name proc)))
+    (let ((sym (resolve-binding-symbol name)))
+      (frame-define! env sym (make-primitive name proc))
+      (when *current-package*
+        (package-export! *current-package* name))))
 
   (def '+ +)
   (def '- -)
@@ -954,15 +1143,97 @@
   (def 'funcall
     (lambda (f . xs)
       (apply-islisp f xs)))
+  (def 'current-package
+    (lambda ()
+      (string->symbol (package-name *current-package*))))
+  (def 'find-package
+    (lambda (name)
+      (let ((p (find-package name)))
+        (if p
+            (string->symbol (package-name p))
+            '()))))
+  (def 'use-package
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "use-package takes package-name and optional target-package" args))
+      (let* ((used (ensure-package! (car args)))
+             (target (if (= (length args) 2)
+                         (ensure-package! (cadr args))
+                         *current-package*)))
+        (package-use! target used)
+        #t)))
+  (def 'export
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "export takes symbol(s) and optional package-name" args))
+      (let ((syms (car args))
+            (pkg (if (= (length args) 2)
+                     (ensure-package! (cadr args))
+                     *current-package*)))
+        (cond
+         ((symbol? syms)
+          (package-export! pkg syms))
+         ((list? syms)
+          (for-each
+           (lambda (s)
+             (unless (symbol? s)
+               (error "export list must contain symbols" s))
+             (package-export! pkg s))
+           syms))
+         (else
+          (error "export expects symbol or list of symbols" syms)))
+        #t)))
+  (def 'intern
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "intern takes name and optional package-name" args))
+      (let* ((name-arg (car args))
+             (name (cond
+                    ((symbol? name-arg) (symbol->string name-arg))
+                    ((string? name-arg) name-arg)
+                    (else (error "intern name must be symbol or string" name-arg))))
+             (pkg (if (= (length args) 2)
+                      (ensure-package! (cadr args))
+                      *current-package*)))
+        (package-intern! pkg name))))
+  (def 'import
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "import takes symbol(s) and optional package-name" args))
+      (let ((vals (car args))
+            (pkg (if (= (length args) 2)
+                     (ensure-package! (cadr args))
+                     *current-package*)))
+        (cond
+         ((symbol? vals)
+          (package-import-symbol! pkg vals))
+         ((list? vals)
+          (for-each
+           (lambda (s)
+             (unless (symbol? s)
+               (error "import list must contain symbols" s))
+             (package-import-symbol! pkg s))
+           vals))
+         (else
+          (error "import expects symbol or list of symbols" vals)))
+        #t)))
   (def 'exit
     (lambda args
       (apply exit args))))
 
 (define (make-initial-env)
   (let ((env (make-frame #f)))
-    (frame-define! env 'nil '())
-    (frame-define! env 't #t)
-    (install-primitives! env)
+    (set! *package-registry* '())
+    (let ((islisp (ensure-package! "ISLISP"))
+          (user (ensure-package! "ISLISP-USER")))
+      (package-use! user islisp)
+      (set! *current-package* islisp)
+      (frame-define! env (resolve-binding-symbol 'nil) '())
+      (package-export! *current-package* 'nil)
+      (frame-define! env (resolve-binding-symbol 't) #t)
+      (package-export! *current-package* 't)
+      (install-primitives! env)
+      (set! *current-package* user))
     env))
 
 (define (read-all port)
