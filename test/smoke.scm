@@ -172,6 +172,15 @@
                                  (* 2 x)))
                            (double -3)))
 (check 8 '(double 4))
+(check 5 '(progn
+            (defun traced-add1 (x) (+ x 1))
+            (trace traced-add1)
+            (traced-add1 4)))
+(check 6 '(progn
+            (defun traced-add2 (x) (+ x 2))
+            (trace traced-add2)
+            (untrace traced-add2)
+            (traced-add2 4)))
 (check '(1 2 3) '(progn
                    (defun collect (a &rest r)
                      (cons a r))

@@ -304,6 +304,8 @@
 (define (tail-call-args tc) (vector-ref tc 2))
 
 (define *block-stack* '())
+(define *trace-table* '())
+(define *trace-depth* 0)
 
 (define (keyword-symbol? sym)
   (and (symbol? sym)
@@ -317,6 +319,78 @@
   (vector 'go-signal tag))
 
 (define (go-signal-tag s) (vector-ref s 1))
+
+(define (trace-entry sym)
+  (assoc sym *trace-table*))
+
+(define (remove-trace-entry sym)
+  (set! *trace-table*
+        (filter (lambda (p) (not (eq? (car p) sym))) *trace-table*)))
+
+(define (trace-indent-string)
+  (make-string (* 2 *trace-depth*) #\space))
+
+(define (trace-wrap-function sym fn)
+  (make-primitive
+   sym
+   (lambda args
+     (display (trace-indent-string))
+     (display "-> ")
+     (write sym)
+     (display " ")
+     (write args)
+     (newline)
+     (set! *trace-depth* (+ *trace-depth* 1))
+     (guard (e
+             (else
+              (set! *trace-depth* (- *trace-depth* 1))
+              (display (trace-indent-string))
+              (display "<! ")
+              (write sym)
+              (display " ERROR ")
+              (write e)
+              (newline)
+              (raise e)))
+       (let ((result (apply-islisp fn args)))
+         (set! *trace-depth* (- *trace-depth* 1))
+         (display (trace-indent-string))
+         (display "<- ")
+         (write sym)
+         (display " ")
+         (write result)
+         (newline)
+         result)))))
+
+(define (trace-one! env sym)
+  (let ((pair (frame-find-pair env sym)))
+    (unless pair
+      (error "Cannot trace unbound function" sym))
+    (let ((current (cdr pair)))
+      (unless (or (primitive? current) (closure? current))
+        (error "trace supports functions only" sym))
+      (unless (trace-entry sym)
+        (set! *trace-table* (cons (cons sym current) *trace-table*))
+        (set-cdr! pair (trace-wrap-function sym current)))))
+  sym)
+
+(define (untrace-one! env sym)
+  (let ((entry (trace-entry sym)))
+    (when entry
+      (let ((pair (frame-find-pair env sym)))
+        (when pair
+          (set-cdr! pair (cdr entry))))
+      (remove-trace-entry sym)))
+  sym)
+
+(define (untrace-all! env)
+  (for-each
+   (lambda (entry)
+     (let ((pair (frame-find-pair env (car entry))))
+       (when pair
+         (set-cdr! pair (cdr entry)))))
+   *trace-table*)
+  (set! *trace-table* '())
+  '())
 
 (define (force-value v)
   (let loop ((x v))
@@ -824,7 +898,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from go tagbody lambda defpackage in-package defglobal defvar setq setf defun defmacro progn block let let*)))
+  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf defun defmacro progn block let let*)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -920,6 +994,22 @@
            (error "go takes one tag argument" form)))
       ((tagbody)
        (eval-tagbody args env))
+      ((trace)
+       (if (null? args)
+           (map car *trace-table*)
+           (map (lambda (s)
+                  (unless (symbol? s)
+                    (error "trace arguments must be symbols" s))
+                  (trace-one! env (resolve-binding-symbol s)))
+                args)))
+      ((untrace)
+       (if (null? args)
+           (untrace-all! env)
+           (map (lambda (s)
+                  (unless (symbol? s)
+                    (error "untrace arguments must be symbols" s))
+                  (untrace-one! env (resolve-binding-symbol s)))
+                args)))
       ((lambda)
        (if (>= (length args) 2)
            (let ((params (car args))
