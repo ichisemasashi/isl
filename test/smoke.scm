@@ -14,6 +14,13 @@
 (check 3 '(ceiling (/ 7 3)))
 (check -2 '(truncate (/ -7 3)))
 (check 3 '(round (/ 11 4)))
+(check #t '(zerop 0))
+(check #t '(plusp 3))
+(check #t '(minusp -1))
+(check #t '(evenp 8))
+(check #f '(evenp 7))
+(check #t '(oddp 7))
+(check #f '(oddp 8))
 (check 120 '(progn
               (defun fact (n)
                 (if (= n 0)

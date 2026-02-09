@@ -807,6 +807,23 @@
   (def 'null (lambda (x) (null? x)))
   (def 'atom (lambda (x) (not (pair? x))))
   (def 'numberp number?)
+  (def 'zerop zero?)
+  (def 'plusp
+    (lambda (x)
+      (> x 0)))
+  (def 'minusp
+    (lambda (x)
+      (< x 0)))
+  (def 'evenp
+    (lambda (x)
+      (unless (integer? x)
+        (error "evenp needs an integer" x))
+      (zero? (modulo x 2))))
+  (def 'oddp
+    (lambda (x)
+      (unless (integer? x)
+        (error "oddp needs an integer" x))
+      (not (zero? (modulo x 2)))))
   (def 'symbolp symbol?)
   (def 'listp list?)
   (def 'string=
