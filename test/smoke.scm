@@ -119,6 +119,9 @@
 (check 10 '(reduce + '(1 2 3 4)))
 (check 20 '(reduce + '(1 2 3 4) 10))
 (check '(3 4 5) '(remove-if (lambda (x) (< x 3)) '(1 2 3 4 5)))
+(check '(2 4) '(remove-if-not evenp '(1 2 3 4 5)))
+(check 4 '(find evenp '(1 3 4 5)))
+(check '() '(find evenp '(1 3 5)))
 (check 50000 '(progn
                 (defun count-down (n acc)
                   (if (= n 0)
