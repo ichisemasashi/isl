@@ -93,7 +93,11 @@
           ((string? x) x)
           (else
            (error "package name must be symbol or string" x)))))
-    (list->string (map char-upcase (string->list s)))))
+    (let* ((up (list->string (map char-upcase (string->list s))))
+           (n (string-length up)))
+      (if (and (> n 0) (char=? (string-ref up 0) #\:))
+          (substring up 1 n)
+          up))))
 
 (define (find-package name)
   (let ((entry (assoc-string (normalize-package-name name) *package-registry*)))
@@ -137,6 +141,18 @@
 (define (package-use! pkg used-pkg)
   (unless (memq used-pkg (package-uses pkg))
     (set-package-uses! pkg (cons used-pkg (package-uses pkg)))))
+
+(define (package-visible-externals pkg sym-name seen)
+  (if (memq pkg seen)
+      '()
+      (let* ((seen2 (cons pkg seen))
+             (local (let ((e (package-external-symbol pkg sym-name)))
+                      (if e (list e) '())))
+             (from-uses
+              (apply append
+                     (map (lambda (u) (package-visible-externals u sym-name seen2))
+                          (package-uses pkg)))))
+        (delete-duplicates (append local from-uses) eq?))))
 
 (define (package-import-symbol! pkg sym)
   (let ((name (symbol->string sym)))
@@ -184,10 +200,14 @@
           (if internal
               internal
               (let ((hits
-                     (filter-map
-                      (lambda (pkg)
-                        (package-external-symbol pkg name))
-                      (if here (package-uses here) '()))))
+                     (if here
+                         (delete-duplicates
+                          (apply append
+                                 (map (lambda (pkg)
+                                        (package-visible-externals pkg name '()))
+                                      (package-uses here)))
+                          eq?)
+                         '())))
                 (cond
                  ((null? hits) (if here (package-intern! here name) sym))
                  ((null? (cdr hits)) (car hits))
@@ -1225,7 +1245,9 @@
   (let ((env (make-frame #f)))
     (set! *package-registry* '())
     (let ((islisp (ensure-package! "ISLISP"))
+          (common-lisp (ensure-package! "COMMON-LISP"))
           (user (ensure-package! "ISLISP-USER")))
+      (package-use! common-lisp islisp)
       (package-use! user islisp)
       (set! *current-package* islisp)
       (frame-define! env (resolve-binding-symbol 'nil) '())

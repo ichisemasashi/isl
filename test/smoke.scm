@@ -34,6 +34,16 @@
                    'ok))
 (check 7 '(progn (defglobal v 7) v))
 (check 1 '(progn (defvar dv 1) (defvar dv 99) dv))
+(check 5 '(progn
+            (defpackage :my-package
+              (:use :common-lisp)
+              (:export greed))
+            (in-package :my-package)
+            (defun greed (x) (+ x 2))
+            (greed 3)))
+(check 8 '(progn
+            (in-package :islisp-user)
+            (my-package:greed 6)))
 (check 'demo '(progn
                 (defpackage demo (:use islisp) (:export sq v))
                 (in-package demo)
