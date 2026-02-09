@@ -904,7 +904,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf defun defmacro progn block let let*)))
+  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro progn block let let*)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -1078,6 +1078,33 @@
               (else
                (error "Unsupported setf place" place))))
            (error "setf takes place and expression" form)))
+      ((incf)
+       (if (or (= (length args) 1) (= (length args) 2))
+           (let* ((place (car args))
+                  (delta (if (= (length args) 2)
+                             (eval-islisp* (cadr args) env #f)
+                             1)))
+             (cond
+              ((symbol? place)
+               (let* ((sym (if (frame-bound? env place)
+                               place
+                               (resolve-binding-symbol place)))
+                      (new (+ (frame-ref env sym) delta)))
+                 (frame-set! env sym new)
+                 new))
+              ((and (pair? place) (eq? (car place) 'car) (= (length place) 2))
+               (let* ((target (eval-islisp* (cadr place) env #f))
+                      (new (+ (car target) delta)))
+                 (set-car! target new)
+                 new))
+              ((and (pair? place) (eq? (car place) 'cdr) (= (length place) 2))
+               (let* ((target (eval-islisp* (cadr place) env #f))
+                      (new (+ (cdr target) delta)))
+                 (set-cdr! target new)
+                 new))
+              (else
+               (error "Unsupported incf place" place))))
+           (error "incf takes place and optional delta" form)))
       ((defun)
        (if (>= (length args) 3)
            (let ((name (resolve-binding-symbol (car args)))

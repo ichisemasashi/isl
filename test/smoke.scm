@@ -70,6 +70,10 @@
                    (return-from inner 6)
                    0))))
 (check 42 '(progn (defglobal s 0) (setf s 42) s))
+(check 11 '(progn (defglobal incx 10) (incf incx)))
+(check 15 '(progn (defglobal incx2 10) (incf incx2 5)))
+(check '(4 . 2) '(progn (defglobal p3 (cons 1 2)) (incf (car p3) 3) p3))
+(check '(1 . 7) '(progn (defglobal p4 (cons 1 2)) (incf (cdr p4) 5) p4))
 (check '(9 . 2) '(progn (defglobal p (cons 1 2)) (setf (car p) 9) p))
 (check '(9 . 8) '(progn (defglobal p2 (cons 9 2)) (setf (cdr p2) 8) p2))
 (check 10 '(progn
