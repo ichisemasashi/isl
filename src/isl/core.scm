@@ -306,6 +306,7 @@
 (define *block-stack* '())
 (define *trace-table* '())
 (define *trace-depth* 0)
+(define *gensym-counter* 0)
 
 (define (keyword-symbol? sym)
   (and (symbol? sym)
@@ -319,6 +320,11 @@
   (vector 'go-signal tag))
 
 (define (go-signal-tag s) (vector-ref s 1))
+
+(define (make-gensym prefix)
+  (set! *gensym-counter* (+ *gensym-counter* 1))
+  (string->symbol
+   (string-append prefix (number->string *gensym-counter*))))
 
 (define (trace-entry sym)
   (assoc sym *trace-table*))
@@ -1457,6 +1463,20 @@
          (else
           (error "import expects symbol or list of symbols" vals)))
         #t)))
+  (def 'gensym
+    (lambda args
+      (unless (or (null? args) (= (length args) 1))
+        (error "gensym takes optional prefix argument" args))
+      (let ((prefix
+             (if (null? args)
+                 "G"
+                 (let ((x (car args)))
+                   (cond
+                    ((string? x) x)
+                    ((symbol? x) (symbol->string x))
+                    (else
+                     (error "gensym prefix must be string or symbol" x)))))))
+        (make-gensym prefix))))
   (def 'macroexpand-1
     (lambda (form)
       (macroexpand-1* form env)))

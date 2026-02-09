@@ -214,5 +214,21 @@
                    (defmacro mwrap (x)
                      (list 'mplus x 1))
                    (macroexpand '(mwrap 5))))
+(check #t '(progn
+             (defglobal g1 (gensym))
+             (defglobal g2 (gensym))
+             (if (symbolp g1)
+                 (if (symbolp g2)
+                     (not (eq g1 g2))
+                     nil)
+                 nil)))
+(check #t '(progn
+             (defglobal gp1 (gensym "TMP"))
+             (defglobal gp2 (gensym "TMP"))
+             (if (symbolp gp1)
+                 (if (symbolp gp2)
+                     (not (eq gp1 gp2))
+                     nil)
+                 nil)))
 
 (display "smoke tests passed\n")
