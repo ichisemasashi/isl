@@ -84,5 +84,11 @@
 (check "cd" '(substring "abcd" 2))
 (check 4 '(length "abcd"))
 (check 3 '(length '(1 2 3)))
+(check 50000 '(progn
+                (defun count-down (n acc)
+                  (if (= n 0)
+                      acc
+                      (count-down (- n 1) (+ acc 1))))
+                (count-down 50000 0)))
 
 (display "smoke tests passed\n")
