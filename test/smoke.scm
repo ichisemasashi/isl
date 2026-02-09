@@ -172,6 +172,10 @@
                                  (* 2 x)))
                            (double -3)))
 (check 8 '(double 4))
+(check '(1 2 3) '(progn
+                   (defun collect (a &rest r)
+                     (cons a r))
+                   (collect 1 2 3)))
 (check 42 '(progn
              (defmacro inc2 (x)
                (list '+ x 2))
@@ -182,5 +186,14 @@
               (list 'setq place 7))
             (set-to-seven mz)
             mz))
+(check 2 '(progn
+            (defglobal mw 0)
+            (defmacro my-when (condition &rest body)
+              `(if ,condition
+                   (progn ,@body)))
+            (my-when (> 5 3)
+              (setq mw (+ mw 1))
+              (setq mw (+ mw 1)))
+            mw))
 
 (display "smoke tests passed\n")
