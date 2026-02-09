@@ -765,6 +765,32 @@
       (bind-params! call-env param-spec raw-args)
       (force-value (eval-sequence* body call-env #t)))))
 
+(define (macroexpand-1-with-flag form env)
+  (if (and (pair? form) (symbol? (car form)))
+      (let ((op (car form))
+            (args (cdr form)))
+        (if (special-form? op)
+            (cons #f form)
+            (let* ((op-sym (if (frame-bound? env op)
+                               op
+                               (resolve-symbol-in-package op)))
+                   (op-pair (frame-find-pair env op-sym))
+                   (op-val (and op-pair (cdr op-pair))))
+              (if (and op-pair (macro? op-val))
+                  (cons #t (apply-macro op-val args))
+                  (cons #f form)))))
+      (cons #f form)))
+
+(define (macroexpand-1* form env)
+  (cdr (macroexpand-1-with-flag form env)))
+
+(define (macroexpand* form env)
+  (let loop ((f form))
+    (let ((r (macroexpand-1-with-flag f env)))
+      (if (car r)
+          (loop (cdr r))
+          (cdr r)))))
+
 (define (apply-islisp fn args)
   (let loop ((current-fn fn)
              (current-args args))
@@ -1341,6 +1367,12 @@
          (else
           (error "import expects symbol or list of symbols" vals)))
         #t)))
+  (def 'macroexpand-1
+    (lambda (form)
+      (macroexpand-1* form env)))
+  (def 'macroexpand
+    (lambda (form)
+      (macroexpand* form env)))
   (def 'exit
     (lambda args
       (apply exit args))))

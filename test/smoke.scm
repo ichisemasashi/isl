@@ -195,5 +195,15 @@
               (setq mw (+ mw 1))
               (setq mw (+ mw 1)))
             mw))
+(check '(+ 1 2) '(progn
+                   (defmacro mplus (a b)
+                     (list '+ a b))
+                   (macroexpand-1 '(mplus 1 2))))
+(check '(+ 5 1) '(progn
+                   (defmacro mplus (a b)
+                     (list '+ a b))
+                   (defmacro mwrap (x)
+                     (list 'mplus x 1))
+                   (macroexpand '(mwrap 5))))
 
 (display "smoke tests passed\n")
