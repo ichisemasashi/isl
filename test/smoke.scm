@@ -29,6 +29,13 @@
              (defglobal b1 10)
              (+ b1 20)))
 (check '() '(block empty))
+(check 99 '(block out
+             (return-from out 99)
+             0))
+(check 7 '(block out
+            (+ 1 (block inner
+                   (return-from inner 6)
+                   0))))
 (check 42 '(progn (defglobal s 0) (setf s 42) s))
 (check '(9 . 2) '(progn (defglobal p (cons 1 2)) (setf (car p) 9) p))
 (check '(9 . 8) '(progn (defglobal p2 (cons 9 2)) (setf (cdr p2) 8) p2))
@@ -61,6 +68,13 @@
              (defglobal dtsum 0)
              (dotimes (i 5 dtsum)
                (setq dtsum (+ dtsum i)))))
+(check 3 '(progn
+            (defglobal tg 0)
+            (tagbody
+              top
+                (setq tg (+ tg 1))
+                (if (< tg 3) (go top) nil))
+            tg))
 (check 2 '(if nil 1 2))
 (check 'ok '(cond
              ((= 1 2) 'ng)
