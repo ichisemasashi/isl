@@ -129,6 +129,11 @@
 
 (define *block-stack* '())
 
+(define (keyword-symbol? sym)
+  (and (symbol? sym)
+       (> (string-length (symbol->string sym)) 0)
+       (char=? (string-ref (symbol->string sym) 0) #\:)))
+
 (define (go-signal? obj)
   (and (vector? obj) (= (vector-length obj) 2) (eq? (vector-ref obj 0) 'go-signal)))
 
@@ -721,7 +726,9 @@
   (cond
    ((or (number? form) (string? form) (char? form) (boolean? form)) form)
    ((symbol? form)
-    (frame-ref env form))
+    (if (keyword-symbol? form)
+        form
+        (frame-ref env form)))
    ((pair? form)
     (let ((op (car form))
           (args (cdr form)))
@@ -813,16 +820,63 @@
                   (loop (cdr rest) (cons v acc))
                   (loop (cdr rest) acc)))))))
   (def 'find
-    (lambda (pred xs)
-      (unless (list? xs)
-        (error "find needs a list as second argument" xs))
-      (let loop ((rest xs))
-        (if (null? rest)
-            '()
-            (let ((v (car rest)))
-              (if (truthy? (apply-islisp pred (list v)))
-                  v
-                  (loop (cdr rest))))))))
+    (lambda args
+      (unless (>= (length args) 2)
+        (error "find needs item and sequence" args))
+      (let ((item (car args))
+            (seq (cadr args))
+            (opts (cddr args))
+            (test #f)
+            (key #f))
+        (let parse ((rest opts))
+          (unless (null? rest)
+            (unless (pair? (cdr rest))
+              (error "find keyword arguments must be pairs" rest))
+            (let ((k (car rest))
+                  (v (cadr rest)))
+              (cond
+               ((eq? k ':test) (set! test v))
+               ((eq? k ':key) (set! key v))
+               (else (error "unknown find keyword" k))))
+            (parse (cddr rest))))
+        (letrec
+            ((apply-key
+              (lambda (x)
+                (if key
+                    (apply-islisp key (list x))
+                    x)))
+             (match?
+              (lambda (x)
+                (if test
+                    (truthy? (apply-islisp test (list item (apply-key x))))
+                    (eqv? item (apply-key x))))))
+          (cond
+           ((list? seq)
+            (let loop ((rest seq))
+              (if (null? rest)
+                  '()
+                  (let ((v (car rest)))
+                    (if (match? v)
+                        v
+                        (loop (cdr rest)))))))
+           ((vector? seq)
+            (let loop ((i 0) (n (vector-length seq)))
+              (if (>= i n)
+                  '()
+                  (let ((v (vector-ref seq i)))
+                    (if (match? v)
+                        v
+                        (loop (+ i 1) n))))))
+           ((string? seq)
+            (let loop ((i 0) (n (string-length seq)))
+              (if (>= i n)
+                  '()
+                  (let ((v (string-ref seq i)))
+                    (if (match? v)
+                        v
+                        (loop (+ i 1) n))))))
+           (else
+            (error "find needs list/vector/string as sequence" seq)))))))
   (def 'eq eq?)
   (def 'eql eqv?)
   (def 'equal equal?)
