@@ -22,8 +22,13 @@
                    'ok))
 (check 7 '(progn (defglobal v 7) v))
 (check 1 '(progn (defvar dv 1) (defvar dv 99) dv))
+(check 3 '(progn 1 2 3))
 (check 5 '(let ((x 2) (y 3)) (+ x y)))
 (check 3 '(let* ((x 1) (y (+ x 2))) y))
+(check 30 '(block calc
+             (defglobal b1 10)
+             (+ b1 20)))
+(check '() '(block empty))
 (check 42 '(progn (defglobal s 0) (setf s 42) s))
 (check '(9 . 2) '(progn (defglobal p (cons 1 2)) (setf (car p) 9) p))
 (check '(9 . 8) '(progn (defglobal p2 (cons 9 2)) (setf (cdr p2) 8) p2))

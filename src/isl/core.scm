@@ -451,7 +451,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote if cond case loop while do dolist dotimes lambda defglobal defvar setq setf defun progn let let*)))
+  (memq sym '(quote if cond case loop while do dolist dotimes lambda defglobal defvar setq setf defun progn block let let*)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -590,6 +590,14 @@
            (error "defun needs name, params and body" form)))
       ((progn)
        (eval-sequence* args env tail?))
+      ((block)
+       (if (>= (length args) 1)
+           (let ((name (car args))
+                 (body (cdr args)))
+             (unless (symbol? name)
+               (error "block name must be a symbol" name))
+             (eval-sequence* body env tail?))
+           (error "block needs name and optional body" form)))
       ((let)
        (if (>= (length args) 2)
            (let ((bindings (car args))
