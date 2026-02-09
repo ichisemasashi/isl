@@ -103,6 +103,10 @@
 (check "cd" '(substring "abcd" 2))
 (check 4 '(length "abcd"))
 (check 3 '(length '(1 2 3)))
+(check '(1 4 9) '(mapcar (lambda (x) (* x x)) '(1 2 3)))
+(check 10 '(reduce + '(1 2 3 4)))
+(check 20 '(reduce + '(1 2 3 4) 10))
+(check '(3 4 5) '(remove-if (lambda (x) (< x 3)) '(1 2 3 4 5)))
 (check 50000 '(progn
                 (defun count-down (n acc)
                   (if (= n 0)
