@@ -172,5 +172,15 @@
                                  (* 2 x)))
                            (double -3)))
 (check 8 '(double 4))
+(check 42 '(progn
+             (defmacro inc2 (x)
+               (list '+ x 2))
+             (inc2 40)))
+(check 7 '(progn
+            (defglobal mz 0)
+            (defmacro set-to-seven (place)
+              (list 'setq place 7))
+            (set-to-seven mz)
+            mz))
 
 (display "smoke tests passed\n")

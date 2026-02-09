@@ -240,6 +240,17 @@
 (define (primitive-name p) (vector-ref p 1))
 (define (primitive-proc p) (vector-ref p 2))
 
+(define (macro? obj)
+  (and (vector? obj) (= (vector-length obj) 5) (eq? (vector-ref obj 0) 'macro)))
+
+(define (make-macro params body env name)
+  (vector 'macro params body env name))
+
+(define (macro-params m) (vector-ref m 1))
+(define (macro-body m) (vector-ref m 2))
+(define (macro-env m) (vector-ref m 3))
+(define (macro-name m) (vector-ref m 4))
+
 (define (validate-params params)
   (parse-params params)
   params)
@@ -685,6 +696,15 @@
             (frame-define! frame (car rs) (car as))
             (bind-required (cdr rs) (cdr as)))))))
 
+(define (apply-macro m raw-args)
+  (let ((params (macro-params m))
+        (body (macro-body m))
+        (menv (macro-env m)))
+    (let ((param-spec (parse-params params))
+          (call-env (make-frame menv)))
+      (bind-params! call-env param-spec raw-args)
+      (force-value (eval-sequence* body call-env #t)))))
+
 (define (apply-islisp fn args)
   (let loop ((current-fn fn)
              (current-args args))
@@ -718,7 +738,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote if cond case loop while do dolist dotimes return-from go tagbody lambda defpackage in-package defglobal defvar setq setf defun progn block let let*)))
+  (memq sym '(quote if cond case loop while do dolist dotimes return-from go tagbody lambda defpackage in-package defglobal defvar setq setf defun defmacro progn block let let*)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -884,6 +904,18 @@
                (frame-define! (global-frame env) name fun)
                name))
            (error "defun needs name, params and body" form)))
+      ((defmacro)
+       (if (>= (length args) 3)
+           (let ((name (resolve-binding-symbol (car args)))
+                 (params (cadr args))
+                 (body (cddr args)))
+             (unless (symbol? name)
+               (error "defmacro name must be symbol" name))
+             (validate-params params)
+             (let ((m (make-macro params body env name)))
+               (frame-define! (global-frame env) name m)
+               name))
+           (error "defmacro needs name, params and body" form)))
       ((defpackage)
        (eval-defpackage args))
       ((in-package)
@@ -940,11 +972,19 @@
           (args (cdr form)))
       (if (and (symbol? op) (special-form? op))
           (eval-special form env tail?)
-          (let ((fn (eval-islisp* op env #f))
-                (vals (eval-list args env)))
-            (if tail?
-                (make-tail-call fn vals)
-                (apply-islisp fn vals))))))
+          (let* ((op-sym (and (symbol? op)
+                              (if (frame-bound? env op)
+                                  op
+                                  (resolve-symbol-in-package op))))
+                 (op-pair (and op-sym (frame-find-pair env op-sym)))
+                 (op-val (and op-pair (cdr op-pair))))
+            (if (and op-pair (macro? op-val))
+                (eval-islisp* (apply-macro op-val args) env tail?)
+                (let ((fn (eval-islisp* op env #f))
+                      (vals (eval-list args env)))
+                  (if tail?
+                      (make-tail-call fn vals)
+                      (apply-islisp fn vals))))))))
    ((null? form) '())
    (else
     form)))
@@ -1281,6 +1321,14 @@
         (display "#<primitive ")
         (display (primitive-name x))
         (display ">")))
+     ((macro? x)
+      (let ((name (macro-name x)))
+        (if name
+            (begin
+              (display "#<macro ")
+              (display name)
+              (display ">"))
+            (display "#<macro>"))))
      (else
       (write x))))
   (display "ISLISP> ")
