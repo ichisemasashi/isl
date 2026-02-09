@@ -34,13 +34,17 @@
                (setq wsum (+ wsum wi))
                (setq wi (+ wi 1)))
              wsum))
+(check 15 '(progn
+             (defglobal lsum 0)
+             (loop for i from 1 to 5
+                   do (setq lsum (+ lsum i)))
+             lsum))
 (check 6 '(progn
-            (defglobal li 0)
-            (defglobal lsum 0)
-            (loop (< li 4)
-              (setq lsum (+ lsum li))
-              (setq li (+ li 1)))
-            lsum))
+            (defglobal lsum2 0)
+            (loop for i from 1 to 5
+                  until (> i 3)
+                  do (setq lsum2 (+ lsum2 i)))
+            lsum2))
 (check 120 '(do ((n 5 (- n 1))
                  (acc 1 (* acc n)))
                 ((= n 0) acc)))
