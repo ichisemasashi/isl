@@ -1330,7 +1330,8 @@
                              (frame-define! henv var e))
                            (eval-sequence* body henv tail?))
                          (loop (cdr cs))))))))
-      (eval-islisp* protected env tail?))))
+      ;; Keep exceptions from tail calls within handler-case dynamic extent.
+      (force-value (eval-islisp* protected env tail?)))))
 
 (define (eval-defpackage args)
   (unless (>= (length args) 1)
