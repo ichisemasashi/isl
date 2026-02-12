@@ -8,6 +8,13 @@
     (unless (equal? expected actual)
       (error "assertion failed" form expected actual))))
 
+(define smoke-file "test/tmp-smoke-input.lsp")
+(call-with-output-file
+ smoke-file
+ (lambda (p)
+   (write '(alpha beta gamma) p))
+ :if-exists :supersede)
+
 (check 3 '(+ 1 2))
 (check 2 '(mod 17 5))
 (check 2 '(floor (/ 7 3)))
@@ -155,6 +162,13 @@
 (check "(1 2)" '(format nil "~S" '(1 2)))
 (check "A\nB~C" '(format nil "A~%B~~C"))
 (check '() '(format t "visible: ~A~%" "ok"))
+(check '(alpha beta gamma) `(with-open-file (s ,smoke-file) (read s)))
+(check 'file-not-found
+       '(catch 'file-error
+          (with-open-file (s "test/this-file-does-not-exist-xyz.lsp")
+            (if (null s)
+                (throw 'file-error 'file-not-found)
+                (read s)))))
 (check #t '(string= "abc" "abc"))
 (check #f '(string= "abc" "abd"))
 (check "abcdef" '(string-concat "ab" "cd" "ef"))

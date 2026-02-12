@@ -744,6 +744,33 @@
                       '()))))))
       (error "dotimes needs (var count [result]) and optional body" args)))
 
+(define (eval-with-open-file args env tail?)
+  (if (>= (length args) 1)
+      (let ((spec (car args))
+            (body (cdr args)))
+        (unless (and (list? spec) (= (length spec) 2) (symbol? (car spec)))
+          (error "with-open-file spec must be (var filename)" spec))
+        (let* ((var (car spec))
+               (filename (eval-islisp* (cadr spec) env #f)))
+          (unless (string? filename)
+            (error "with-open-file filename must evaluate to string" filename))
+          (let ((port
+                 (guard (e
+                         (else #f))
+                   (open-input-file filename))))
+            (let ((file-env (make-frame env)))
+              (frame-define! file-env var (if port port '()))
+              (if port
+                  (dynamic-wind
+                    (lambda () #f)
+                    (lambda ()
+                      ;; Evaluate body before closing the stream.
+                      (force-value (eval-sequence* body file-env tail?)))
+                    (lambda ()
+                      (close-input-port port)))
+                  (eval-sequence* body file-env tail?))))))
+      (error "with-open-file needs (var filename) and optional body" args)))
+
 (define (eval-defpackage args)
   (unless (>= (length args) 1)
     (error "defpackage needs package name" args))
@@ -930,7 +957,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro progn block let let*)))
+  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro progn block let let* with-open-file)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -1004,6 +1031,8 @@
        (eval-dolist args env tail?))
       ((dotimes)
        (eval-dotimes args env tail?))
+      ((with-open-file)
+       (eval-with-open-file args env tail?))
       ((return-from)
        (if (or (= (length args) 1) (= (length args) 2))
            (let* ((name (resolve-binding-symbol (car args)))
@@ -1439,6 +1468,15 @@
       (write x)
       (newline)
       x))
+  (def 'read
+    (lambda args
+      (cond
+       ((null? args)
+        (read))
+       ((= (length args) 1)
+        (read (car args)))
+       (else
+        (error "read takes zero or one stream argument" args)))))
   (def 'format
     (lambda args
       (cond
