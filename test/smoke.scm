@@ -65,6 +65,7 @@
 (check '() '(probe-file "test/definitely-not-found-file-xyz.txt"))
 (check #t `(delete-file ,delete-file-target))
 (check '() `(probe-file ,delete-file-target))
+(check #t '(> (get-universal-time) 2208988800))
 (check "This is a test"
        `(with-open-file (stream ,out-file :direction :input)
           (read-line stream nil)))

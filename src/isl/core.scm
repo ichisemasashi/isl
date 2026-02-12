@@ -1950,6 +1950,11 @@
             (sys-unlink filename)
             #t)
           '())))
+  (def 'get-universal-time
+    (lambda ()
+      ;; Convert Unix epoch seconds (1970-01-01) to CL/ISLISP universal-time
+      ;; seconds since 1900-01-01 UTC.
+      (+ (sys-time) 2208988800)))
   (def 'load
     (lambda (filename)
       (unless (string? filename)
