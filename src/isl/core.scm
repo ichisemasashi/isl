@@ -74,6 +74,7 @@
 
 (define *package-registry* '())
 (define *current-package* #f)
+(define *provided-features* '())
 
 (define (make-package name)
   (vector 'package name '() '() '()))
@@ -98,6 +99,35 @@
       (if (and (> n 0) (char=? (string-ref up 0) #\:))
           (substring up 1 n)
           up))))
+
+(define (normalize-feature-name x)
+  (let ((raw
+         (cond
+          ((symbol? x) (symbol-base-name x))
+          ((string? x) x)
+          (else
+           (error "feature name must be symbol or string" x)))))
+    (list->string (map char-upcase (string->list raw)))))
+
+(define (feature-provided? x)
+  (let ((name (normalize-feature-name x)))
+    (if (member name *provided-features* string=?)
+        #t
+        #f)))
+
+(define (register-feature! x)
+  (let ((name (normalize-feature-name x)))
+    (unless (member name *provided-features* string=?)
+      (set! *provided-features* (cons name *provided-features*)))
+    #t))
+
+(define (eval-load-file filename env)
+  (unless (string? filename)
+    (error "load filename must be a string" filename))
+  (call-with-input-file
+   filename
+   (lambda (p)
+     (eval-sequence (read-all p) env))))
 
 (define (find-package name)
   (let ((entry (assoc-string (normalize-package-name name) *package-registry*)))
@@ -2421,12 +2451,24 @@
       (internal-run-time)))
   (def 'load
     (lambda (filename)
-      (unless (string? filename)
-        (error "load filename must be a string" filename))
-      (call-with-input-file
-       filename
-       (lambda (p)
-         (eval-sequence (read-all p) env)))))
+      (eval-load-file filename env)))
+  (def 'provide
+    (lambda (feature)
+      (register-feature! feature)))
+  (def 'require
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "require takes feature-name and optional pathname" args))
+      (let ((feature (car args)))
+        (unless (feature-provided? feature)
+          (if (= (length args) 2)
+              (let ((path (cadr args)))
+                (unless (string? path)
+                  (error "require pathname must be a string" path))
+                (eval-load-file path env)
+                (register-feature! feature))
+              (error "Feature is not provided" feature)))
+        #t)))
   (def 'format
     (lambda args
       (cond
@@ -2603,6 +2645,7 @@
     (set! *package-registry* '())
     (set! *class-table* '())
     (set! *accessor-slot-table* '())
+    (set! *provided-features* '())
     (let ((islisp (ensure-package! "ISLISP"))
           (common-lisp (ensure-package! "COMMON-LISP"))
           (user (ensure-package! "ISLISP-USER")))
