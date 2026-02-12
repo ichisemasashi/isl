@@ -46,6 +46,35 @@
  :if-exists :supersede)
 
 (check 3 '(+ 1 2))
+(check 3 '(vector-ref (vector 1 2 3) 2))
+(check 9 '(progn
+            (defglobal vv (make-vector 3 0))
+            (vector-set! vv 1 9)
+            (vector-ref vv 1)))
+(check 7 '(progn
+            (defglobal vv2 (vector 1 2 3))
+            (setf (vector-ref vv2 0) 7)
+            (vector-ref vv2 0)))
+(check #t '(vectorp (vector 1 2)))
+(check #f '(vectorp '(1 2)))
+(check 10 '(progn
+             (defglobal ht1 (make-hash-table))
+             (puthash 'a 10 ht1)
+             (gethash 'a ht1)))
+(check '() '(gethash 'b ht1))
+(check 99 '(gethash 'b ht1 99))
+(check 20 '(progn
+             (setf (gethash 'b ht1) 20)
+             (gethash 'b ht1)))
+(check #t '(hash-table-p ht1))
+(check 2 '(hash-table-count ht1))
+(check #t '(remhash 'a ht1))
+(check 1 '(hash-table-count ht1))
+(check 0 '(progn (clrhash ht1) (hash-table-count ht1)))
+(check 1 '(progn
+            (defglobal ht2 (make-hash-table :test 'equal))
+            (puthash "key" 1 ht2)
+            (gethash "key" ht2)))
 (check 314 `(load ,load-file))
 (check 314 'loaded-from-file)
 (check '("line-1" "line-2")
