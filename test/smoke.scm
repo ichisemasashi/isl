@@ -46,6 +46,9 @@
  :if-exists :supersede)
 
 (check 3 '(+ 1 2))
+(check #(1 2 3) '(make-array 3 :initial-contents '(1 2 3)))
+(check #(1 2 3) '(make-vector 3 :initial-contents '(1 2 3)))
+(check #\x '(vector-ref (make-vector 3 :initial-element #\x) 2))
 (check 3 '(vector-ref (vector 1 2 3) 2))
 (check 9 '(progn
             (defglobal vv (make-vector 3 0))

@@ -1893,6 +1893,60 @@
       (if (= i 0)
           (car rest)
           (loop (cdr rest) (- i 1)))))
+  (define (vector-size-from-dim dim who)
+    (cond
+     ((and (integer? dim) (>= dim 0)) dim)
+     ((and (list? dim) (= (length dim) 1) (integer? (car dim)) (>= (car dim) 0))
+      (car dim))
+     (else
+      (error who "dimension must be non-negative integer or one-element list" dim))))
+  (define (build-vector-from-args args who)
+    (unless (>= (length args) 1)
+      (error who "needs at least a dimension argument" args))
+    (let* ((n (vector-size-from-dim (car args) who))
+           (rest (cdr args))
+           (has-init-element #f)
+           (init-element '())
+           (has-init-contents #f)
+           (init-contents '()))
+      (cond
+       ((null? rest) 'ok)
+       ((keyword-symbol? (car rest))
+        (let parse ((xs rest))
+          (unless (null? xs)
+            (unless (pair? (cdr xs))
+              (error who "keyword arguments must be key/value pairs" xs))
+            (let ((k (car xs))
+                  (v (cadr xs)))
+              (cond
+               ((eq? k ':initial-element)
+                (set! has-init-element #t)
+                (set! init-element v))
+               ((eq? k ':initial-contents)
+                (set! has-init-contents #t)
+                (set! init-contents v))
+               (else
+                (error who "unknown keyword" k))))
+            (parse (cddr xs)))))
+       ((= (length rest) 1)
+        ;; Backward-compatible positional initializer.
+        (set! has-init-element #t)
+        (set! init-element (car rest)))
+       (else
+        (error who "invalid arguments" args)))
+      (when (and has-init-element has-init-contents)
+        (error who "cannot use both :initial-element and :initial-contents"))
+      (if has-init-contents
+          (let ((vals
+                 (cond
+                  ((list? init-contents) init-contents)
+                  ((vector? init-contents) (vector->list init-contents))
+                  (else
+                   (error who ":initial-contents must be list or vector" init-contents)))))
+            (unless (= (length vals) n)
+              (error who ":initial-contents length must match dimension" (length vals) n))
+            (list->vector vals))
+          (make-vector n (if has-init-element init-element '())))))
 
   (def '+ +)
   (def '- -)
@@ -1912,15 +1966,12 @@
   (def 'car car)
   (def 'cdr cdr)
   (def 'vector (lambda xs (list->vector xs)))
+  (def 'make-array
+    (lambda args
+      (build-vector-from-args args "make-array")))
   (def 'make-vector
     (lambda args
-      (unless (or (= (length args) 1) (= (length args) 2))
-        (error "make-vector takes size and optional initial-value" args))
-      (let ((n (car args))
-            (init (if (= (length args) 2) (cadr args) '())))
-        (unless (and (integer? n) (>= n 0))
-          (error "make-vector size must be non-negative integer" n))
-        (make-vector n init))))
+      (build-vector-from-args args "make-vector")))
   (def 'vector-ref
     (lambda (v i)
       (unless (vector? v)
