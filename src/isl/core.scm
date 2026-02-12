@@ -1921,7 +1921,11 @@
                  (op-pair (and op-sym (frame-find-pair env op-sym)))
                  (op-val (and op-pair (cdr op-pair))))
             (if (and op-pair (macro? op-val))
-                (eval-islisp* (apply-macro op-val args) env tail?)
+                (eval-islisp* (if (macro-traced? op-sym)
+                                  (trace-apply-macro op-sym op-val args)
+                                  (apply-macro op-val args))
+                             env
+                             tail?)
                 (let ((fn (eval-islisp* op env #f))
                       (vals (eval-list args env)))
                   (if tail?
