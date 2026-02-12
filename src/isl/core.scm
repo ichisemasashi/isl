@@ -4,9 +4,15 @@
   (use srfi-1)
   (use gauche.process)
   (use gauche.net)
+  (use rfc.http)
   (export make-initial-env eval-islisp apply-islisp repl read-all))
 
 (select-module isl.core)
+
+(define gauche-http-get http-get)
+(define gauche-http-post http-post)
+(define gauche-http-head http-head)
+(define gauche-http-string-receiver http-string-receiver)
 
 (define (truthy? v)
   (and (not (eq? v #f))
@@ -201,6 +207,17 @@
 
 (define (tcp-listener-socket listener)
   (vector-ref listener 1))
+
+(define (make-udp-socket socket)
+  (vector 'udp-socket socket))
+
+(define (udp-socket? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 2)
+       (eq? (vector-ref obj 0) 'udp-socket)))
+
+(define (udp-socket-raw socket)
+  (vector-ref socket 1))
 
 (define (decode-process-exit-status raw)
   (if (and (integer? raw) (>= raw 0))
@@ -2969,6 +2986,140 @@
       (guard (e (else #t))
         (socket-close (tcp-connection-socket conn)))
       #t))
+  (def 'udp-open
+    (lambda ()
+      (make-udp-socket (make-socket PF_INET SOCK_DGRAM 0))))
+  (def 'udp-socket-p
+    (lambda (obj)
+      (udp-socket? obj)))
+  (def 'udp-bind
+    (lambda (sock host port)
+      (unless (udp-socket? sock)
+        (error "udp-bind needs udp socket object" sock))
+      (unless (string? host)
+        (error "udp-bind host must be a string" host))
+      (unless (and (integer? port) (>= port 1) (<= port 65535))
+        (error "udp-bind port must be integer in 1..65535" port))
+      (socket-bind (udp-socket-raw sock)
+                   (make <sockaddr-in> :host host :port port))
+      #t))
+  (def 'udp-connect
+    (lambda (sock host port)
+      (unless (udp-socket? sock)
+        (error "udp-connect needs udp socket object" sock))
+      (unless (string? host)
+        (error "udp-connect host must be a string" host))
+      (unless (and (integer? port) (>= port 1) (<= port 65535))
+        (error "udp-connect port must be integer in 1..65535" port))
+      (socket-connect (udp-socket-raw sock)
+                      (make <sockaddr-in> :host host :port port))
+      #t))
+  (def 'udp-send
+    (lambda (sock text)
+      (unless (udp-socket? sock)
+        (error "udp-send needs udp socket object" sock))
+      (unless (string? text)
+        (error "udp-send text must be a string" text))
+      (socket-send (udp-socket-raw sock) text)))
+  (def 'udp-receive
+    (lambda (sock size)
+      (unless (udp-socket? sock)
+        (error "udp-receive needs udp socket object" sock))
+      (unless (and (integer? size) (> size 0))
+        (error "udp-receive size must be positive integer" size))
+      (socket-recv (udp-socket-raw sock) size)))
+  (def 'udp-sendto
+    (lambda (sock host port text)
+      (unless (udp-socket? sock)
+        (error "udp-sendto needs udp socket object" sock))
+      (unless (string? host)
+        (error "udp-sendto host must be a string" host))
+      (unless (and (integer? port) (>= port 1) (<= port 65535))
+        (error "udp-sendto port must be integer in 1..65535" port))
+      (unless (string? text)
+        (error "udp-sendto text must be a string" text))
+      (socket-sendto (udp-socket-raw sock)
+                     text
+                     (make <sockaddr-in> :host host :port port))))
+  (def 'udp-receive-from
+    (lambda (sock size)
+      (unless (udp-socket? sock)
+        (error "udp-receive-from needs udp socket object" sock))
+      (unless (and (integer? size) (> size 0))
+        (error "udp-receive-from size must be positive integer" size))
+      (receive (payload addr)
+          (socket-recvfrom (udp-socket-raw sock) size)
+        (list payload
+              (sockaddr-name addr)
+              (sockaddr-family addr)))))
+  (def 'udp-close
+    (lambda (sock)
+      (unless (udp-socket? sock)
+        (error "udp-close needs udp socket object" sock))
+      (guard (e (else #t))
+        (socket-close (udp-socket-raw sock)))
+      #t))
+  (def 'http-get
+    (lambda args
+      (unless (>= (length args) 2)
+        (error "http-get needs server and request-uri" args))
+      (let ((server (car args))
+            (request-uri (cadr args))
+            (opts (cddr args)))
+        (unless (string? server)
+          (error "http-get server must be a string" server))
+        (unless (string? request-uri)
+          (error "http-get request-uri must be a string" request-uri))
+        (unless (even? (length opts))
+          (error "http-get keyword options must be key/value pairs" opts))
+        (receive (status headers body)
+            (apply gauche-http-get
+                   server
+                   request-uri
+                   (append (list ':receiver gauche-http-string-receiver) opts))
+          body))))
+  (def 'http-head
+    (lambda args
+      (unless (>= (length args) 2)
+        (error "http-head needs server and request-uri" args))
+      (let ((server (car args))
+            (request-uri (cadr args))
+            (opts (cddr args)))
+        (unless (string? server)
+          (error "http-head server must be a string" server))
+        (unless (string? request-uri)
+          (error "http-head request-uri must be a string" request-uri))
+        (unless (even? (length opts))
+          (error "http-head keyword options must be key/value pairs" opts))
+        (receive (status headers body)
+            (apply gauche-http-head
+                   server
+                   request-uri
+                   (append (list ':receiver gauche-http-string-receiver) opts))
+          (list status headers body)))))
+  (def 'http-post
+    (lambda args
+      (unless (>= (length args) 3)
+        (error "http-post needs server, request-uri and body" args))
+      (let ((server (car args))
+            (request-uri (cadr args))
+            (body (caddr args))
+            (opts (cdddr args)))
+        (unless (string? server)
+          (error "http-post server must be a string" server))
+        (unless (string? request-uri)
+          (error "http-post request-uri must be a string" request-uri))
+        (unless (string? body)
+          (error "http-post body must be a string" body))
+        (unless (even? (length opts))
+          (error "http-post keyword options must be key/value pairs" opts))
+        (receive (status headers resp-body)
+            (apply gauche-http-post
+                   server
+                   request-uri
+                   body
+                   (append (list ':receiver gauche-http-string-receiver) opts))
+          resp-body))))
   (def 'ffi-call
     (lambda (library symbol-name return-type arg-types arg-values)
       (unless (string? library)
