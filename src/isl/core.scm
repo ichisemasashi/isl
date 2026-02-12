@@ -191,6 +191,17 @@
 (define (tcp-connection-output conn)
   (vector-ref conn 3))
 
+(define (make-tcp-listener socket)
+  (vector 'tcp-listener socket))
+
+(define (tcp-listener? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 2)
+       (eq? (vector-ref obj 0) 'tcp-listener)))
+
+(define (tcp-listener-socket listener)
+  (vector-ref listener 1))
+
 (define (decode-process-exit-status raw)
   (if (and (integer? raw) (>= raw 0))
       (quotient raw 256)
@@ -2840,9 +2851,46 @@
         (make-tcp-connection sock
                              (socket-input-port sock)
                              (socket-output-port sock)))))
+  (def 'tcp-listen
+    (lambda (port)
+      (unless (and (integer? port) (>= port 1) (<= port 65535))
+        (error "tcp-listen port must be integer in 1..65535" port))
+      (let ((sock (make-server-socket 'inet port :reuse-addr? #t)))
+        (make-tcp-listener sock))))
+  (def 'tcp-listener-p
+    (lambda (obj)
+      (tcp-listener? obj)))
+  (def 'tcp-accept
+    (lambda (listener)
+      (unless (tcp-listener? listener)
+        (error "tcp-accept needs tcp listener object" listener))
+      (call-with-values
+          (lambda ()
+            (socket-accept (tcp-listener-socket listener)))
+        (lambda vals
+          (let ((sock (car vals)))
+            (make-tcp-connection sock
+                                 (socket-input-port sock)
+                                 (socket-output-port sock)))))))
+  (def 'tcp-listener-close
+    (lambda (listener)
+      (unless (tcp-listener? listener)
+        (error "tcp-listener-close needs tcp listener object" listener))
+      (guard (e (else #t))
+        (socket-close (tcp-listener-socket listener)))
+      #t))
   (def 'tcp-connection-p
     (lambda (obj)
       (tcp-connection? obj)))
+  (def 'tcp-send
+    (lambda (conn text)
+      (unless (tcp-connection? conn)
+        (error "tcp-send needs tcp connection object" conn))
+      (unless (string? text)
+        (error "tcp-send text must be a string" text))
+      (display text (tcp-connection-output conn))
+      (flush (tcp-connection-output conn))
+      #t))
   (def 'tcp-send-line
     (lambda (conn text)
       (unless (tcp-connection? conn)
@@ -2867,6 +2915,49 @@
                   (error "tcp-receive-line reached EOF")
                   '())
               line)))))
+  (def 'tcp-receive-char
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "tcp-receive-char takes connection and optional eof-error-p" args))
+      (let ((conn (car args))
+            (eof-error-p (if (= (length args) 2) (cadr args) #t)))
+        (unless (tcp-connection? conn)
+          (error "tcp-receive-char needs tcp connection object" conn))
+        (let ((ch (read-char (tcp-connection-input conn))))
+          (if (eof-object? ch)
+              (if (truthy? eof-error-p)
+                  (error "tcp-receive-char reached EOF")
+                  '())
+              ch)))))
+  (def 'tcp-send-byte
+    (lambda (conn byte)
+      (unless (tcp-connection? conn)
+        (error "tcp-send-byte needs tcp connection object" conn))
+      (unless (and (integer? byte) (>= byte 0) (<= byte 255))
+        (error "tcp-send-byte value must be integer in 0..255" byte))
+      (write-byte byte (tcp-connection-output conn))
+      (flush (tcp-connection-output conn))
+      #t))
+  (def 'tcp-receive-byte
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "tcp-receive-byte takes connection and optional eof-error-p" args))
+      (let ((conn (car args))
+            (eof-error-p (if (= (length args) 2) (cadr args) #t)))
+        (unless (tcp-connection? conn)
+          (error "tcp-receive-byte needs tcp connection object" conn))
+        (let ((b (read-byte (tcp-connection-input conn))))
+          (if (eof-object? b)
+              (if (truthy? eof-error-p)
+                  (error "tcp-receive-byte reached EOF")
+                  '())
+              b)))))
+  (def 'tcp-flush
+    (lambda (conn)
+      (unless (tcp-connection? conn)
+        (error "tcp-flush needs tcp connection object" conn))
+      (flush (tcp-connection-output conn))
+      #t))
   (def 'tcp-close
     (lambda (conn)
       (unless (tcp-connection? conn)
