@@ -148,6 +148,14 @@
 (check "Bob" '(progn
                 (setf (person2-name pp1) "Bob")
                 (person2-name pp1)))
+(check 'ISLISP-USER::person3
+       '(defclass person3 ()
+          ((name :initarg :person-name :accessor person3-name :initform "Anonymous")
+           (age :initarg :person-age :accessor person3-age :initform 0))))
+(check "Carol" '(progn
+                  (defglobal pp3 (make-instance 'person3 :person-name "Carol" :person-age 25))
+                  (person3-name pp3)))
+(check 25 '(person3-age pp3))
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))

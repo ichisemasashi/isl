@@ -283,14 +283,15 @@
 (define (class-own-slots c) (vector-ref c 3))
 
 (define (slot-spec? obj)
-  (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'slot-spec)))
+  (and (vector? obj) (= (vector-length obj) 5) (eq? (vector-ref obj 0) 'slot-spec)))
 
-(define (make-slot-spec name initform accessor)
-  (vector 'slot-spec name initform accessor))
+(define (make-slot-spec name initform accessor initarg)
+  (vector 'slot-spec name initform accessor initarg))
 
 (define (slot-spec-name s) (vector-ref s 1))
 (define (slot-spec-initform s) (vector-ref s 2))
 (define (slot-spec-accessor s) (vector-ref s 3))
+(define (slot-spec-initarg s) (vector-ref s 4))
 
 (define (instance? obj)
   (and (vector? obj) (= (vector-length obj) 3) (eq? (vector-ref obj 0) 'instance)))
@@ -421,12 +422,14 @@
 (define (parse-slot-spec slot-spec)
   (cond
    ((symbol? slot-spec)
-    (make-slot-spec (resolve-binding-symbol slot-spec) '() #f))
+    (let ((name (resolve-binding-symbol slot-spec)))
+      (make-slot-spec name '() #f (string->symbol (string-append ":" (symbol-base-name name))))))
    ((and (list? slot-spec) (pair? slot-spec) (symbol? (car slot-spec)))
     (let ((name (resolve-binding-symbol (car slot-spec)))
           (rest (cdr slot-spec))
           (initform '())
-          (accessor #f))
+          (accessor #f)
+          (initarg #f))
       (let parse ((xs rest))
         (unless (null? xs)
           (unless (and (pair? xs) (pair? (cdr xs)))
@@ -440,10 +443,19 @@
               (unless (symbol? v)
                 (error ":accessor value must be symbol" v))
               (set! accessor (resolve-binding-symbol v)))
+             ((eq? k ':initarg)
+              (unless (symbol? v)
+                (error ":initarg value must be symbol" v))
+              (set! initarg v))
              (else
               (error "unsupported slot option in defclass" k))))
           (parse (cddr xs))))
-      (make-slot-spec name initform accessor)))
+      (make-slot-spec name
+                      initform
+                      accessor
+                      (if initarg
+                          initarg
+                          (string->symbol (string-append ":" (symbol-base-name name)))))))
    (else
     (error "Invalid slot specifier in defclass" slot-spec))))
 
@@ -487,7 +499,8 @@
             slots)))
 
 (define (find-slot-spec-entry specs slot)
-  (or (find (lambda (s) (eq? (slot-spec-name s) slot)) specs)
+  (or (find (lambda (s) (eq? (slot-spec-initarg s) slot)) specs)
+      (find (lambda (s) (eq? (slot-spec-name s) slot)) specs)
       (find (lambda (s)
               (string=? (symbol-base-name (slot-spec-name s))
                         (symbol-base-name slot)))
