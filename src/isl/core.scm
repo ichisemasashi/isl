@@ -2005,6 +2005,14 @@
             (sys-unlink filename)
             #t)
           '())))
+  (def 'system
+    (lambda (command)
+      (unless (string? command)
+        (error "system command must be a string" command))
+      (let ((raw (sys-system command)))
+        (if (and (integer? raw) (>= raw 0))
+            (quotient raw 256)
+            raw))))
   (def 'get-universal-time
     (lambda ()
       ;; Convert Unix epoch seconds (1970-01-01) to CL/ISLISP universal-time

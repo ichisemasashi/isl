@@ -65,6 +65,8 @@
 (check '() '(probe-file "test/definitely-not-found-file-xyz.txt"))
 (check #t `(delete-file ,delete-file-target))
 (check '() `(probe-file ,delete-file-target))
+(check 0 '(system "sh -c 'exit 0'"))
+(check 7 '(system "sh -c 'exit 7'"))
 (check #t '(> (get-universal-time) 2208988800))
 (check #t '(> (internal-time-units-per-second) 0))
 (check #t '(<= (get-internal-real-time) (get-internal-real-time)))
