@@ -522,9 +522,25 @@
         best-method
         (let* ((m (car methods))
                (score (generic-method-score m args)))
-          (if (and score (or (not best-score) (< score best-score)))
-              (loop (cdr methods) m score)
-              (loop (cdr methods) best-method best-score))))))
+          (cond
+           ((not score)
+            (loop (cdr methods) best-method best-score))
+           ((or (not best-score) (< score best-score))
+            (loop (cdr methods) m score))
+           ((= score best-score)
+            (if (and best-method
+                     (method-specializer best-method)
+                     (method-specializer m)
+                     (not (eq? (method-specializer best-method)
+                               (method-specializer m))))
+                (error "Ambiguous applicable methods in generic function"
+                       (generic-name generic)
+                       (list (method-specializer best-method)
+                             (method-specializer m))
+                       args)
+                (loop (cdr methods) best-method best-score)))
+           (else
+            (loop (cdr methods) best-method best-score)))))))
 
 (define (apply-generic generic args)
   (let ((m (select-generic-method generic args)))

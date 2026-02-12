@@ -86,6 +86,22 @@
        '(defmethod tag (x)
           "default"))
 (check "default" '(tag 123))
+(check 'ISLISP-USER::mammal '(defclass mammal (entity) ()))
+(check 'ISLISP-USER::dog '(defclass dog (mammal) ()))
+(check 'ISLISP-USER::classify '(defgeneric classify (obj)))
+(check 'ISLISP-USER::classify
+       '(defmethod classify ((obj entity))
+          "entity"))
+(check 'ISLISP-USER::classify
+       '(defmethod classify ((obj mammal))
+          "mammal"))
+(check 'ISLISP-USER::classify
+       '(defmethod classify (obj)
+          "default"))
+(check "mammal" '(progn
+                   (defglobal d1 (make-instance 'dog))
+                   (classify d1)))
+(check "default" '(classify "no-instance"))
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))
