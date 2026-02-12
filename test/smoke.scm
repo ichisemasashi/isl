@@ -73,6 +73,17 @@
 (check "This is a test"
        `(with-open-file (stream ,out-file :direction :input)
           (read-line stream nil)))
+(check "255" '(format nil "~D" 255))
+(check "11" '(format nil "~B" 3))
+(check "377" '(format nil "~O" 255))
+(check "ff" '(format nil "~X" 255))
+(check "A" '(format nil "~C" #\A))
+(check "stream-format"
+       `(progn
+          (with-open-file (s ,out-file :direction :output :if-exists :overwrite)
+            (format s "~A" "stream-format"))
+          (with-open-file (s ,out-file :direction :input)
+            (read-line s nil))))
 (check 2 '(mod 17 5))
 (check 2 '(floor (/ 7 3)))
 (check 3 '(ceiling (/ 7 3)))
