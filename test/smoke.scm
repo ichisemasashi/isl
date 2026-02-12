@@ -21,7 +21,18 @@
    (write '(alpha beta gamma) p))
  :if-exists :supersede)
 
+(define load-file "test/tmp-smoke-load.lsp")
+(call-with-output-file
+ load-file
+ (lambda (p)
+   (write '(defglobal loaded-from-file 314) p)
+   (newline p)
+   (write 'loaded-from-file p))
+ :if-exists :supersede)
+
 (check 3 '(+ 1 2))
+(check 314 `(load ,load-file))
+(check 314 'loaded-from-file)
 (check 2 '(mod 17 5))
 (check 2 '(floor (/ 7 3)))
 (check 3 '(ceiling (/ 7 3)))

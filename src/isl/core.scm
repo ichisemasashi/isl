@@ -1870,6 +1870,14 @@
         (read (car args)))
        (else
         (error "read takes zero or one stream argument" args)))))
+  (def 'load
+    (lambda (filename)
+      (unless (string? filename)
+        (error "load filename must be a string" filename))
+      (call-with-input-file
+       filename
+       (lambda (p)
+         (eval-sequence (read-all p) env)))))
   (def 'format
     (lambda args
       (cond
