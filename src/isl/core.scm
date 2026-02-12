@@ -251,6 +251,27 @@
 (define (macro-env m) (vector-ref m 3))
 (define (macro-name m) (vector-ref m 4))
 
+(define (generic? obj)
+  (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'generic)))
+
+(define (make-generic name params methods)
+  (vector 'generic name params methods))
+
+(define (generic-name g) (vector-ref g 1))
+(define (generic-params g) (vector-ref g 2))
+(define (generic-methods g) (vector-ref g 3))
+(define (set-generic-methods! g methods) (vector-set! g 3 methods))
+
+(define (method? obj)
+  (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'method)))
+
+(define (make-method specializer params proc)
+  (vector 'method specializer params proc))
+
+(define (method-specializer m) (vector-ref m 1))
+(define (method-params m) (vector-ref m 2))
+(define (method-proc m) (vector-ref m 3))
+
 (define (class? obj)
   (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'class)))
 
@@ -438,6 +459,78 @@
           (set-cdr! entry value)
           value)
         (error "No such slot in instance" slot))))
+
+(define (class-distance sub super)
+  (let walk ((current sub) (seen '()))
+    (cond
+     ((eq? current super) 0)
+     ((memq current seen) #f)
+     (else
+      (let ((seen2 (cons current seen)))
+        (let loop ((supers (class-supers current)) (best #f))
+          (if (null? supers)
+              best
+              (let ((d (walk (car supers) seen2)))
+                (if d
+                    (let ((cand (+ d 1)))
+                      (if (or (not best) (< cand best))
+                          (loop (cdr supers) cand)
+                          (loop (cdr supers) best)))
+                    (loop (cdr supers) best))))))))))
+
+(define (parse-method-params params env)
+  (unless (list? params)
+    (error "defmethod parameter list must be a list" params))
+  (when (null? params)
+    (error "defmethod requires at least one required parameter for dispatch"))
+  (let* ((first (car params))
+         (rest (cdr params))
+         (plain-first
+          (cond
+           ((symbol? first) first)
+           ((and (list? first) (= (length first) 2) (symbol? (car first)))
+            (car first))
+           (else
+            (error "invalid defmethod first parameter" first))))
+         (specializer
+          (cond
+           ((symbol? first) #f)
+           (else
+            (resolve-class-designator (cadr first) env))))
+         (plain-params (cons plain-first rest))
+         (spec (parse-params plain-params)))
+    (when (null? (car spec))
+      (error "defmethod needs at least one required parameter" params))
+    (list plain-params specializer)))
+
+(define (generic-method-score method args)
+  (if (null? args)
+      #f
+      (let ((specializer (method-specializer method)))
+        (if specializer
+            (let ((arg0 (car args)))
+              (if (instance? arg0)
+                  (class-distance (instance-class arg0) specializer)
+                  #f))
+            1000000))))
+
+(define (select-generic-method generic args)
+  (let loop ((methods (generic-methods generic))
+             (best-method #f)
+             (best-score #f))
+    (if (null? methods)
+        best-method
+        (let* ((m (car methods))
+               (score (generic-method-score m args)))
+          (if (and score (or (not best-score) (< score best-score)))
+              (loop (cdr methods) m score)
+              (loop (cdr methods) best-method best-score))))))
+
+(define (apply-generic generic args)
+  (let ((m (select-generic-method generic args)))
+    (if m
+        (apply-islisp (method-proc m) args)
+        (error "No applicable method for generic function" (generic-name generic) args))))
 
 (define (trace-entry sym)
   (assoc sym *trace-table*))
@@ -882,6 +975,48 @@
       (class-table-set! name class-obj)
       name)))
 
+(define (ensure-generic-function! sym env params)
+  (let* ((global (global-frame env))
+         (pair (frame-find-pair global sym)))
+    (cond
+     ((and pair (generic? (cdr pair)))
+      (cdr pair))
+     (pair
+      (error "Binding already exists and is not a generic function" sym))
+     (else
+      (let ((g (make-generic sym params '())))
+        (frame-define! global sym g)
+        g)))))
+
+(define (eval-defgeneric args env)
+  (unless (= (length args) 2)
+    (error "defgeneric takes name and parameter list" args))
+  (let* ((name (resolve-binding-symbol (car args)))
+         (params (cadr args)))
+    (unless (symbol? name)
+      (error "defgeneric name must be symbol" name))
+    (validate-params params)
+    (ensure-generic-function! name env params)
+    name))
+
+(define (eval-defmethod args env)
+  (unless (>= (length args) 3)
+    (error "defmethod takes name, parameter list and body" args))
+  (let* ((name (resolve-binding-symbol (car args)))
+         (raw-params (cadr args))
+         (body (cddr args)))
+    (unless (symbol? name)
+      (error "defmethod name must be symbol" name))
+    (let* ((parsed (parse-method-params raw-params env))
+           (plain-params (car parsed))
+           (specializer (cadr parsed))
+           (method-proc (make-closure plain-params body env name))
+           (generic (ensure-generic-function! name env plain-params))
+           (method (make-method specializer plain-params method-proc)))
+      ;; Newer methods of same specificity should win.
+      (set-generic-methods! generic (cons method (generic-methods generic)))
+      name)))
+
 (define (eval-with-open-file args env tail?)
   (if (>= (length args) 1)
       (let ((spec (car args))
@@ -1066,6 +1201,8 @@
   (let loop ((current-fn fn)
              (current-args args))
     (cond
+     ((generic? current-fn)
+      (apply-generic current-fn current-args))
      ((primitive? current-fn)
       (apply (primitive-proc current-fn) current-args))
      ((closure? current-fn)
@@ -1095,7 +1232,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro progn block let let* with-open-file defclass)))
+  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file defclass)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -1336,6 +1473,10 @@
                (frame-define! (global-frame env) name m)
                name))
            (error "defmacro needs name, params and body" form)))
+      ((defgeneric)
+       (eval-defgeneric args env))
+      ((defmethod)
+       (eval-defmethod args env))
       ((defpackage)
        (eval-defpackage args))
       ((in-package)

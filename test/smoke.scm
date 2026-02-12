@@ -62,6 +62,30 @@
 (check #f '(instancep 42))
 (check #t '(eq (class-of p0) point))
 (check #t '(eq (class-of point) point))
+(check 'ISLISP-USER::describe-shape '(defgeneric describe-shape (obj)))
+(check 'ISLISP-USER::describe-shape
+       '(defmethod describe-shape ((obj point))
+          (format nil "POINT(~A,~A)"
+                  (slot-value obj 'x)
+                  (slot-value obj 'y))))
+(check "POINT(3,7)" '(describe-shape p0))
+(check 'ISLISP-USER::entity '(defclass entity () (id)))
+(check 'ISLISP-USER::person '(defclass person (entity) (name)))
+(check 'ISLISP-USER::who '(defgeneric who (obj)))
+(check 'ISLISP-USER::who
+       '(defmethod who ((obj entity))
+          "entity"))
+(check 'ISLISP-USER::who
+       '(defmethod who ((obj person))
+          "person"))
+(check "person" '(progn
+                   (defglobal p2 (make-instance 'person))
+                   (who p2)))
+(check 'ISLISP-USER::tag '(defgeneric tag (x)))
+(check 'ISLISP-USER::tag
+       '(defmethod tag (x)
+          "default"))
+(check "default" '(tag 123))
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))
