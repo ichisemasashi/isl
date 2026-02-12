@@ -118,6 +118,15 @@
 (check #t '(> (get-universal-time) 2208988800))
 (check #t '(> (internal-time-units-per-second) 0))
 (check #t '(<= (get-internal-real-time) (get-internal-real-time)))
+(define ffi-libc
+  (cond
+   ((file-exists? "/usr/lib/libSystem.B.dylib") "/usr/lib/libSystem.B.dylib")
+   ((file-exists? "/lib/x86_64-linux-gnu/libc.so.6") "/lib/x86_64-linux-gnu/libc.so.6")
+   ((file-exists? "/lib64/libc.so.6") "/lib64/libc.so.6")
+   ((file-exists? "/usr/lib64/libc.so.6") "/usr/lib64/libc.so.6")
+   (else #f)))
+(when ffi-libc
+  (check 42 `(ffi-call ,ffi-libc "abs" :int '(:int) '(-42))))
 (check #t '(<= (get-internal-run-time) (get-internal-run-time)))
 (check #t '(>= (get-internal-run-time) 0))
 (check "This is a test"

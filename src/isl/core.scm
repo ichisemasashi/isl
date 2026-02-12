@@ -2,6 +2,7 @@
 ;; The implementation keeps dependencies close to R7RS-level primitives.
 (define-module isl.core
   (use srfi-1)
+  (use gauche.process)
   (export make-initial-env eval-islisp apply-islisp repl read-all))
 
 (select-module isl.core)
@@ -120,6 +121,87 @@
     (unless (member name *provided-features* string=?)
       (set! *provided-features* (cons name *provided-features*)))
     #t))
+
+(define *ffi-bridge-source* "src/isl/ffi_bridge.c")
+(define *ffi-bridge-binary* "src/isl/ffi_bridge")
+
+(define (decode-process-exit-status raw)
+  (if (and (integer? raw) (>= raw 0))
+      (quotient raw 256)
+      raw))
+
+(define (run-command/capture argv)
+  (let* ((p (run-process argv :output :pipe :error :pipe))
+         (out (port->string (process-output p)))
+         (err (port->string (process-error p))))
+    (process-wait p)
+    (list (decode-process-exit-status (process-exit-status p)) out err)))
+
+(define (ensure-ffi-bridge!)
+  (unless (file-exists? *ffi-bridge-binary*)
+    (unless (file-exists? *ffi-bridge-source*)
+      (error "ffi bridge source is missing" *ffi-bridge-source*))
+    ;; On Darwin, -ldl is unnecessary and may fail; try with -ldl then fallback.
+    (let* ((with-dl (run-command/capture
+                     (list "cc" "-O2" "-std=c99"
+                           "-o" *ffi-bridge-binary* *ffi-bridge-source*
+                           "-ldl")))
+           (st1 (car with-dl)))
+      (unless (or (eq? st1 0) (eq? st1 #t))
+        (let* ((without-dl (run-command/capture
+                            (list "cc" "-O2" "-std=c99"
+                                  "-o" *ffi-bridge-binary* *ffi-bridge-source*)))
+               (st2 (car without-dl)))
+          (unless (or (eq? st2 0) (eq? st2 #t))
+            (error "failed to build ffi bridge"
+                   (string-append (caddr with-dl) (caddr without-dl)))))))))
+
+(define (normalize-ffi-type x where)
+  (let* ((raw
+          (cond
+           ((symbol? x) (symbol-base-name x))
+           ((string? x) x)
+           (else
+            (error "ffi type must be symbol or string" where x))))
+         (low (list->string (map char-downcase (string->list raw)))))
+    (cond
+     ((string=? low "int") "int")
+     ((string=? low "double") "double")
+     ((string=? low "string") "string")
+     ((string=? low "void") "void")
+     (else
+      (error "unsupported ffi type" where x)))))
+
+(define (ffi-arg->string type value)
+  (cond
+   ((string=? type "int")
+    (unless (integer? value)
+      (error "ffi int argument must be integer" value))
+    (number->string value))
+   ((string=? type "double")
+    (unless (number? value)
+      (error "ffi double argument must be number" value))
+    (number->string (exact->inexact value)))
+   ((string=? type "string")
+    (unless (string? value)
+      (error "ffi string argument must be string" value))
+    value)
+   (else
+    (error "unsupported ffi argument type" type))))
+
+(define (parse-ffi-result ret-type out)
+  (cond
+   ((string=? ret-type "void") '())
+   ((or (string=? ret-type "int")
+        (string=? ret-type "double"))
+    (let ((n (string->number out)))
+      (if n
+          n
+          (error "ffi result parse error" out))))
+   ((string=? ret-type "string")
+    out)
+   (else
+    (error "unsupported ffi return type" ret-type))))
 
 (define (eval-load-file filename env)
   (unless (string? filename)
@@ -2435,6 +2517,40 @@
         (if (and (integer? raw) (>= raw 0))
             (quotient raw 256)
             raw))))
+  (def 'ffi-call
+    (lambda (library symbol-name return-type arg-types arg-values)
+      (unless (string? library)
+        (error "ffi-call library must be a string" library))
+      (unless (string? symbol-name)
+        (error "ffi-call symbol name must be a string" symbol-name))
+      (unless (list? arg-types)
+        (error "ffi-call arg-types must be a list" arg-types))
+      (unless (list? arg-values)
+        (error "ffi-call arg-values must be a list" arg-values))
+      (unless (= (length arg-types) (length arg-values))
+        (error "ffi-call arg-types and arg-values length mismatch"
+               arg-types arg-values))
+      (let ((ret (normalize-ffi-type return-type "return"))
+            (types (map (lambda (t) (normalize-ffi-type t "argument")) arg-types)))
+        (ensure-ffi-bridge!)
+        (let* ((pairs
+                (apply append
+                       (map (lambda (t v) (list t (ffi-arg->string t v)))
+                            types arg-values)))
+               (argv (append (list *ffi-bridge-binary*
+                                   library
+                                   symbol-name
+                                   ret
+                                   (number->string (length types)))
+                             pairs))
+               (result (run-command/capture argv))
+               (status (car result))
+               (out (cadr result))
+               (err (caddr result)))
+          (unless (or (eq? status 0) (eq? status #t))
+            (error "ffi-call failed"
+                   (if (string=? err "") out err)))
+          (parse-ffi-result ret out)))))
   (def 'get-universal-time
     (lambda ()
       ;; Convert Unix epoch seconds (1970-01-01) to CL/ISLISP universal-time
