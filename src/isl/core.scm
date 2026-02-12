@@ -140,6 +140,40 @@
 (define (sqlite-connection-path conn)
   (vector-ref conn 1))
 
+(define (make-postgres-connection conninfo)
+  (vector 'postgres-connection conninfo))
+
+(define (postgres-connection? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 2)
+       (eq? (vector-ref obj 0) 'postgres-connection)))
+
+(define (postgres-connection-info conn)
+  (vector-ref conn 1))
+
+(define (make-mysql-connection host port user password database)
+  (vector 'mysql-connection host port user password database))
+
+(define (mysql-connection? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 6)
+       (eq? (vector-ref obj 0) 'mysql-connection)))
+
+(define (mysql-connection-host conn)
+  (vector-ref conn 1))
+
+(define (mysql-connection-port conn)
+  (vector-ref conn 2))
+
+(define (mysql-connection-user conn)
+  (vector-ref conn 3))
+
+(define (mysql-connection-password conn)
+  (vector-ref conn 4))
+
+(define (mysql-connection-database conn)
+  (vector-ref conn 5))
+
 (define (make-tcp-connection socket in out)
   (vector 'tcp-connection socket in out))
 
@@ -169,10 +203,15 @@
     (process-wait p)
     (list (decode-process-exit-status (process-exit-status p)) out err)))
 
-(define (sqlite3-available?)
+(define (command-available? cmd)
   (let ((status (decode-process-exit-status
-                 (sys-system "sh -c 'command -v sqlite3 >/dev/null 2>&1'"))))
+                 (sys-system (string-append "sh -c 'command -v "
+                                            cmd
+                                            " >/dev/null 2>&1'")))))
     (or (eq? status 0) (eq? status #t))))
+
+(define (sqlite3-available?)
+  (command-available? "sqlite3"))
 
 (define (ensure-sqlite3-available!)
   (unless (sqlite3-available?)
@@ -195,6 +234,74 @@
              (if (string=? err "") out err)))
     out))
 
+(define (psql-available?)
+  (command-available? "psql"))
+
+(define (ensure-psql-available!)
+  (unless (psql-available?)
+    (error "psql command is required for postgres integration")))
+
+(define (postgres-run conninfo sql)
+  (ensure-psql-available!)
+  (unless (string? conninfo)
+    (error "postgres connection info must be a string" conninfo))
+  (unless (string? sql)
+    (error "postgres sql must be a string" sql))
+  (let* ((argv (list "psql" "-X" "-A" "-t" "-F" (string #\x1f)
+                     "-d" conninfo "-c" sql))
+         (result (run-command/capture argv))
+         (status (car result))
+         (out (cadr result))
+         (err (caddr result)))
+    (unless (or (eq? status 0) (eq? status #t))
+      (error "postgres command failed"
+             (if (string=? err "") out err)))
+    out))
+
+(define (mysql-cli-command)
+  (cond
+   ((command-available? "mysql") "mysql")
+   ((command-available? "mariadb") "mariadb")
+   (else #f)))
+
+(define (ensure-mysql-cli-available!)
+  (unless (mysql-cli-command)
+    (error "mysql/mariadb command is required for mysql integration")))
+
+(define (mysql-run host port user password database sql)
+  (let ((cmd (mysql-cli-command)))
+    (ensure-mysql-cli-available!)
+    (unless (string? host)
+      (error "mysql host must be a string" host))
+    (unless (and (integer? port) (>= port 1) (<= port 65535))
+      (error "mysql port must be integer in 1..65535" port))
+    (unless (string? user)
+      (error "mysql user must be a string" user))
+    (unless (string? password)
+      (error "mysql password must be a string" password))
+    (unless (string? database)
+      (error "mysql database must be a string" database))
+    (unless (string? sql)
+      (error "mysql sql must be a string" sql))
+    (let* ((argv-base
+            (list cmd "--batch" "--raw" "--silent" "--skip-column-names"
+                  "--protocol=tcp"
+                  "-h" host
+                  "-P" (number->string port)
+                  "-u" user))
+           (argv-auth (if (string=? password "")
+                          argv-base
+                          (append argv-base (list (string-append "-p" password)))))
+           (argv (append argv-auth (list database "-e" sql)))
+           (result (run-command/capture argv))
+           (status (car result))
+           (out (cadr result))
+           (err (caddr result)))
+      (unless (or (eq? status 0) (eq? status #t))
+        (error "mysql command failed"
+               (if (string=? err "") out err)))
+      out)))
+
 (define (string-split-char s ch)
   (let ((n (string-length s)))
     (let loop ((i 0) (start 0) (acc '()))
@@ -204,7 +311,7 @@
               (loop (+ i 1) (+ i 1) (cons (substring s start i) acc))
               (loop (+ i 1) start acc))))))
 
-(define (sqlite-output->rows out)
+(define (sql-output->rows out separator)
   (call-with-input-string
    out
    (lambda (p)
@@ -212,7 +319,7 @@
        (let ((line (read-line p)))
          (if (eof-object? line)
              (reverse acc)
-             (loop (cons (string-split-char line #\x1f) acc))))))))
+             (loop (cons (string-split-char line separator) acc))))))))
 
 (define (ensure-ffi-bridge!)
   (unless (file-exists? *ffi-bridge-binary*)
@@ -2626,12 +2733,98 @@
     (lambda (db sql)
       (unless (sqlite-connection? db)
         (error "sqlite-query needs sqlite db object" db))
-      (sqlite-output->rows (sqlite-run (sqlite-connection-path db) sql))))
+      (sql-output->rows (sqlite-run (sqlite-connection-path db) sql) #\x1f)))
   (def 'sqlite-query-one
     (lambda (db sql)
       (unless (sqlite-connection? db)
         (error "sqlite-query-one needs sqlite db object" db))
-      (let ((rows (sqlite-output->rows (sqlite-run (sqlite-connection-path db) sql))))
+      (let ((rows (sql-output->rows (sqlite-run (sqlite-connection-path db) sql) #\x1f)))
+        (if (null? rows)
+            '()
+            (if (null? (car rows))
+                '()
+                (caar rows))))))
+  (def 'postgres-open
+    (lambda (conninfo)
+      (unless (string? conninfo)
+        (error "postgres-open connection info must be a string" conninfo))
+      (make-postgres-connection conninfo)))
+  (def 'postgres-db-p
+    (lambda (obj)
+      (postgres-connection? obj)))
+  (def 'postgres-close
+    (lambda (db)
+      (unless (postgres-connection? db)
+        (error "postgres-close needs postgres db object" db))
+      #t))
+  (def 'postgres-exec
+    (lambda (db sql)
+      (unless (postgres-connection? db)
+        (error "postgres-exec needs postgres db object" db))
+      (postgres-run (postgres-connection-info db) sql)
+      #t))
+  (def 'postgres-query
+    (lambda (db sql)
+      (unless (postgres-connection? db)
+        (error "postgres-query needs postgres db object" db))
+      (sql-output->rows (postgres-run (postgres-connection-info db) sql) #\x1f)))
+  (def 'postgres-query-one
+    (lambda (db sql)
+      (unless (postgres-connection? db)
+        (error "postgres-query-one needs postgres db object" db))
+      (let ((rows (sql-output->rows (postgres-run (postgres-connection-info db) sql) #\x1f)))
+        (if (null? rows)
+            '()
+            (if (null? (car rows))
+                '()
+                (caar rows))))))
+  (def 'mysql-open
+    (lambda (host port user password database)
+      (make-mysql-connection host port user password database)))
+  (def 'mysql-db-p
+    (lambda (obj)
+      (mysql-connection? obj)))
+  (def 'mysql-close
+    (lambda (db)
+      (unless (mysql-connection? db)
+        (error "mysql-close needs mysql db object" db))
+      #t))
+  (def 'mysql-exec
+    (lambda (db sql)
+      (unless (mysql-connection? db)
+        (error "mysql-exec needs mysql db object" db))
+      (mysql-run (mysql-connection-host db)
+                 (mysql-connection-port db)
+                 (mysql-connection-user db)
+                 (mysql-connection-password db)
+                 (mysql-connection-database db)
+                 sql)
+      #t))
+  (def 'mysql-query
+    (lambda (db sql)
+      (unless (mysql-connection? db)
+        (error "mysql-query needs mysql db object" db))
+      (sql-output->rows
+       (mysql-run (mysql-connection-host db)
+                  (mysql-connection-port db)
+                  (mysql-connection-user db)
+                  (mysql-connection-password db)
+                  (mysql-connection-database db)
+                  sql)
+       #\tab)))
+  (def 'mysql-query-one
+    (lambda (db sql)
+      (unless (mysql-connection? db)
+        (error "mysql-query-one needs mysql db object" db))
+      (let ((rows
+             (sql-output->rows
+              (mysql-run (mysql-connection-host db)
+                         (mysql-connection-port db)
+                         (mysql-connection-user db)
+                         (mysql-connection-password db)
+                         (mysql-connection-database db)
+                         sql)
+              #\tab)))
         (if (null? rows)
             '()
             (if (null? (car rows))

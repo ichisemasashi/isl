@@ -128,6 +128,36 @@
   (check '(("alice") ("bob")) '(sqlite-query db1 "select name from items order by id"))
   (check "2" '(sqlite-query-one db1 "select count(*) from items"))
   (check #t '(sqlite-close db1)))
+(check #t '(progn
+             (defglobal pgdb1 (postgres-open "postgresql://user:pass@127.0.0.1:5432/db"))
+             (postgres-db-p pgdb1)))
+(check #t '(postgres-close pgdb1))
+(check #t '(progn
+             (defglobal mydb1 (mysql-open "127.0.0.1" 3306 "user" "pass" "db"))
+             (mysql-db-p mydb1)))
+(check #t '(mysql-close mydb1))
+(define smoke-pg-url (sys-getenv "ISL_SMOKE_PG_URL"))
+(when smoke-pg-url
+  (when (= (eval-islisp '(system "sh -c 'command -v psql >/dev/null 2>&1'") env) 0)
+    (check "1" `(progn
+                  (defglobal pgdb2 (postgres-open ,smoke-pg-url))
+                  (postgres-query-one pgdb2 "select 1")
+                  (postgres-close pgdb2)
+                  "1"))))
+(define smoke-mysql-host (sys-getenv "ISL_SMOKE_MYSQL_HOST"))
+(define smoke-mysql-port (sys-getenv "ISL_SMOKE_MYSQL_PORT"))
+(define smoke-mysql-user (sys-getenv "ISL_SMOKE_MYSQL_USER"))
+(define smoke-mysql-pass (sys-getenv "ISL_SMOKE_MYSQL_PASSWORD"))
+(define smoke-mysql-db (sys-getenv "ISL_SMOKE_MYSQL_DB"))
+(when (and smoke-mysql-host smoke-mysql-port smoke-mysql-user smoke-mysql-pass smoke-mysql-db)
+  (when (= (eval-islisp '(system "sh -c 'command -v mysql >/dev/null 2>&1 || command -v mariadb >/dev/null 2>&1'") env) 0)
+    (check "1" `(progn
+                  (defglobal mydb2
+                    (mysql-open ,smoke-mysql-host ,(string->number smoke-mysql-port)
+                                ,smoke-mysql-user ,smoke-mysql-pass ,smoke-mysql-db))
+                  (mysql-query-one mydb2 "select 1")
+                  (mysql-close mydb2)
+                  "1"))))
 (check #t '(> (get-universal-time) 2208988800))
 (check #t '(> (internal-time-units-per-second) 0))
 (check #t '(<= (get-internal-real-time) (get-internal-real-time)))
