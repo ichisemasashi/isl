@@ -37,6 +37,8 @@
    (display "line-1\nline-2\n" p))
  :if-exists :supersede)
 
+(define out-file "test/tmp-smoke-output.txt")
+
 (check 3 '(+ 1 2))
 (check 314 `(load ,load-file))
 (check 314 'loaded-from-file)
@@ -48,6 +50,14 @@
               (setq acc (append acc (list line)))
               (setq line (read-line stream nil)))
             acc)))
+(check "written"
+       `(progn
+          (with-open-file (stream ,out-file :direction :output :if-exists :overwrite)
+            (write-line "This is a test" stream))
+          "written"))
+(check "This is a test"
+       `(with-open-file (stream ,out-file :direction :input)
+          (read-line stream nil)))
 (check 2 '(mod 17 5))
 (check 2 '(floor (/ 7 3)))
 (check 3 '(ceiling (/ 7 3)))

@@ -1124,7 +1124,8 @@
         (let* ((var (car spec))
                (filename (eval-islisp* (cadr spec) env #f))
                (opts (cddr spec))
-               (direction ':input))
+               (direction ':input)
+               (if-exists ':supersede))
           (unless (string? filename)
             (error "with-open-file filename must evaluate to string" filename))
           (let parse ((xs opts))
@@ -1136,6 +1137,8 @@
                 (cond
                  ((eq? k ':direction)
                   (set! direction v))
+                 ((eq? k ':if-exists)
+                  (set! if-exists v))
                  (else
                   (error "unsupported with-open-file option" k))))
               (parse (cddr xs))))
@@ -1146,7 +1149,14 @@
                     ((eq? direction ':input)
                      (open-input-file filename))
                     ((eq? direction ':output)
-                     (open-output-file filename :if-exists :supersede))
+                     (let ((mode
+                            (cond
+                             ((or (eq? if-exists ':overwrite) (eq? if-exists ':supersede)) :supersede)
+                             ((eq? if-exists ':append) :append)
+                             ((eq? if-exists ':error) :error)
+                             (else
+                              (error "with-open-file :if-exists must be :overwrite, :supersede, :append or :error" if-exists)))))
+                       (open-output-file filename :if-exists mode)))
                     (else
                      (error "with-open-file :direction must be :input or :output" direction))))))
             (let ((file-env (make-frame env)))
@@ -1883,6 +1893,20 @@
       (write x)
       (newline)
       x))
+  (def 'write-line
+    (lambda (s . maybe-stream)
+      (ensure-string s "write-line")
+      (if (null? maybe-stream)
+          (begin
+            (display s)
+            (newline)
+            s)
+          (if (= (length maybe-stream) 1)
+              (let ((stream (car maybe-stream)))
+                (display s stream)
+                (newline stream)
+                s)
+              (error "write-line takes string and optional stream" maybe-stream)))))
   (def 'read
     (lambda args
       (cond
