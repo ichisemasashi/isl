@@ -133,6 +133,18 @@
 (check-error '(progn
                 (defglobal b1 (make-instance 'botha))
                 (amb b1)))
+(check 'ISLISP-USER::person2
+       '(defclass person2 ()
+          ((name :accessor person2-name :initform "Anonymous")
+           (age :accessor person2-age :initform 0))))
+(check "Anonymous" '(progn
+                      (defglobal pp0 (make-instance 'person2))
+                      (person2-name pp0)))
+(check 0 '(person2-age pp0))
+(check "Alice" '(progn
+                  (defglobal pp1 (make-instance 'person2 :name "Alice" :age 30))
+                  (person2-name pp1)))
+(check 30 '(person2-age pp1))
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))

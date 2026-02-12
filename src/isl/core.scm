@@ -282,6 +282,16 @@
 (define (class-supers c) (vector-ref c 2))
 (define (class-own-slots c) (vector-ref c 3))
 
+(define (slot-spec? obj)
+  (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'slot-spec)))
+
+(define (make-slot-spec name initform accessor)
+  (vector 'slot-spec name initform accessor))
+
+(define (slot-spec-name s) (vector-ref s 1))
+(define (slot-spec-initform s) (vector-ref s 2))
+(define (slot-spec-accessor s) (vector-ref s 3))
+
 (define (instance? obj)
   (and (vector? obj) (= (vector-length obj) 3) (eq? (vector-ref obj 0) 'instance)))
 
@@ -398,27 +408,55 @@
    (else
     (error "Class designator must be symbol or class object" designator))))
 
-(define (normalize-slot-name slot-spec)
+(define (parse-slot-spec slot-spec)
   (cond
    ((symbol? slot-spec)
-    (resolve-binding-symbol slot-spec))
+    (make-slot-spec (resolve-binding-symbol slot-spec) '() #f))
    ((and (list? slot-spec) (pair? slot-spec) (symbol? (car slot-spec)))
-    (resolve-binding-symbol (car slot-spec)))
+    (let ((name (resolve-binding-symbol (car slot-spec)))
+          (rest (cdr slot-spec))
+          (initform '())
+          (accessor #f))
+      (let parse ((xs rest))
+        (unless (null? xs)
+          (unless (and (pair? xs) (pair? (cdr xs)))
+            (error "slot options must be keyword/value pairs" slot-spec))
+          (let ((k (car xs))
+                (v (cadr xs)))
+            (cond
+             ((eq? k ':initform)
+              (set! initform v))
+             ((eq? k ':accessor)
+              (unless (symbol? v)
+                (error ":accessor value must be symbol" v))
+              (set! accessor (resolve-binding-symbol v)))
+             (else
+              (error "unsupported slot option in defclass" k))))
+          (parse (cddr xs))))
+      (make-slot-spec name initform accessor)))
    (else
     (error "Invalid slot specifier in defclass" slot-spec))))
+
+(define (slot-spec-list-merge specs)
+  (let loop ((rest specs) (acc '()))
+    (if (null? rest)
+        (reverse acc)
+        (let* ((s (car rest))
+               (name (slot-spec-name s))
+               (acc2 (filter (lambda (e) (not (eq? (slot-spec-name e) name))) acc)))
+          (loop (cdr rest) (cons s acc2))))))
 
 (define (class-effective-slots class-obj)
   (let collect ((c class-obj) (seen '()))
     (if (memq c seen)
         (error "Cyclic class precedence list" (class-name c))
         (let ((seen2 (cons c seen)))
-          (delete-duplicates
+          (slot-spec-list-merge
            (append
             (apply append
                    (map (lambda (s) (collect s seen2))
                         (class-supers c)))
-           (class-own-slots c))
-           eq?)))))
+            (class-own-slots c)))))))
 
 (define (symbol-base-name sym)
   (let ((split (symbol-split-package sym)))
@@ -437,6 +475,13 @@
                    (string=? (symbol-base-name (car entry))
                              (symbol-base-name slot))))
             slots)))
+
+(define (find-slot-spec-entry specs slot)
+  (or (find (lambda (s) (eq? (slot-spec-name s) slot)) specs)
+      (find (lambda (s)
+              (string=? (symbol-base-name (slot-spec-name s))
+                        (symbol-base-name slot)))
+            specs)))
 
 (define (instance-slot-ref obj slot)
   (unless (instance? obj)
@@ -984,11 +1029,24 @@
                      (error "defclass superclass must be symbol" s))
                    (resolve-class-designator s env))
                  super-forms))
-           (own-slots (delete-duplicates (map normalize-slot-name slot-forms) eq?))
+           (own-slots (map parse-slot-spec slot-forms))
            (class-obj (make-class name supers own-slots))
            (global (global-frame env)))
       (frame-define! global name class-obj)
       (class-table-set! name class-obj)
+      (for-each
+       (lambda (s)
+         (let ((acc (slot-spec-accessor s)))
+           (when acc
+             (let* ((method-proc
+                     (make-closure '(obj)
+                                   (list (list 'slot-value 'obj (list 'quote (slot-spec-name s))))
+                                   env
+                                   acc))
+                    (generic (ensure-generic-function! acc env '(obj)))
+                    (method (make-method class-obj '(obj) method-proc)))
+               (set-generic-methods! generic (cons method (generic-methods generic)))))))
+       own-slots)
       name)))
 
 (define (ensure-generic-function! sym env params)
@@ -1808,12 +1866,31 @@
       (apply-islisp f xs)))
   (def 'make-instance
     (lambda args
-      (unless (= (length args) 1)
-        (error "make-instance takes exactly one class designator" args))
+      (unless (>= (length args) 1)
+        (error "make-instance needs at least one class designator" args))
       (let* ((class-obj (resolve-class-designator (car args) env))
-             (slots (map (lambda (s) (cons s '()))
-                         (class-effective-slots class-obj))))
-        (make-instance-object class-obj slots))))
+             (raw-initargs (cdr args)))
+        (unless (even? (length raw-initargs))
+          (error "make-instance initargs must be key/value pairs" raw-initargs))
+        (let* ((slot-specs (class-effective-slots class-obj))
+               (slots
+                (map (lambda (s)
+                       (cons (slot-spec-name s)
+                             (eval-islisp* (slot-spec-initform s) env #f)))
+                     slot-specs))
+               (obj (make-instance-object class-obj slots)))
+          (let apply-initargs ((rest raw-initargs))
+            (unless (null? rest)
+              (let* ((k (car rest))
+                     (v (cadr rest)))
+                (unless (symbol? k)
+                  (error "make-instance initarg key must be symbol" k))
+                (let ((spec (find-slot-spec-entry slot-specs k)))
+                  (unless spec
+                    (error "Unknown initarg for make-instance" k))
+                  (instance-slot-set! obj (slot-spec-name spec) v))
+                (apply-initargs (cddr rest)))))
+          obj))))
   (def 'class-of
     (lambda (obj)
       (cond
