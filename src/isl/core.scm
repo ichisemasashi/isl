@@ -1230,9 +1230,29 @@
   (unless (string? x)
     (error who "needs a string" x)))
 
+(define (ensure-char x who)
+  (unless (char? x)
+    (error who "needs a character" x)))
+
 (define (ensure-nonnegative-integer x who)
   (unless (and (integer? x) (>= x 0))
     (error who "needs a non-negative integer" x)))
+
+(define (string-index* haystack needle start who)
+  (ensure-string haystack who)
+  (ensure-string needle who)
+  (ensure-nonnegative-integer start who)
+  (let ((n (string-length haystack))
+        (m (string-length needle)))
+    (when (> start n)
+      (error who "start index out of range" start n))
+    (if (= m 0)
+        start
+        (let loop ((i start))
+          (cond
+           ((> (+ i m) n) '())
+           ((string=? (substring haystack i (+ i m)) needle) i)
+           (else (loop (+ i 1))))))))
 
 (define (isl-substring s start end)
   (ensure-string s "substring")
@@ -2607,14 +2627,53 @@
       (not (zero? (modulo x 2)))))
   (def 'symbolp symbol?)
   (def 'listp list?)
+  (def 'stringp string?)
+  (def 'create-string
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "create-string takes length and optional fill-char" args))
+      (let ((n (car args))
+            (fill (if (= (length args) 2) (cadr args) #\space)))
+        (ensure-nonnegative-integer n "create-string")
+        (ensure-char fill "create-string")
+        (make-string n fill))))
   (def 'string=
     (lambda (a b)
       (ensure-string a "string=")
       (ensure-string b "string=")
       (string=? a b)))
+  (def 'string/=
+    (lambda (a b)
+      (ensure-string a "string/=")
+      (ensure-string b "string/=")
+      (if (string=? a b) #f #t)))
+  (def 'string<
+    (lambda (a b)
+      (ensure-string a "string<")
+      (ensure-string b "string<")
+      (if (string<? a b) #t #f)))
+  (def 'string<=
+    (lambda (a b)
+      (ensure-string a "string<=")
+      (ensure-string b "string<=")
+      (if (string<=? a b) #t #f)))
+  (def 'string>
+    (lambda (a b)
+      (ensure-string a "string>")
+      (ensure-string b "string>")
+      (if (string>? a b) #t #f)))
+  (def 'string>=
+    (lambda (a b)
+      (ensure-string a "string>=")
+      (ensure-string b "string>=")
+      (if (string>=? a b) #t #f)))
   (def 'string-concat
     (lambda xs
       (for-each (lambda (x) (ensure-string x "string-concat")) xs)
+      (apply string-append xs)))
+  (def 'string-append
+    (lambda xs
+      (for-each (lambda (x) (ensure-string x "string-append")) xs)
       (apply string-append xs)))
   (def 'substring
     (lambda args
@@ -2625,6 +2684,23 @@
         (isl-substring (car args) (cadr args) (caddr args)))
        (else
         (error "substring takes string start [end]" args)))))
+  (def 'char-index
+    (lambda args
+      (unless (or (= (length args) 2) (= (length args) 3))
+        (error "char-index takes character string and optional start" args))
+      (let* ((ch (car args))
+             (s (cadr args))
+             (start (if (= (length args) 3) (caddr args) 0)))
+        (ensure-char ch "char-index")
+        (string-index* s (string ch) start "char-index"))))
+  (def 'string-index
+    (lambda args
+      (unless (or (= (length args) 2) (= (length args) 3))
+        (error "string-index takes needle haystack and optional start" args))
+      (let ((needle (car args))
+            (haystack (cadr args))
+            (start (if (= (length args) 3) (caddr args) 0)))
+        (string-index* haystack needle start "string-index"))))
   (def 'length isl-length)
   (def 'print
     (lambda (x)
