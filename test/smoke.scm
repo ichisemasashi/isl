@@ -8,6 +8,12 @@
     (unless (equal? expected actual)
       (error "assertion failed" form expected actual))))
 
+(define (check-error form)
+  (guard (e
+          (else #t))
+    (let ((actual (eval-islisp form env)))
+      (error "assertion failed (expected error)" form actual))))
+
 (define smoke-file "test/tmp-smoke-input.lsp")
 (call-with-output-file
  smoke-file
@@ -102,6 +108,31 @@
                    (defglobal d1 (make-instance 'dog))
                    (classify d1)))
 (check "default" '(classify "no-instance"))
+(check 'ISLISP-USER::point3d '(defclass point3d (point) (z)))
+(check 40 '(progn
+             (defglobal p3 (make-instance 'point3d))
+             (setf (slot-value p3 'x) 10)
+             (setf (slot-value p3 'z) 30)
+             (+ (slot-value p3 'x) (slot-value p3 'z))))
+(check #f '(instancep point3d))
+(check 'ISLISP-USER::only-inst '(defgeneric only-inst (obj)))
+(check 'ISLISP-USER::only-inst
+       '(defmethod only-inst ((obj entity))
+          "ok"))
+(check-error '(only-inst 1))
+(check 'ISLISP-USER::lefta '(defclass lefta (entity) ()))
+(check 'ISLISP-USER::righta '(defclass righta (entity) ()))
+(check 'ISLISP-USER::botha '(defclass botha (lefta righta) ()))
+(check 'ISLISP-USER::amb '(defgeneric amb (obj)))
+(check 'ISLISP-USER::amb
+       '(defmethod amb ((obj lefta))
+          "left"))
+(check 'ISLISP-USER::amb
+       '(defmethod amb ((obj righta))
+          "right"))
+(check-error '(progn
+                (defglobal b1 (make-instance 'botha))
+                (amb b1)))
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))
