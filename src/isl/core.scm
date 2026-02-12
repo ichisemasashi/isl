@@ -327,13 +327,13 @@
             (when rest-sym
               (error "&optional cannot appear after &rest" params))
             (loop (cdr xs) 'optional required optional rest-sym))
-           ((eq? x '&rest)
+           ((or (eq? x '&rest) (eq? x '&body))
             (when rest-sym
-              (error "Duplicate &rest in parameter list" params))
+              (error "Duplicate &rest/&body in parameter list" params))
             (unless (and (pair? (cdr xs))
                          (symbol? (cadr xs))
                          (null? (cddr xs)))
-              (error "&rest must be followed by one symbol at the end" params))
+              (error "&rest/&body must be followed by one symbol at the end" params))
             (list (reverse required) (reverse optional) (cadr xs)))
            ((eq? mode 'required)
             (unless (symbol? x)

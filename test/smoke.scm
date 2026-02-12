@@ -486,6 +486,15 @@
               (setq mw (+ mw 1))
               (setq mw (+ mw 1)))
             mw))
+(check 2 '(progn
+            (defglobal mw2 0)
+            (defmacro my-when2 (condition &body body)
+              `(if ,condition
+                   (progn ,@body)))
+            (my-when2 (> 5 3)
+              (setq mw2 (+ mw2 1))
+              (setq mw2 (+ mw2 1)))
+            mw2))
 (check '(+ 1 2) '(progn
                    (defmacro mplus (a b)
                      (list '+ a b))
