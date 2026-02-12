@@ -1657,6 +1657,16 @@
              (slots (map (lambda (s) (cons s '()))
                          (class-effective-slots class-obj))))
         (make-instance-object class-obj slots))))
+  (def 'class-of
+    (lambda (obj)
+      (cond
+       ((instance? obj) (instance-class obj))
+       ((class? obj) obj)
+       (else
+        (error "class-of target must be instance or class" obj)))))
+  (def 'instancep
+    (lambda (obj)
+      (instance? obj)))
   (def 'slot-value
     (lambda (obj slot)
       (instance-slot-ref obj slot)))
