@@ -49,6 +49,7 @@
 (check #(1 2 3) '(make-array 3 :initial-contents '(1 2 3)))
 (check #(1 2 3) '(make-vector 3 :initial-contents '(1 2 3)))
 (check #\x '(vector-ref (make-vector 3 :initial-element #\x) 2))
+(check 1 '(aref (make-array 3 :initial-contents '(1 2 3)) 0))
 (check 3 '(vector-ref (vector 1 2 3) 2))
 (check 9 '(progn
             (defglobal vv (make-vector 3 0))
@@ -58,6 +59,9 @@
             (defglobal vv2 (vector 1 2 3))
             (setf (vector-ref vv2 0) 7)
             (vector-ref vv2 0)))
+(check 8 '(progn
+            (setf (aref vv2 1) 8)
+            (aref vv2 1)))
 (check #t '(vectorp (vector 1 2)))
 (check #f '(vectorp '(1 2)))
 (check 10 '(progn
