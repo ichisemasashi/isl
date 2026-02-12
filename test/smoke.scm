@@ -179,6 +179,14 @@
             (in-package :my-package)
             (defun greed (x) (+ x 2))
             (greed 3)))
+(check 49 '(progn
+             (defpackage :kw-package
+               (:use :islisp)
+               (:export :kwsq))
+             (in-package :kw-package)
+             (defun kwsq (x) (* x x))
+             (in-package :islisp-user)
+             (kw-package:kwsq 7)))
 (check 8 '(progn
             (in-package :islisp-user)
             (my-package:greed 6)))

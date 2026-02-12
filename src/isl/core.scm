@@ -132,7 +132,7 @@
           qsym))))
 
 (define (package-export! pkg sym-or-name)
-  (let* ((sym-name (if (symbol? sym-or-name) (symbol->string sym-or-name) sym-or-name))
+  (let* ((sym-name (if (symbol? sym-or-name) (symbol-base-name sym-or-name) sym-or-name))
          (sym (package-intern! pkg sym-name)))
     (unless (assoc-string sym-name (package-externals pkg))
       (set-package-externals! pkg (cons (cons sym-name sym) (package-externals pkg))))
