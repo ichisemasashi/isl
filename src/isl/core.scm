@@ -1941,6 +1941,15 @@
       (if (file-exists? filename)
           filename
           '())))
+  (def 'delete-file
+    (lambda (filename)
+      (unless (string? filename)
+        (error "delete-file filename must be a string" filename))
+      (if (file-exists? filename)
+          (begin
+            (sys-unlink filename)
+            #t)
+          '())))
   (def 'load
     (lambda (filename)
       (unless (string? filename)

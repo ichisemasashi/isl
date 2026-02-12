@@ -38,6 +38,12 @@
  :if-exists :supersede)
 
 (define out-file "test/tmp-smoke-output.txt")
+(define delete-file-target "test/tmp-smoke-delete.txt")
+(call-with-output-file
+ delete-file-target
+ (lambda (p)
+   (display "to-delete\n" p))
+ :if-exists :supersede)
 
 (check 3 '(+ 1 2))
 (check 314 `(load ,load-file))
@@ -57,6 +63,8 @@
           "written"))
 (check out-file `(probe-file ,out-file))
 (check '() '(probe-file "test/definitely-not-found-file-xyz.txt"))
+(check #t `(delete-file ,delete-file-target))
+(check '() `(probe-file ,delete-file-target))
 (check "This is a test"
        `(with-open-file (stream ,out-file :direction :input)
           (read-line stream nil)))
