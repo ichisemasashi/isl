@@ -1934,6 +1934,13 @@
               line)))
        (else
         (error "read-line takes stream and optional eof-error-p" args)))))
+  (def 'probe-file
+    (lambda (filename)
+      (unless (string? filename)
+        (error "probe-file filename must be a string" filename))
+      (if (file-exists? filename)
+          filename
+          '())))
   (def 'load
     (lambda (filename)
       (unless (string? filename)

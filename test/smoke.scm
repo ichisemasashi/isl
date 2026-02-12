@@ -55,6 +55,8 @@
           (with-open-file (stream ,out-file :direction :output :if-exists :overwrite)
             (write-line "This is a test" stream))
           "written"))
+(check out-file `(probe-file ,out-file))
+(check '() '(probe-file "test/definitely-not-found-file-xyz.txt"))
 (check "This is a test"
        `(with-open-file (stream ,out-file :direction :input)
           (read-line stream nil)))
