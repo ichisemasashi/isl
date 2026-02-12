@@ -2005,6 +2005,25 @@
             (sys-unlink filename)
             #t)
           '())))
+  (def 'getenv
+    (lambda (name)
+      (unless (string? name)
+        (error "getenv name must be a string" name))
+      (let ((v (sys-getenv name)))
+        (if v v '()))))
+  (def 'setenv
+    (lambda args
+      (unless (or (= (length args) 2) (= (length args) 3))
+        (error "setenv takes name, value, and optional overwrite flag" args))
+      (let ((name (car args))
+            (value (cadr args))
+            (overwrite (if (= (length args) 3) (caddr args) #t)))
+        (unless (string? name)
+          (error "setenv name must be a string" name))
+        (unless (string? value)
+          (error "setenv value must be a string" value))
+        (sys-setenv name value (truthy? overwrite))
+        value)))
   (def 'system
     (lambda (command)
       (unless (string? command)

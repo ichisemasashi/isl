@@ -65,6 +65,15 @@
 (check '() '(probe-file "test/definitely-not-found-file-xyz.txt"))
 (check #t `(delete-file ,delete-file-target))
 (check '() `(probe-file ,delete-file-target))
+(check "smoke1" '(progn
+                   (setenv "ISL_SMOKE_ENV" "smoke1")
+                   (getenv "ISL_SMOKE_ENV")))
+(check "smoke1" '(progn
+                   (setenv "ISL_SMOKE_ENV" "smoke2" nil)
+                   (getenv "ISL_SMOKE_ENV")))
+(check "smoke3" '(progn
+                   (setenv "ISL_SMOKE_ENV" "smoke3" t)
+                   (getenv "ISL_SMOKE_ENV")))
 (check 0 '(system "sh -c 'exit 0'"))
 (check 7 '(system "sh -c 'exit 7'"))
 (check #t '(> (get-universal-time) 2208988800))
