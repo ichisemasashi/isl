@@ -39,11 +39,14 @@
 
 (define out-file "test/tmp-smoke-output.txt")
 (define delete-file-target "test/tmp-smoke-delete.txt")
+(define sqlite-file "test/tmp-smoke-db.sqlite")
 (call-with-output-file
  delete-file-target
  (lambda (p)
    (display "to-delete\n" p))
  :if-exists :supersede)
+(when (file-exists? sqlite-file)
+  (sys-unlink sqlite-file))
 
 (check 3 '(+ 1 2))
 (check #(1 2 3) '(make-array 3 :initial-contents '(1 2 3)))
@@ -115,6 +118,16 @@
                    (getenv "ISL_SMOKE_ENV")))
 (check 0 '(system "sh -c 'exit 0'"))
 (check 7 '(system "sh -c 'exit 7'"))
+(check #t '(if (= (system "sh -c 'command -v sqlite3 >/dev/null 2>&1'") 0) #t #f))
+(when (= (eval-islisp '(system "sh -c 'command -v sqlite3 >/dev/null 2>&1'") env) 0)
+  (check #t `(progn
+               (defglobal db1 (sqlite-open ,sqlite-file))
+               (sqlite-db-p db1)))
+  (check #t '(sqlite-exec db1 "create table if not exists items(id integer primary key, name text)"))
+  (check #t '(sqlite-exec db1 "insert into items(name) values('alice'),('bob')"))
+  (check '(("alice") ("bob")) '(sqlite-query db1 "select name from items order by id"))
+  (check "2" '(sqlite-query-one db1 "select count(*) from items"))
+  (check #t '(sqlite-close db1)))
 (check #t '(> (get-universal-time) 2208988800))
 (check #t '(> (internal-time-units-per-second) 0))
 (check #t '(<= (get-internal-real-time) (get-internal-real-time)))

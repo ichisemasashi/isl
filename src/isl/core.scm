@@ -3,6 +3,7 @@
 (define-module isl.core
   (use srfi-1)
   (use gauche.process)
+  (use gauche.net)
   (export make-initial-env eval-islisp apply-islisp repl read-all))
 
 (select-module isl.core)
@@ -128,6 +129,34 @@
 (define *ffi-bridge-binary* "src/isl/ffi_bridge")
 (define *ffi-result-prefix* "__ISLISP_FFI_RESULT__:")
 
+(define (make-sqlite-connection path)
+  (vector 'sqlite-connection path))
+
+(define (sqlite-connection? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 2)
+       (eq? (vector-ref obj 0) 'sqlite-connection)))
+
+(define (sqlite-connection-path conn)
+  (vector-ref conn 1))
+
+(define (make-tcp-connection socket in out)
+  (vector 'tcp-connection socket in out))
+
+(define (tcp-connection? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 4)
+       (eq? (vector-ref obj 0) 'tcp-connection)))
+
+(define (tcp-connection-socket conn)
+  (vector-ref conn 1))
+
+(define (tcp-connection-input conn)
+  (vector-ref conn 2))
+
+(define (tcp-connection-output conn)
+  (vector-ref conn 3))
+
 (define (decode-process-exit-status raw)
   (if (and (integer? raw) (>= raw 0))
       (quotient raw 256)
@@ -139,6 +168,51 @@
          (err (port->string (process-error p))))
     (process-wait p)
     (list (decode-process-exit-status (process-exit-status p)) out err)))
+
+(define (sqlite3-available?)
+  (let ((status (decode-process-exit-status
+                 (sys-system "sh -c 'command -v sqlite3 >/dev/null 2>&1'"))))
+    (or (eq? status 0) (eq? status #t))))
+
+(define (ensure-sqlite3-available!)
+  (unless (sqlite3-available?)
+    (error "sqlite3 command is required for sqlite integration")))
+
+(define (sqlite-run path sql)
+  (ensure-sqlite3-available!)
+  (unless (string? path)
+    (error "sqlite path must be a string" path))
+  (unless (string? sql)
+    (error "sqlite sql must be a string" sql))
+  (let* ((argv (list "sqlite3" "-batch" "-noheader" "-separator" (string #\x1f)
+                     path sql))
+         (result (run-command/capture argv))
+         (status (car result))
+         (out (cadr result))
+         (err (caddr result)))
+    (unless (or (eq? status 0) (eq? status #t))
+      (error "sqlite command failed"
+             (if (string=? err "") out err)))
+    out))
+
+(define (string-split-char s ch)
+  (let ((n (string-length s)))
+    (let loop ((i 0) (start 0) (acc '()))
+      (if (= i n)
+          (reverse (cons (substring s start n) acc))
+          (if (char=? (string-ref s i) ch)
+              (loop (+ i 1) (+ i 1) (cons (substring s start i) acc))
+              (loop (+ i 1) start acc))))))
+
+(define (sqlite-output->rows out)
+  (call-with-input-string
+   out
+   (lambda (p)
+     (let loop ((acc '()))
+       (let ((line (read-line p)))
+         (if (eof-object? line)
+             (reverse acc)
+             (loop (cons (string-split-char line #\x1f) acc))))))))
 
 (define (ensure-ffi-bridge!)
   (unless (file-exists? *ffi-bridge-binary*)
@@ -2529,6 +2603,88 @@
         (if (and (integer? raw) (>= raw 0))
             (quotient raw 256)
             raw))))
+  (def 'sqlite-open
+    (lambda (path)
+      (unless (string? path)
+        (error "sqlite-open path must be a string" path))
+      (make-sqlite-connection path)))
+  (def 'sqlite-db-p
+    (lambda (obj)
+      (sqlite-connection? obj)))
+  (def 'sqlite-close
+    (lambda (db)
+      (unless (sqlite-connection? db)
+        (error "sqlite-close needs sqlite db object" db))
+      #t))
+  (def 'sqlite-exec
+    (lambda (db sql)
+      (unless (sqlite-connection? db)
+        (error "sqlite-exec needs sqlite db object" db))
+      (sqlite-run (sqlite-connection-path db) sql)
+      #t))
+  (def 'sqlite-query
+    (lambda (db sql)
+      (unless (sqlite-connection? db)
+        (error "sqlite-query needs sqlite db object" db))
+      (sqlite-output->rows (sqlite-run (sqlite-connection-path db) sql))))
+  (def 'sqlite-query-one
+    (lambda (db sql)
+      (unless (sqlite-connection? db)
+        (error "sqlite-query-one needs sqlite db object" db))
+      (let ((rows (sqlite-output->rows (sqlite-run (sqlite-connection-path db) sql))))
+        (if (null? rows)
+            '()
+            (if (null? (car rows))
+                '()
+                (caar rows))))))
+  (def 'tcp-connect
+    (lambda (host port)
+      (unless (string? host)
+        (error "tcp-connect host must be a string" host))
+      (unless (and (integer? port) (>= port 1) (<= port 65535))
+        (error "tcp-connect port must be integer in 1..65535" port))
+      (let ((sock (make-client-socket 'inet host port)))
+        (make-tcp-connection sock
+                             (socket-input-port sock)
+                             (socket-output-port sock)))))
+  (def 'tcp-connection-p
+    (lambda (obj)
+      (tcp-connection? obj)))
+  (def 'tcp-send-line
+    (lambda (conn text)
+      (unless (tcp-connection? conn)
+        (error "tcp-send-line needs tcp connection object" conn))
+      (unless (string? text)
+        (error "tcp-send-line text must be a string" text))
+      (display text (tcp-connection-output conn))
+      (newline (tcp-connection-output conn))
+      (flush (tcp-connection-output conn))
+      #t))
+  (def 'tcp-receive-line
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "tcp-receive-line takes connection and optional eof-error-p" args))
+      (let ((conn (car args))
+            (eof-error-p (if (= (length args) 2) (cadr args) #t)))
+        (unless (tcp-connection? conn)
+          (error "tcp-receive-line needs tcp connection object" conn))
+        (let ((line (read-line (tcp-connection-input conn))))
+          (if (eof-object? line)
+              (if (truthy? eof-error-p)
+                  (error "tcp-receive-line reached EOF")
+                  '())
+              line)))))
+  (def 'tcp-close
+    (lambda (conn)
+      (unless (tcp-connection? conn)
+        (error "tcp-close needs tcp connection object" conn))
+      (guard (e (else #t))
+        (close-input-port (tcp-connection-input conn)))
+      (guard (e (else #t))
+        (close-output-port (tcp-connection-output conn)))
+      (guard (e (else #t))
+        (socket-close (tcp-connection-socket conn)))
+      #t))
   (def 'ffi-call
     (lambda (library symbol-name return-type arg-types arg-values)
       (unless (string? library)
