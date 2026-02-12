@@ -363,6 +363,8 @@
 (define *accessor-slot-table* '())
 (define *trace-table* '())
 (define *trace-depth* 0)
+(define *debug-mode* #f)
+(define *break-level* 0)
 (define *gensym-counter* 0)
 
 (define (keyword-symbol? sym)
@@ -687,6 +689,61 @@
    *trace-table*)
   (set! *trace-table* '())
   '())
+
+(define (debug-write-result x)
+  (cond
+   ((closure? x)
+    (let ((name (closure-name x)))
+      (if name
+          (begin
+            (display "#<function ")
+            (display name)
+            (display ">"))
+          (display "#<closure>"))))
+   ((primitive? x)
+    (begin
+      (display "#<primitive ")
+      (display (primitive-name x))
+      (display ">")))
+   ((macro? x)
+    (let ((name (macro-name x)))
+      (if name
+          (begin
+            (display "#<macro ")
+            (display name)
+            (display ">"))
+          (display "#<macro>"))))
+   (else
+    (write x))))
+
+(define (break-loop env message)
+  (set! *break-level* (+ *break-level* 1))
+  (dynamic-wind
+    (lambda ()
+      (display "*** BREAK [level ")
+      (display *break-level*)
+      (display "] ")
+      (display message)
+      (display " (Ctrl-D to continue)")
+      (newline))
+    (lambda ()
+      (let loop ()
+        (display "BREAK> ")
+        (flush)
+        (let ((x (read)))
+          (if (eof-object? x)
+              '()
+              (begin
+                (guard (e (else
+                           (display "Break Error: ")
+                           (write e)
+                           (newline)))
+                  (let ((result (eval-islisp x env)))
+                    (debug-write-result result)
+                    (newline)))
+                (loop))))))
+    (lambda ()
+      (set! *break-level* (- *break-level* 1)))))
 
 (define (force-value v)
   (let loop ((x v))
@@ -1989,6 +2046,29 @@
               line)))
        (else
         (error "read-line takes stream and optional eof-error-p" args)))))
+  (def 'debug
+    (lambda args
+      (cond
+       ((null? args)
+        *debug-mode*)
+       ((= (length args) 1)
+        (set! *debug-mode* (truthy? (car args)))
+        *debug-mode*)
+       (else
+        (error "debug takes zero or one argument" args)))))
+  (def 'break
+    (lambda args
+      (let ((msg
+             (cond
+              ((null? args) "break")
+              ((string? (car args))
+               (if (= (length args) 1)
+                   (car args)
+                   (render-format (car args) (cdr args))))
+              (else
+               (write-to-string args)))))
+        (break-loop env msg)
+        '())))
   (def 'probe-file
     (lambda (filename)
       (unless (string? filename)
@@ -2288,7 +2368,9 @@
           (guard (e (else
                      (display "Error: ")
                      (write e)
-                     (newline)))
+                     (newline)
+                     (when *debug-mode*
+                       (break-loop env (write-to-string e)))))
             (let ((result (eval-islisp x env)))
               (write-result result)
               (newline)))

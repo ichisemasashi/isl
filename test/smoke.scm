@@ -65,6 +65,9 @@
 (check '() '(probe-file "test/definitely-not-found-file-xyz.txt"))
 (check #t `(delete-file ,delete-file-target))
 (check '() `(probe-file ,delete-file-target))
+(check #f '(debug))
+(check #t '(progn (debug t) (debug)))
+(check #f '(progn (debug nil) (debug)))
 (check "smoke1" '(progn
                    (setenv "ISL_SMOKE_ENV" "smoke1")
                    (getenv "ISL_SMOKE_ENV")))
