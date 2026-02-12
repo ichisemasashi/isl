@@ -1119,16 +1119,36 @@
   (if (>= (length args) 1)
       (let ((spec (car args))
             (body (cdr args)))
-        (unless (and (list? spec) (= (length spec) 2) (symbol? (car spec)))
-          (error "with-open-file spec must be (var filename)" spec))
+        (unless (and (list? spec) (>= (length spec) 2) (symbol? (car spec)))
+          (error "with-open-file spec must be (var filename &key :direction ...)" spec))
         (let* ((var (car spec))
-               (filename (eval-islisp* (cadr spec) env #f)))
+               (filename (eval-islisp* (cadr spec) env #f))
+               (opts (cddr spec))
+               (direction ':input))
           (unless (string? filename)
             (error "with-open-file filename must evaluate to string" filename))
+          (let parse ((xs opts))
+            (unless (null? xs)
+              (unless (and (pair? xs) (pair? (cdr xs)))
+                (error "with-open-file options must be keyword/value pairs" opts))
+              (let ((k (car xs))
+                    (v (eval-islisp* (cadr xs) env #f)))
+                (cond
+                 ((eq? k ':direction)
+                  (set! direction v))
+                 (else
+                  (error "unsupported with-open-file option" k))))
+              (parse (cddr xs))))
           (let ((port
                  (guard (e
                          (else #f))
-                   (open-input-file filename))))
+                   (cond
+                    ((eq? direction ':input)
+                     (open-input-file filename))
+                    ((eq? direction ':output)
+                     (open-output-file filename :if-exists :supersede))
+                    (else
+                     (error "with-open-file :direction must be :input or :output" direction))))))
             (let ((file-env (make-frame env)))
               (frame-define! file-env var (if port port '()))
               (if port
@@ -1138,9 +1158,11 @@
                       ;; Evaluate body before closing the stream.
                       (force-value (eval-sequence* body file-env tail?)))
                     (lambda ()
-                      (close-input-port port)))
+                      (if (eq? direction ':input)
+                          (close-input-port port)
+                          (close-output-port port))))
                   (eval-sequence* body file-env tail?))))))
-      (error "with-open-file needs (var filename) and optional body" args)))
+      (error "with-open-file needs (var filename &key ...) and optional body" args)))
 
 (define (eval-defpackage args)
   (unless (>= (length args) 1)
@@ -1870,6 +1892,24 @@
         (read (car args)))
        (else
         (error "read takes zero or one stream argument" args)))))
+  (def 'read-line
+    (lambda args
+      (cond
+       ((= (length args) 1)
+        (let ((line (read-line (car args))))
+          (if (eof-object? line)
+              (error "read-line reached EOF")
+              line)))
+       ((= (length args) 2)
+        (let ((line (read-line (car args)))
+              (eof-error-p (cadr args)))
+          (if (eof-object? line)
+              (if (truthy? eof-error-p)
+                  (error "read-line reached EOF")
+                  '())
+              line)))
+       (else
+        (error "read-line takes stream and optional eof-error-p" args)))))
   (def 'load
     (lambda (filename)
       (unless (string? filename)

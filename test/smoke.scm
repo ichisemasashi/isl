@@ -30,9 +30,24 @@
    (write 'loaded-from-file p))
  :if-exists :supersede)
 
+(define text-file "test/tmp-smoke-lines.txt")
+(call-with-output-file
+ text-file
+ (lambda (p)
+   (display "line-1\nline-2\n" p))
+ :if-exists :supersede)
+
 (check 3 '(+ 1 2))
 (check 314 `(load ,load-file))
 (check 314 'loaded-from-file)
+(check '("line-1" "line-2")
+       `(with-open-file (stream ,text-file :direction :input)
+          (let ((line (read-line stream nil))
+                (acc '()))
+            (while line
+              (setq acc (append acc (list line)))
+              (setq line (read-line stream nil)))
+            acc)))
 (check 2 '(mod 17 5))
 (check 2 '(floor (/ 7 3)))
 (check 3 '(ceiling (/ 7 3)))
