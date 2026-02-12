@@ -66,6 +66,10 @@
 (check #t `(delete-file ,delete-file-target))
 (check '() `(probe-file ,delete-file-target))
 (check #t '(> (get-universal-time) 2208988800))
+(check #t '(> (internal-time-units-per-second) 0))
+(check #t '(<= (get-internal-real-time) (get-internal-real-time)))
+(check #t '(<= (get-internal-run-time) (get-internal-run-time)))
+(check #t '(>= (get-internal-run-time) 0))
 (check "This is a test"
        `(with-open-file (stream ,out-file :direction :input)
           (read-line stream nil)))

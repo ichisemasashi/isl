@@ -785,6 +785,33 @@
    (else
     (error "length supports string/list/vector only" x))))
 
+(define (internal-time-units)
+  (guard (e
+          (else 100))
+    (let ((ts (sys-times)))
+      (if (and (list? ts)
+               (>= (length ts) 5)
+               (integer? (list-ref ts 4))
+               (> (list-ref ts 4) 0))
+          (list-ref ts 4)
+          100))))
+
+(define (internal-real-time)
+  (inexact->exact
+   (floor (* (time->seconds (current-time))
+             (internal-time-units)))))
+
+(define (internal-run-time)
+  (guard (e
+          (else 0))
+    (let ((ts (sys-times)))
+      (if (and (list? ts)
+               (>= (length ts) 2)
+               (integer? (list-ref ts 0))
+               (integer? (list-ref ts 1)))
+          (+ (list-ref ts 0) (list-ref ts 1))
+          0))))
+
 (define (eval-while args env who)
   (if (>= (length args) 1)
       (let ((test-form (car args))
@@ -1955,6 +1982,15 @@
       ;; Convert Unix epoch seconds (1970-01-01) to CL/ISLISP universal-time
       ;; seconds since 1900-01-01 UTC.
       (+ (sys-time) 2208988800)))
+  (def 'internal-time-units-per-second
+    (lambda ()
+      (internal-time-units)))
+  (def 'get-internal-real-time
+    (lambda ()
+      (internal-real-time)))
+  (def 'get-internal-run-time
+    (lambda ()
+      (internal-run-time)))
   (def 'load
     (lambda (filename)
       (unless (string? filename)
