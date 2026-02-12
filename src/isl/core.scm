@@ -76,6 +76,8 @@
 (define *package-registry* '())
 (define *current-package* #f)
 (define *provided-features* '())
+;; Default shared library used by ffi compatibility layer.
+(define *ffi-current-library* #f)
 
 (define (make-package name)
   (vector 'package name '() '() '()))
@@ -124,6 +126,7 @@
 
 (define *ffi-bridge-source* "src/isl/ffi_bridge.c")
 (define *ffi-bridge-binary* "src/isl/ffi_bridge")
+(define *ffi-result-prefix* "__ISLISP_FFI_RESULT__:")
 
 (define (decode-process-exit-status raw)
   (if (and (integer? raw) (>= raw 0))
@@ -202,6 +205,15 @@
     out)
    (else
     (error "unsupported ffi return type" ret-type))))
+
+(define (extract-ffi-result out)
+  (let ((idx (string-find-substr out *ffi-result-prefix*)))
+    (unless idx
+      (error "ffi bridge returned malformed output" out))
+    (let* ((head (substring out 0 idx))
+           (start (+ idx (string-length *ffi-result-prefix*)))
+           (tail (substring out start (string-length out))))
+      (list head tail))))
 
 (define (eval-load-file filename env)
   (unless (string? filename)
@@ -2550,7 +2562,25 @@
           (unless (or (eq? status 0) (eq? status #t))
             (error "ffi-call failed"
                    (if (string=? err "") out err)))
-          (parse-ffi-result ret out)))))
+          (let* ((parts (extract-ffi-result out))
+                 (side-out (car parts))
+                 (ret-out (cadr parts)))
+            (unless (string=? side-out "")
+              (display side-out))
+            (parse-ffi-result ret ret-out))))))
+  (def 'load-foreign-library
+    (lambda (path)
+      (unless (string? path)
+        (error "load-foreign-library path must be a string" path))
+      (unless (file-exists? path)
+        (error "shared library file does not exist" path))
+      (set! *ffi-current-library* path)
+      path))
+  (def 'current-foreign-library
+    (lambda ()
+      (if *ffi-current-library*
+          *ffi-current-library*
+          (error "No foreign library loaded. Call load-foreign-library first."))))
   (def 'get-universal-time
     (lambda ()
       ;; Convert Unix epoch seconds (1970-01-01) to CL/ISLISP universal-time
@@ -2762,6 +2792,7 @@
     (set! *class-table* '())
     (set! *accessor-slot-table* '())
     (set! *provided-features* '())
+    (set! *ffi-current-library* #f)
     (let ((islisp (ensure-package! "ISLISP"))
           (common-lisp (ensure-package! "COMMON-LISP"))
           (user (ensure-package! "ISLISP-USER")))
@@ -2773,6 +2804,54 @@
       (frame-define! env (resolve-binding-symbol 't) #t)
       (package-export! *current-package* 't)
       (install-primitives! env)
+      ;; Lightweight CFFI-compatible facade.
+      (let ((saved *current-package*)
+            (ffi (ensure-package! "FFI"))
+            (cffi (ensure-package! "CFFI")))
+        (package-use! ffi islisp)
+        (let ((isl-ffi-call (resolve-binding-symbol 'ffi-call))
+              (isl-load-lib (resolve-binding-symbol 'load-foreign-library))
+              (isl-cur-lib (resolve-binding-symbol 'current-foreign-library))
+              (ffi-ffi-call (package-intern! ffi "ffi-call"))
+              (ffi-load-lib (package-intern! ffi "load-foreign-library"))
+              (ffi-cur-lib (package-intern! ffi "current-foreign-library")))
+          (frame-define! env ffi-ffi-call (frame-ref env isl-ffi-call))
+          (frame-define! env ffi-load-lib (frame-ref env isl-load-lib))
+          (frame-define! env ffi-cur-lib (frame-ref env isl-cur-lib))
+          (package-export! ffi 'ffi-call)
+          (package-export! ffi 'load-foreign-library)
+          (package-export! ffi 'current-foreign-library))
+        (package-use! cffi ffi)
+        (set! *current-package* ffi)
+        (eval-islisp
+         '(defmacro define-foreign-function (foreign-name spec &rest options)
+            (let* ((lisp-name (first spec))
+                   (params (cdr spec))
+                   (return-type :void)
+                   (arg-types '()))
+              (let ((xs options))
+                (while xs
+                  (let ((k (first xs))
+                        (v (second xs)))
+                    (cond
+                     ((eq k :returning) (setq return-type v))
+                     ((eq k :arguments) (setq arg-types v))
+                     (t (error "define-foreign-function: unsupported option" k)))
+                    (setq xs (cdr (cdr xs))))))
+              (if (not (= (length params) (length arg-types)))
+                  (error "define-foreign-function: param/type length mismatch" spec arg-types)
+                  `(progn
+                     (defun ,lisp-name ,params
+                       (ffi:ffi-call (ffi:current-foreign-library)
+                                     ,foreign-name
+                                     ',return-type
+                                     ',arg-types
+                                     (list ,@params)))
+                     ',lisp-name))))
+         env)
+        (package-export! ffi 'define-foreign-function)
+        (package-export! cffi 'define-foreign-function)
+        (set! *current-package* saved))
       (set! *current-package* user))
     env))
 

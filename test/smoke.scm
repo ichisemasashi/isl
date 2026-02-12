@@ -126,7 +126,15 @@
    ((file-exists? "/usr/lib64/libc.so.6") "/usr/lib64/libc.so.6")
    (else #f)))
 (when ffi-libc
-  (check 42 `(ffi-call ,ffi-libc "abs" :int '(:int) '(-42))))
+  (check 42 `(ffi-call ,ffi-libc "abs" :int '(:int) '(-42)))
+  (check 7 `(progn
+              (defpackage :ffi-smoke (:use :common-lisp :cffi))
+              (in-package :ffi-smoke)
+              (ffi:load-foreign-library ,ffi-libc)
+              (ffi:define-foreign-function "abs" (ffi-abs x)
+                :returning int
+                :arguments (:int))
+              (ffi-abs -7))))
 (check #t '(<= (get-internal-run-time) (get-internal-run-time)))
 (check #t '(>= (get-internal-run-time) 0))
 (check "This is a test"

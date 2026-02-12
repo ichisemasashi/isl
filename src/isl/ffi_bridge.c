@@ -57,6 +57,10 @@ static void usage(void) {
           "usage: isl_ffi_bridge <lib> <symbol> <ret> <argc> [<type> <value>]...\n");
 }
 
+static void emit_result(const char *s) {
+  printf("__ISLISP_FFI_RESULT__:%s", s);
+}
+
 int main(int argc, char **argv) {
   const char *libpath;
   const char *symname;
@@ -141,7 +145,11 @@ int main(int argc, char **argv) {
       case 4: r = ((fn_i4_t)sym)(a[0], a[1], a[2], a[3]); break;
       default: break;
     }
-    printf("%ld", r);
+    {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "%ld", r);
+      emit_result(buf);
+    }
   } else if (strcmp(ret, "double") == 0 && all_type(types, n, "double")) {
     double a[4] = {0.0, 0.0, 0.0, 0.0};
     double r = 0.0;
@@ -162,18 +170,30 @@ int main(int argc, char **argv) {
       case 4: r = ((fn_d4_t)sym)(a[0], a[1], a[2], a[3]); break;
       default: break;
     }
-    printf("%.17g", r);
+    {
+      char buf[128];
+      snprintf(buf, sizeof(buf), "%.17g", r);
+      emit_result(buf);
+    }
   } else if (n == 1 && strcmp(types[0], "string") == 0) {
     const char *s = values[0];
     if (strcmp(ret, "int") == 0) {
       long r = ((fn_is_t)sym)(s);
-      printf("%ld", r);
+      {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%ld", r);
+        emit_result(buf);
+      }
     } else if (strcmp(ret, "double") == 0) {
       double r = ((fn_ds_t)sym)(s);
-      printf("%.17g", r);
+      {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%.17g", r);
+        emit_result(buf);
+      }
     } else if (strcmp(ret, "void") == 0) {
       ((fn_vs_t)sym)(s);
-      printf("nil");
+      emit_result("VOID");
     } else {
       fprintf(stderr, "unsupported return type for string arg: %s\n", ret);
       dlclose(handle);
@@ -200,7 +220,7 @@ int main(int argc, char **argv) {
       case 4: ((fn_v4_t)sym)(a[0], a[1], a[2], a[3]); break;
       default: break;
     }
-    printf("nil");
+    emit_result("VOID");
   } else {
     fprintf(stderr,
             "unsupported signature: ret=%s argc=%d (supports int/double homogeneous args, or single string arg)\n",
