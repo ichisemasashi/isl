@@ -304,6 +304,7 @@
 (define (tail-call-args tc) (vector-ref tc 2))
 
 (define *block-stack* '())
+(define *catch-stack* '())
 (define *trace-table* '())
 (define *trace-depth* 0)
 (define *gensym-counter* 0)
@@ -617,6 +618,31 @@
                (set! *block-stack* (cdr *block-stack*)))))))
       (error "block needs name and optional body" args)))
 
+(define (eval-catch args env tail?)
+  (if (>= (length args) 1)
+      (let ((tag (eval-islisp* (car args) env #f))
+            (body (cdr args)))
+        (call/cc
+         (lambda (escape)
+           (dynamic-wind
+             (lambda ()
+               (set! *catch-stack* (cons (cons tag escape) *catch-stack*)))
+             (lambda ()
+               ;; Keep non-local exits inside catch dynamic extent even for tail calls.
+               (force-value (eval-sequence* body env tail?)))
+             (lambda ()
+               (set! *catch-stack* (cdr *catch-stack*)))))))
+      (error "catch needs tag and optional body" args)))
+
+(define (throw-to-catch tag value)
+  (let loop ((xs *catch-stack*))
+    (if (null? xs)
+        (error "No enclosing catch for throw" tag)
+        (let ((entry (car xs)))
+          (if (eqv? (car entry) tag)
+              ((cdr entry) value)
+              (loop (cdr xs)))))))
+
 (define (init-do-bindings bindings env do-env)
   (for-each
    (lambda (b)
@@ -904,7 +930,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro progn block let let*)))
+  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro progn block let let*)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -991,6 +1017,14 @@
                  (error "No enclosing block for return-from" name))
                ((cdr entry) value)))
            (error "return-from takes block-name and optional value" form)))
+      ((catch)
+       (eval-catch args env tail?))
+      ((throw)
+       (if (= (length args) 2)
+           (let ((tag (eval-islisp* (car args) env #f))
+                 (value (eval-islisp* (cadr args) env #f)))
+             (throw-to-catch tag value))
+           (error "throw takes tag and value" form)))
       ((go)
        (if (= (length args) 1)
            (let ((tag (car args)))

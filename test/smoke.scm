@@ -75,6 +75,18 @@
 (check 99 '(block out
              (return-from out 99)
              0))
+(check 99 '(catch 'done
+             (throw 'done 99)
+             0))
+(check 20 '(catch 'done
+             (+ 1 (catch 'inner
+                    (throw 'inner 19)
+                    0))))
+(check 42 '(progn
+             (defun thrower (tag value)
+               (throw tag value))
+             (catch 'ok
+               (thrower 'ok 42))))
 (check 7 '(block out
             (+ 1 (block inner
                    (return-from inner 6)
