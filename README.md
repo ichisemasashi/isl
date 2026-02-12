@@ -6,8 +6,8 @@ ISLISPの標準仕様に従ったISLISP処理系を目指すプロジェクト�
 ## 現在の実装範囲 (MVP)
 - REPL
 - ファイル実行
-- 基本特殊形式: `quote`, `if`, `cond`, `case`, `loop`, `while`, `do`, `dolist`, `dotimes`, `return-from`, `catch`, `throw`, `go`, `tagbody`, `trace`, `untrace`, `lambda`, `defpackage`, `in-package`, `defglobal`, `defvar`, `setq`, `setf`, `incf`, `defun`, `defmacro`, `progn`, `block`, `let`, `let*`, `with-open-file`
-- 基本組み込み関数: 算術・比較・数値(`mod`/`floor`/`ceiling`/`truncate`/`round`)・数値述語(`zerop`/`plusp`/`minusp`/`evenp`/`oddp`)・リスト(`first`〜`tenth` 含む)・述語・高階関数(`mapcar`/`reduce`/`find`/`remove-if`/`remove-if-not`)・文字列(`string=`/`string-concat`/`substring`/`length`)・パッケージ(`find-package`/`use-package`/`export`/`intern`/`import`)・マクロ(`gensym`/`macroexpand`/`macroexpand-1`)・`apply`/`funcall`・`format`・`read` など
+- 基本特殊形式: `quote`, `if`, `cond`, `case`, `loop`, `while`, `do`, `dolist`, `dotimes`, `return-from`, `catch`, `throw`, `go`, `tagbody`, `trace`, `untrace`, `lambda`, `defpackage`, `in-package`, `defglobal`, `defvar`, `setq`, `setf`, `incf`, `defun`, `defmacro`, `progn`, `block`, `let`, `let*`, `with-open-file`, `defclass`
+- 基本組み込み関数: 算術・比較・数値(`mod`/`floor`/`ceiling`/`truncate`/`round`)・数値述語(`zerop`/`plusp`/`minusp`/`evenp`/`oddp`)・リスト(`first`〜`tenth` 含む)・述語・高階関数(`mapcar`/`reduce`/`find`/`remove-if`/`remove-if-not`)・文字列(`string=`/`string-concat`/`substring`/`length`)・パッケージ(`find-package`/`use-package`/`export`/`intern`/`import`)・マクロ(`gensym`/`macroexpand`/`macroexpand-1`)・オブジェクト(`make-instance`/`slot-value`)・`apply`/`funcall`・`format`・`read` など
 
 ## 実行方法
 ```sh

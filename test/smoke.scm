@@ -46,6 +46,18 @@
 (check 9 '(ninth '(1 2 3 4 5 6 7 8 9 10)))
 (check 10 '(tenth '(1 2 3 4 5 6 7 8 9 10)))
 (check #t '(symbolp 'abc))
+(check 'ISLISP-USER::point '(defclass point () (x y)))
+(check 3 '(progn
+            (defglobal p0 (make-instance 'point))
+            (setf (slot-value p0 'x) 3)
+            (slot-value p0 'x)))
+(check 7 '(progn
+            (setf (slot-value p0 'y) 7)
+            (slot-value p0 'y)))
+(check 11 '(progn
+             (defglobal p1 (make-instance point))
+             (setf (slot-value p1 'x) 11)
+             (slot-value p1 'x)))
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))

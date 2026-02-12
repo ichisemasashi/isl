@@ -251,6 +251,28 @@
 (define (macro-env m) (vector-ref m 3))
 (define (macro-name m) (vector-ref m 4))
 
+(define (class? obj)
+  (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'class)))
+
+(define (make-class name supers own-slots)
+  (vector 'class name supers own-slots))
+
+(define (class-name c) (vector-ref c 1))
+(define (class-supers c) (vector-ref c 2))
+(define (class-own-slots c) (vector-ref c 3))
+
+(define (instance? obj)
+  (and (vector? obj) (= (vector-length obj) 3) (eq? (vector-ref obj 0) 'instance)))
+
+(define (make-instance-object class slot-alist)
+  (vector 'instance class slot-alist))
+
+(define (instance-class obj) (vector-ref obj 1))
+(define (instance-slots obj) (vector-ref obj 2))
+
+(define (set-instance-slots! obj slots)
+  (vector-set! obj 2 slots))
+
 (define (validate-params params)
   (parse-params params)
   params)
@@ -305,6 +327,7 @@
 
 (define *block-stack* '())
 (define *catch-stack* '())
+(define *class-table* '())
 (define *trace-table* '())
 (define *trace-depth* 0)
 (define *gensym-counter* 0)
@@ -326,6 +349,95 @@
   (set! *gensym-counter* (+ *gensym-counter* 1))
   (string->symbol
    (string-append prefix (number->string *gensym-counter*))))
+
+(define (class-table-set! sym class-obj)
+  (set! *class-table*
+        (cons (cons sym class-obj)
+              (filter (lambda (p) (not (eq? (car p) sym))) *class-table*))))
+
+(define (class-table-ref sym)
+  (let ((entry (assoc sym *class-table*)))
+    (and entry (cdr entry))))
+
+(define (resolve-class-designator designator env)
+  (cond
+   ((class? designator) designator)
+   ((symbol? designator)
+    (let* ((sym (if (frame-bound? env designator)
+                    designator
+                    (resolve-binding-symbol designator)))
+           (pair (frame-find-pair env sym))
+           (bound (and pair (cdr pair)))
+           (tbl (class-table-ref sym)))
+      (cond
+       ((class? bound) bound)
+       ((class? tbl) tbl)
+       (else
+        (error "Unknown class designator" designator)))))
+   (else
+    (error "Class designator must be symbol or class object" designator))))
+
+(define (normalize-slot-name slot-spec)
+  (cond
+   ((symbol? slot-spec)
+    (resolve-binding-symbol slot-spec))
+   ((and (list? slot-spec) (pair? slot-spec) (symbol? (car slot-spec)))
+    (resolve-binding-symbol (car slot-spec)))
+   (else
+    (error "Invalid slot specifier in defclass" slot-spec))))
+
+(define (class-effective-slots class-obj)
+  (let collect ((c class-obj) (seen '()))
+    (if (memq c seen)
+        (error "Cyclic class precedence list" (class-name c))
+        (let ((seen2 (cons c seen)))
+          (delete-duplicates
+           (append
+            (apply append
+                   (map (lambda (s) (collect s seen2))
+                        (class-supers c)))
+           (class-own-slots c))
+           eq?)))))
+
+(define (symbol-base-name sym)
+  (let ((split (symbol-split-package sym)))
+    (if split
+        (cadr split)
+        (let ((s (symbol->string sym)))
+          (if (and (> (string-length s) 0)
+                   (char=? (string-ref s 0) #\:))
+              (substring s 1 (string-length s))
+              s)))))
+
+(define (find-instance-slot-entry slots slot)
+  (or (assoc slot slots)
+      (find (lambda (entry)
+              (and (symbol? (car entry))
+                   (string=? (symbol-base-name (car entry))
+                             (symbol-base-name slot))))
+            slots)))
+
+(define (instance-slot-ref obj slot)
+  (unless (instance? obj)
+    (error "slot-value target must be instance" obj))
+  (unless (symbol? slot)
+    (error "slot-value slot name must be symbol" slot))
+  (let ((entry (find-instance-slot-entry (instance-slots obj) slot)))
+    (if entry
+        (cdr entry)
+        (error "No such slot in instance" slot))))
+
+(define (instance-slot-set! obj slot value)
+  (unless (instance? obj)
+    (error "slot-value target must be instance" obj))
+  (unless (symbol? slot)
+    (error "slot-value slot name must be symbol" slot))
+  (let ((entry (find-instance-slot-entry (instance-slots obj) slot)))
+    (if entry
+        (begin
+          (set-cdr! entry value)
+          value)
+        (error "No such slot in instance" slot))))
 
 (define (trace-entry sym)
   (assoc sym *trace-table*))
@@ -744,6 +856,32 @@
                       '()))))))
       (error "dotimes needs (var count [result]) and optional body" args)))
 
+(define (eval-defclass args env)
+  (unless (= (length args) 3)
+    (error "defclass takes class-name, superclasses and slot-specs" args))
+  (let* ((raw-name (car args))
+         (name (resolve-binding-symbol raw-name))
+         (super-forms (cadr args))
+         (slot-forms (caddr args)))
+    (unless (symbol? name)
+      (error "defclass name must be symbol" raw-name))
+    (unless (list? super-forms)
+      (error "defclass superclass list must be a list" super-forms))
+    (unless (list? slot-forms)
+      (error "defclass slot spec list must be a list" slot-forms))
+    (let* ((supers
+            (map (lambda (s)
+                   (unless (symbol? s)
+                     (error "defclass superclass must be symbol" s))
+                   (resolve-class-designator s env))
+                 super-forms))
+           (own-slots (delete-duplicates (map normalize-slot-name slot-forms) eq?))
+           (class-obj (make-class name supers own-slots))
+           (global (global-frame env)))
+      (frame-define! global name class-obj)
+      (class-table-set! name class-obj)
+      name)))
+
 (define (eval-with-open-file args env tail?)
   (if (>= (length args) 1)
       (let ((spec (car args))
@@ -957,7 +1095,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro progn block let let* with-open-file)))
+  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro progn block let let* with-open-file defclass)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
@@ -1031,6 +1169,8 @@
        (eval-dolist args env tail?))
       ((dotimes)
        (eval-dotimes args env tail?))
+      ((defclass)
+       (eval-defclass args env))
       ((with-open-file)
        (eval-with-open-file args env tail?))
       ((return-from)
@@ -1138,6 +1278,10 @@
                (let ((target (eval-islisp* (cadr place) env #f)))
                  (set-cdr! target val)
                  val))
+              ((and (pair? place) (eq? (car place) 'slot-value) (= (length place) 3))
+               (let ((target (eval-islisp* (cadr place) env #f))
+                     (slot (eval-islisp* (caddr place) env #f)))
+                 (instance-slot-set! target slot val)))
               (else
                (error "Unsupported setf place" place))))
            (error "setf takes place and expression" form)))
@@ -1505,6 +1649,17 @@
   (def 'funcall
     (lambda (f . xs)
       (apply-islisp f xs)))
+  (def 'make-instance
+    (lambda args
+      (unless (= (length args) 1)
+        (error "make-instance takes exactly one class designator" args))
+      (let* ((class-obj (resolve-class-designator (car args) env))
+             (slots (map (lambda (s) (cons s '()))
+                         (class-effective-slots class-obj))))
+        (make-instance-object class-obj slots))))
+  (def 'slot-value
+    (lambda (obj slot)
+      (instance-slot-ref obj slot)))
   (def 'current-package
     (lambda ()
       (string->symbol (package-name *current-package*))))
@@ -1606,6 +1761,7 @@
 (define (make-initial-env)
   (let ((env (make-frame #f)))
     (set! *package-registry* '())
+    (set! *class-table* '())
     (let ((islisp (ensure-package! "ISLISP"))
           (common-lisp (ensure-package! "COMMON-LISP"))
           (user (ensure-package! "ISLISP-USER")))
