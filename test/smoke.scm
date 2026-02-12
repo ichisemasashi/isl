@@ -279,6 +279,18 @@
 (check 99 '(catch 'done
              (throw 'done 99)
              0))
+(check 3 '(handler-case
+            (+ 1 2)
+            (error (e) 0)))
+(check 42 '(handler-case
+             not-defined-variable
+             (error (e) 42)))
+(check #t '(handler-case
+             not-defined-variable
+             (error (e) (not (null e)))))
+(check-error '(handler-case
+                not-defined-variable
+                (warning (e) 0)))
 (check 20 '(catch 'done
              (+ 1 (catch 'inner
                     (throw 'inner 19)
