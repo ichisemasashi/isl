@@ -359,6 +359,7 @@
 (define *block-stack* '())
 (define *catch-stack* '())
 (define *class-table* '())
+(define *accessor-slot-table* '())
 (define *trace-table* '())
 (define *trace-depth* 0)
 (define *gensym-counter* 0)
@@ -388,6 +389,15 @@
 
 (define (class-table-ref sym)
   (let ((entry (assoc sym *class-table*)))
+    (and entry (cdr entry))))
+
+(define (accessor-slot-set! accessor slot)
+  (set! *accessor-slot-table*
+        (cons (cons accessor slot)
+              (filter (lambda (p) (not (eq? (car p) accessor))) *accessor-slot-table*))))
+
+(define (accessor-slot-ref accessor)
+  (let ((entry (assoc accessor *accessor-slot-table*)))
     (and entry (cdr entry))))
 
 (define (resolve-class-designator designator env)
@@ -1045,7 +1055,8 @@
                                    acc))
                     (generic (ensure-generic-function! acc env '(obj)))
                     (method (make-method class-obj '(obj) method-proc)))
-               (set-generic-methods! generic (cons method (generic-methods generic)))))))
+               (set-generic-methods! generic (cons method (generic-methods generic))))
+             (accessor-slot-set! acc (slot-spec-name s)))))
        own-slots)
       name)))
 
@@ -1493,6 +1504,16 @@
                (let ((target (eval-islisp* (cadr place) env #f))
                      (slot (eval-islisp* (caddr place) env #f)))
                  (instance-slot-set! target slot val)))
+              ((and (pair? place) (symbol? (car place)) (= (length place) 2))
+               (let* ((raw-op (car place))
+                      (op (if (frame-bound? env raw-op)
+                              raw-op
+                              (resolve-binding-symbol raw-op)))
+                      (slot (accessor-slot-ref op)))
+                 (if slot
+                     (let ((target (eval-islisp* (cadr place) env #f)))
+                       (instance-slot-set! target slot val))
+                     (error "Unsupported setf place" place))))
               (else
                (error "Unsupported setf place" place))))
            (error "setf takes place and expression" form)))
@@ -2006,6 +2027,7 @@
   (let ((env (make-frame #f)))
     (set! *package-registry* '())
     (set! *class-table* '())
+    (set! *accessor-slot-table* '())
     (let ((islisp (ensure-package! "ISLISP"))
           (common-lisp (ensure-package! "COMMON-LISP"))
           (user (ensure-package! "ISLISP-USER")))

@@ -145,6 +145,9 @@
                   (defglobal pp1 (make-instance 'person2 :name "Alice" :age 30))
                   (person2-name pp1)))
 (check 30 '(person2-age pp1))
+(check "Bob" '(progn
+                (setf (person2-name pp1) "Bob")
+                (person2-name pp1)))
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))
