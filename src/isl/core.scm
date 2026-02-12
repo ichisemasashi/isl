@@ -362,6 +362,7 @@
 (define *class-table* '())
 (define *accessor-slot-table* '())
 (define *trace-table* '())
+(define *trace-macro-set* '())
 (define *trace-depth* 0)
 (define *debug-mode* #f)
 (define *break-level* 0)
@@ -621,6 +622,17 @@
 (define (trace-entry sym)
   (assoc sym *trace-table*))
 
+(define (macro-traced? sym)
+  (if (memq sym *trace-macro-set*) #t #f))
+
+(define (add-macro-trace! sym)
+  (unless (macro-traced? sym)
+    (set! *trace-macro-set* (cons sym *trace-macro-set*))))
+
+(define (remove-macro-trace! sym)
+  (set! *trace-macro-set*
+        (filter (lambda (s) (not (eq? s sym))) *trace-macro-set*)))
+
 (define (remove-trace-entry sym)
   (set! *trace-table*
         (filter (lambda (p) (not (eq? (car p) sym))) *trace-table*)))
@@ -659,16 +671,48 @@
          (newline)
          result)))))
 
+(define (trace-apply-macro sym macro raw-args)
+  (display (trace-indent-string))
+  (display "=> ")
+  (write sym)
+  (display " ")
+  (write raw-args)
+  (newline)
+  (set! *trace-depth* (+ *trace-depth* 1))
+  (guard (e
+          (else
+           (set! *trace-depth* (- *trace-depth* 1))
+           (display (trace-indent-string))
+           (display "<! ")
+           (write sym)
+           (display " ERROR ")
+           (write e)
+           (newline)
+           (raise e)))
+    (let ((result (apply-macro macro raw-args)))
+      (set! *trace-depth* (- *trace-depth* 1))
+      (display (trace-indent-string))
+      (display "<= ")
+      (write sym)
+      (display " ")
+      (write result)
+      (newline)
+      result)))
+
 (define (trace-one! env sym)
   (let ((pair (frame-find-pair env sym)))
     (unless pair
       (error "Cannot trace unbound function" sym))
     (let ((current (cdr pair)))
-      (unless (or (primitive? current) (closure? current))
-        (error "trace supports functions only" sym))
-      (unless (trace-entry sym)
-        (set! *trace-table* (cons (cons sym current) *trace-table*))
-        (set-cdr! pair (trace-wrap-function sym current)))))
+      (cond
+       ((or (primitive? current) (closure? current))
+        (unless (trace-entry sym)
+          (set! *trace-table* (cons (cons sym current) *trace-table*))
+          (set-cdr! pair (trace-wrap-function sym current))))
+       ((macro? current)
+        (add-macro-trace! sym))
+       (else
+        (error "trace supports functions or macros only" sym)))))
   sym)
 
 (define (untrace-one! env sym)
@@ -678,6 +722,7 @@
         (when pair
           (set-cdr! pair (cdr entry))))
       (remove-trace-entry sym)))
+  (remove-macro-trace! sym)
   sym)
 
 (define (untrace-all! env)
@@ -688,6 +733,7 @@
          (set-cdr! pair (cdr entry)))))
    *trace-table*)
   (set! *trace-table* '())
+  (set! *trace-macro-set* '())
   '())
 
 (define (debug-write-result x)
@@ -1482,7 +1528,9 @@
                    (op-pair (frame-find-pair env op-sym))
                    (op-val (and op-pair (cdr op-pair))))
               (if (and op-pair (macro? op-val))
-                  (cons #t (apply-macro op-val args))
+                  (cons #t (if (macro-traced? op-sym)
+                               (trace-apply-macro op-sym op-val args)
+                               (apply-macro op-val args)))
                   (cons #f form)))))
       (cons #f form)))
 
@@ -1643,7 +1691,7 @@
        (eval-tagbody args env))
       ((trace)
        (if (null? args)
-           (map car *trace-table*)
+           (delete-duplicates (append (map car *trace-table*) *trace-macro-set*) eq?)
            (map (lambda (s)
                   (unless (symbol? s)
                     (error "trace arguments must be symbols" s))

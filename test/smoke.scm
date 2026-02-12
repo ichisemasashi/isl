@@ -463,6 +463,10 @@
             (trace traced-add2)
             (untrace traced-add2)
             (traced-add2 4)))
+(check 7 '(progn
+            (defmacro traced-macro (x) (list '+ x 2))
+            (trace traced-macro)
+            (traced-macro 5)))
 (check '(1 2 3) '(progn
                    (defun collect (a &rest r)
                      (cons a r))
