@@ -58,6 +58,15 @@
             (normalize-expr (caddr place)))
       #f))
 
+(define (normalize-tagbody-items items)
+  (let loop ((xs items) (acc '()))
+    (if (null? xs)
+        (reverse acc)
+        (let ((x (car xs)))
+          (if (or (symbol? x) (integer? x))
+              (loop (cdr xs) (cons (list 'label x) acc))
+              (loop (cdr xs) (cons (list 'form (normalize-expr x)) acc)))))))
+
 (define (normalize-special op args)
   (case op
     ((quote)
@@ -100,6 +109,46 @@
                      (list place (normalize-expr (cadr args))))
                (list 'invalid-special op args)))
          (list 'invalid-special op args)))
+    ((block)
+     (if (>= (length args) 1)
+         (let ((name (car args)))
+           (if (symbol? name)
+               (list 'special 'block
+                     (list name (normalize-body (cdr args))))
+               (list 'invalid-special op args)))
+         (list 'invalid-special op args)))
+    ((return-from)
+     (if (or (= (length args) 1) (= (length args) 2))
+         (let ((name (car args)))
+           (if (symbol? name)
+               (list 'special 'return-from
+                     (list name
+                           (if (= (length args) 2)
+                               (normalize-expr (cadr args))
+                               '(const ()))))
+               (list 'invalid-special op args)))
+         (list 'invalid-special op args)))
+    ((catch)
+     (if (>= (length args) 1)
+         (list 'special 'catch
+               (list (normalize-expr (car args))
+                     (normalize-body (cdr args))))
+         (list 'invalid-special op args)))
+    ((throw)
+     (if (= (length args) 2)
+         (list 'special 'throw
+               (list (normalize-expr (car args))
+                     (normalize-expr (cadr args))))
+         (list 'invalid-special op args)))
+    ((go)
+     (if (= (length args) 1)
+         (let ((tag (car args)))
+           (if (or (symbol? tag) (integer? tag))
+               (list 'special 'go (list tag))
+               (list 'invalid-special op args)))
+         (list 'invalid-special op args)))
+    ((tagbody)
+     (list 'special 'tagbody (normalize-tagbody-items args)))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -117,7 +166,8 @@
           (args (cdr form)))
       (if (symbol? op)
           (case op
-            ((quote if progn lambda setq let setf) (normalize-special op args))
+            ((quote if progn lambda setq let setf block return-from catch throw go tagbody)
+             (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))
    (else

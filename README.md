@@ -139,3 +139,12 @@ M4 smoke / oracle:
 gosh test/compiler/runtime-m4-smoke.scm
 gosh test/compiler/runtime-m4-oracle.scm
 ```
+
+## M5. 非局所制御の実装
+compiler runtime 経路で `block/return-from`, `catch/throw`, `tagbody/go` を実装します。
+
+M5 smoke / oracle:
+```sh
+gosh test/compiler/runtime-m5-smoke.scm
+gosh test/compiler/runtime-m5-oracle.scm
+```
