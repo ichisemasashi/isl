@@ -162,6 +162,25 @@ docs/optimization-policy.md
 ./test/compiler/m10-opt-bench.sh
 ```
 
+## M11. ORC JIT（任意・後段）
+JIT 実行モード:
+```sh
+./bin/islc --profile strict --jit examples/hello.lsp
+./bin/islc-jit --profile strict examples/hello.lsp
+```
+
+JIT REPL:
+```sh
+./bin/islc-jit --profile strict --repl
+```
+
+M11 JIT 回帰:
+```sh
+gosh test/compiler/jit-m11-smoke.scm
+gosh test/compiler/jit-m11-triple-oracle.scm
+./test/compiler/islc-jit-smoke.sh
+```
+
 ## M4. 評価順序と副作用の完全固定
 compiler runtime 経路で `setq/let/setf` を実装し、
 副作用を伴う式の評価順（左から）を固定します。

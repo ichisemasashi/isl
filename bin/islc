@@ -8,6 +8,7 @@ PROFILE=extended
 EMIT_LL=
 EMIT_OBJ=
 RUN_MODE=0
+JIT_MODE=0
 OUT_BIN=a.out
 OPT_LEVEL=0
 OPT_PRESET=
@@ -36,6 +37,9 @@ while [ "$#" -gt 0 ]; do
     --run)
       RUN_MODE=1
       ;;
+    --jit)
+      JIT_MODE=1
+      ;;
     -o)
       shift
       [ "$#" -gt 0 ] || { echo "-o requires output binary path" >&2; exit 2; }
@@ -58,7 +62,7 @@ while [ "$#" -gt 0 ]; do
       OPT_PRESET=${1#--opt-preset=}
       ;;
     -h|--help)
-      echo "Usage: islc [--profile strict|extended] [--opt-level 0|1|2|3|s|z] [--opt-preset none|safe|aggressive] [--emit-llvm out.ll] [--emit-obj out.o] [--run] [-o out-bin] <file> [file ...]" >&2
+      echo "Usage: islc [--profile strict|extended] [--opt-level 0|1|2|3|s|z] [--opt-preset none|safe|aggressive] [--emit-llvm out.ll] [--emit-obj out.o] [--run|--jit] [-o out-bin] <file> [file ...]" >&2
       exit 0
       ;;
     *)
@@ -88,6 +92,15 @@ if [ "$OPT_PRESET" = "aggressive" ]; then
 fi
 
 [ -n "$INPUTS" ] || { echo "input file is required" >&2; exit 2; }
+
+if [ "$JIT_MODE" -eq 1 ]; then
+  if [ -n "$EMIT_LL" ] || [ -n "$EMIT_OBJ" ] || [ "$RUN_MODE" -eq 1 ]; then
+    echo "--jit cannot be combined with --emit-llvm/--emit-obj/--run" >&2
+    exit 2
+  fi
+  # shellcheck disable=SC2086
+  exec "$SCRIPT_DIR/islc-jit" --profile "$PROFILE" $INPUTS
+fi
 
 if [ -n "$EMIT_OBJ" ] || [ "$RUN_MODE" -eq 1 ] || { [ -z "$EMIT_LL" ] && [ -z "$EMIT_OBJ" ]; }; then
   command -v clang >/dev/null 2>&1 || { echo "clang not found" >&2; exit 2; }

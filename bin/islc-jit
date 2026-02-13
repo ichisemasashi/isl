@@ -1,0 +1,89 @@
+#!/usr/bin/env gosh
+(add-load-path "./src")
+(use isl.compiler.jit)
+
+(define (usage)
+  (display "Usage: islc-jit [--profile strict|extended] [--repl] <file> [file ...]\n"))
+
+(define (starts-with? s prefix)
+  (let ((n (string-length s))
+        (m (string-length prefix)))
+    (and (>= n m)
+         (string=? (substring s 0 m) prefix))))
+
+(define (parse-args args)
+  (let loop ((xs args) (profile 'extended) (repl? #f) (files '()))
+    (if (null? xs)
+        (list 'ok profile repl? (reverse files))
+        (let ((a (car xs)))
+          (cond
+           ((or (string=? a "-h") (string=? a "--help"))
+            (list 'help))
+           ((string=? a "--profile")
+            (if (null? (cdr xs))
+                (list 'error "--profile requires strict or extended")
+                (loop (cddr xs) (string->symbol (cadr xs)) repl? files)))
+           ((starts-with? a "--profile=")
+            (loop (cdr xs) (string->symbol (substring a 10 (string-length a))) repl? files))
+           ((or (string=? a "--repl") (string=? a "-i"))
+            (loop (cdr xs) profile #t files))
+           (else
+            (loop (cdr xs) profile repl? (cons a files))))))))
+
+(define (run-repl st)
+  (display "islc-jit repl> ")
+  (flush)
+  (let loop ()
+    (let ((form (read)))
+      (if (eof-object? form)
+          0
+          (begin
+            (guard (e
+                    (else
+                     (display "error: ")
+                     (write e)
+                     (newline)))
+              (let ((v (jit-eval-forms st (list form))))
+                (write v)
+                (newline)))
+            (display "islc-jit repl> ")
+            (flush)
+            (loop))))))
+
+(define (main argv)
+  (let ((parsed (parse-args (cdr argv))))
+    (case (car parsed)
+      ((help)
+       (usage)
+       0)
+      ((error)
+       (usage)
+       (display "Error: ")
+       (display (cadr parsed))
+       (newline)
+       2)
+      ((ok)
+       (let ((profile (cadr parsed))
+             (repl? (caddr parsed))
+             (files (cadddr parsed)))
+         (if (and (null? files) (not repl?))
+             (begin
+               (usage)
+               2)
+             (let ((st (make-jit-state profile)))
+               (for-each
+                (lambda (f)
+                  (let ((result (jit-run-file st f)))
+                    (display f)
+                    (display " => ")
+                    (write result)
+                    (newline)))
+                files)
+               (if repl?
+                   (run-repl st)
+                   0)))))
+      (else
+       (usage)
+       2))))
+
+(exit (main (command-line)))
