@@ -19,6 +19,45 @@
    (else
     (cons 'seq (map normalize-expr forms)))))
 
+(define (normalize-setq-args args)
+  (if (or (null? args) (null? (cdr args)))
+      #f
+      (let loop ((xs args) (acc '()))
+        (cond
+         ((null? xs) (reverse acc))
+         ((or (null? (cdr xs)) (not (symbol? (car xs)))) #f)
+         (else
+          (loop (cddr xs)
+                (cons (list (car xs) (normalize-expr (cadr xs))) acc)))))))
+
+(define (normalize-let-bindings raw)
+  (if (not (list? raw))
+      #f
+      (let loop ((xs raw) (acc '()))
+        (cond
+         ((null? xs) (reverse acc))
+         ((symbol? (car xs))
+          (loop (cdr xs) (cons (list (car xs) '(const ())) acc)))
+         ((and (pair? (car xs))
+               (symbol? (caar xs))
+               (or (null? (cdar xs))
+                   (and (pair? (cdar xs)) (null? (cddar xs)))))
+          (let* ((entry (car xs))
+                 (name (car entry))
+                 (init (if (null? (cdr entry)) '(const ()) (normalize-expr (cadr entry)))))
+            (loop (cdr xs) (cons (list name init) acc))))
+         (else #f)))))
+
+(define (normalize-place place)
+  (if (and (pair? place)
+           (symbol? (car place))
+           (eq? (car place) 'vector-ref)
+           (= (length place) 3))
+      (list 'place-vector-ref
+            (normalize-expr (cadr place))
+            (normalize-expr (caddr place)))
+      #f))
+
 (define (normalize-special op args)
   (case op
     ((quote)
@@ -39,6 +78,28 @@
      (if (>= (length args) 2)
          (list 'lambda (car args) (normalize-body (cdr args)))
          (list 'invalid-special op args)))
+    ((setq)
+     (let ((pairs (normalize-setq-args args)))
+       (if pairs
+           (list 'special 'setq pairs)
+           (list 'invalid-special op args))))
+    ((let)
+     (if (null? args)
+         (list 'invalid-special op args)
+         (let ((bindings (normalize-let-bindings (car args))))
+           (if bindings
+               (list 'special 'let
+                     (list bindings
+                           (normalize-body (cdr args))))
+               (list 'invalid-special op args)))))
+    ((setf)
+     (if (= (length args) 2)
+         (let ((place (normalize-place (car args))))
+           (if place
+               (list 'special 'setf
+                     (list place (normalize-expr (cadr args))))
+               (list 'invalid-special op args)))
+         (list 'invalid-special op args)))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -56,7 +117,7 @@
           (args (cdr form)))
       (if (symbol? op)
           (case op
-            ((quote if progn lambda) (normalize-special op args))
+            ((quote if progn lambda setq let setf) (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))
    (else

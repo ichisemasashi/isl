@@ -100,6 +100,15 @@
         (cdr p)
         (runtime-raise 'unbound-variable "Unbound variable" sym))))
 
+(define (env-set! env sym val)
+  (let loop ((e env))
+    (if (not e)
+        (env-define! env sym val)
+        (let ((p (assoc sym (env-bindings e))))
+          (if p
+              (set-cdr! p val)
+              (loop (env-parent e)))))))
+
 ;; Function values.
 (define (make-closure name params body env)
   (vector 'closure name params body env 'ir))
@@ -175,6 +184,18 @@
         v
         (runtime-raise 'type-error (string-append who " expects number") rv))))
 
+(define (runtime-vector rv who)
+  (let ((v (runtime-value->host rv)))
+    (if (vector? v)
+        v
+        (runtime-raise 'type-error (string-append who " expects vector") rv))))
+
+(define (runtime-list rv who)
+  (let ((v (runtime-value->host rv)))
+    (if (list? v)
+        v
+        (runtime-raise 'type-error (string-append who " expects list") rv))))
+
 (define (runtime-compare-binop who pred args)
   (unless (= (length args) 2)
     (runtime-raise 'arity (string-append who " expects 2 arguments") args))
@@ -241,6 +262,19 @@
   (def 'list
     (lambda (args state)
       (host->runtime-value (map runtime-value->host args))))
+  (def 'append
+    (lambda (args state)
+      (host->runtime-value (apply append (map (lambda (x) (runtime-list x "append")) args)))))
+  (def 'vector
+    (lambda (args state)
+      (host->runtime-value (list->vector (map runtime-value->host args)))))
+  (def 'vector-ref
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "vector-ref expects 2 arguments" args))
+      (let* ((v (runtime-vector (car args) "vector-ref"))
+             (i (runtime-number (cadr args) "vector-ref")))
+        (host->runtime-value (vector-ref v i)))))
   (def 'funcall
     (lambda (args state)
       (unless (>= (length args) 1)
@@ -258,6 +292,62 @@
       (write (runtime-value->host (car args)))
       (newline)
       (car args))))
+
+(define (runtime-eval-special op payload env state)
+  (case op
+    ((setq)
+     (unless (list? payload)
+       (runtime-raise 'invalid-ir "setq payload must be list" payload))
+     (if (null? payload)
+         (host->runtime-value '())
+         (let loop ((xs payload) (last (host->runtime-value '())))
+           (if (null? xs)
+               last
+               (let ((entry (car xs)))
+                 (unless (and (list? entry) (= (length entry) 2) (symbol? (car entry)))
+                   (runtime-raise 'invalid-ir "setq entry must be (symbol expr)" entry))
+                 (let ((v (runtime-eval-expr (cadr entry) env state)))
+                   (env-set! env (car entry) v)
+                   (loop (cdr xs) v)))))))
+    ((let)
+     (unless (and (list? payload) (= (length payload) 2))
+       (runtime-raise 'invalid-ir "let payload must be (bindings body)" payload))
+     (let* ((bindings (car payload))
+            (body (cadr payload)))
+       (unless (list? bindings)
+         (runtime-raise 'invalid-ir "let bindings must be list" bindings))
+       ;; Evaluation order fixed: init forms are evaluated left-to-right in outer env.
+       (let ((init-values
+              (map (lambda (b)
+                     (unless (and (list? b) (= (length b) 2) (symbol? (car b)))
+                       (runtime-raise 'invalid-ir "let binding must be (symbol expr)" b))
+                     (list (car b) (runtime-eval-expr (cadr b) env state)))
+                   bindings)))
+         (let ((let-env (make-env env)))
+           (for-each (lambda (x) (env-define! let-env (car x) (cadr x))) init-values)
+           (runtime-eval-expr body let-env state)))))
+    ((setf)
+     (unless (and (list? payload) (= (length payload) 2))
+       (runtime-raise 'invalid-ir "setf payload must be (place value)" payload))
+     (let ((place (car payload))
+           (value-expr (cadr payload)))
+       (unless (and (list? place) (symbol? (car place)))
+         (runtime-raise 'invalid-ir "setf place must be tagged place" place))
+       (case (car place)
+         ((place-vector-ref)
+          (unless (= (length place) 3)
+            (runtime-raise 'invalid-ir "place-vector-ref expects vec/index" place))
+          (let* ((vec-rv (runtime-eval-expr (cadr place) env state))
+                 (idx-rv (runtime-eval-expr (caddr place) env state))
+                 (value-rv (runtime-eval-expr value-expr env state))
+                 (vec (runtime-vector vec-rv "setf vector-ref"))
+                 (idx (runtime-number idx-rv "setf vector-ref")))
+            (vector-set! vec idx (runtime-value->host value-rv))
+            value-rv))
+         (else
+          (runtime-raise 'unsupported-special "unsupported setf place" place)))))
+    (else
+     (runtime-raise 'unsupported-special "special form is not yet lowered" (list op payload)))))
 
 (define (make-runtime-state . maybe-profile)
   (let ((profile (if (null? maybe-profile) 'extended (car maybe-profile)))
@@ -310,7 +400,9 @@
          (make-fn-value (make-closure #f (cadr rhs) (caddr rhs) env))
          (runtime-raise 'invalid-ir "lambda rhs expects params/body" rhs)))
     ((special)
-     (runtime-raise 'unsupported-special "special form is not yet lowered" rhs))
+     (if (= (length rhs) 3)
+         (runtime-eval-special (cadr rhs) (caddr rhs) env state)
+         (runtime-raise 'invalid-ir "special rhs expects op/payload" rhs)))
     ((invalid-special)
      (runtime-raise 'invalid-ir "invalid special form shape in rhs" rhs))
     ((phi)
@@ -417,7 +509,9 @@
            (runtime-apply fn args state))
          (runtime-raise 'invalid-ir "call expects callee" ir)))
     ((special)
-     (runtime-raise 'unsupported-special "special form is not yet lowered" ir))
+     (if (= (length ir) 3)
+         (runtime-eval-special (cadr ir) (caddr ir) env state)
+         (runtime-raise 'invalid-ir "special node expects op/payload" ir)))
     ((invalid-special)
      (runtime-raise 'invalid-ir "invalid special form shape" ir))
     (else

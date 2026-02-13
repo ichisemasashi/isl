@@ -137,7 +137,7 @@
            (list merge-label dst)))))
     ((special)
      (let ((dst (fresh-temp st)))
-       (emit! st label (list 'assign dst (list 'special (cadr expr) (cddr expr))))
+       (emit! st label (list 'assign dst (list 'special (cadr expr) (caddr expr))))
        (list label dst)))
     ((invalid-special)
      (let ((dst (fresh-temp st)))

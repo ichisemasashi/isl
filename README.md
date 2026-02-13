@@ -129,3 +129,13 @@ gosh test/compiler/codegen-smoke.scm
 gosh test/compiler/aot-smoke.scm
 ./test/compiler/aot-run-smoke.sh
 ```
+
+## M4. 評価順序と副作用の完全固定
+compiler runtime 経路で `setq/let/setf` を実装し、
+副作用を伴う式の評価順（左から）を固定します。
+
+M4 smoke / oracle:
+```sh
+gosh test/compiler/runtime-m4-smoke.scm
+gosh test/compiler/runtime-m4-oracle.scm
+```
