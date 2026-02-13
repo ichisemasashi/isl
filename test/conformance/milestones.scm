@@ -264,6 +264,7 @@
    (list "M6" m6-cases)
    (list "M7" m7-cases)
    (list "M8" m8-cases)
+   (list "M9" m9-cases)
    (list "M10" m10-cases)
    (list "M11" m11-cases)))
 

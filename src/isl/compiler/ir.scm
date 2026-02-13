@@ -287,6 +287,14 @@
                (list 'invalid-special op args)
                (list 'special 'handler-case (list protected clauses))))
          (list 'invalid-special op args)))
+    ((defpackage)
+     (if (>= (length args) 1)
+         (list 'special 'defpackage args)
+         (list 'invalid-special op args)))
+    ((in-package)
+     (if (= (length args) 1)
+         (list 'special 'in-package args)
+         (list 'invalid-special op args)))
     ((defclass)
      (let ((p (normalize-defclass-payload args)))
        (if p
@@ -322,6 +330,7 @@
       (if (symbol? op)
           (case op
             ((quote if progn lambda setq let setf block return-from catch throw go tagbody handler-case
+                    defpackage in-package
                     defclass defgeneric defmethod)
              (normalize-special op args))
             (else (normalize-call op args)))

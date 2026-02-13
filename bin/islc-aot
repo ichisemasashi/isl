@@ -8,6 +8,7 @@ PROFILE=extended
 OUT_BIN=a.out
 KEEP_LL=0
 LL_PATH=
+OPT_LEVEL=0
 INPUTS=
 
 while [ "$#" -gt 0 ]; do
@@ -31,8 +32,16 @@ while [ "$#" -gt 0 ]; do
       LL_PATH="$1"
       KEEP_LL=1
       ;;
+    --opt-level)
+      shift
+      [ "$#" -gt 0 ] || { echo "--opt-level requires 0|1|2|3|s|z" >&2; exit 2; }
+      OPT_LEVEL="$1"
+      ;;
+    --opt-level=*)
+      OPT_LEVEL=${1#--opt-level=}
+      ;;
     -h|--help)
-      echo "Usage: islc-aot [--profile strict|extended] [-o output-bin] [--emit-ll out.ll] <file> [file ...]" >&2
+      echo "Usage: islc-aot [--profile strict|extended] [--opt-level 0|1|2|3|s|z] [-o output-bin] [--emit-ll out.ll] <file> [file ...]" >&2
       exit 0
       ;;
     *)
@@ -41,6 +50,11 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+case "$OPT_LEVEL" in
+  0|1|2|3|s|z) ;;
+  *) echo "invalid --opt-level: $OPT_LEVEL" >&2; exit 2 ;;
+esac
 
 [ -n "$INPUTS" ] || { echo "input file is required" >&2; exit 2; }
 command -v clang >/dev/null 2>&1 || { echo "clang not found" >&2; exit 2; }
@@ -53,7 +67,7 @@ fi
 
 # shellcheck disable=SC2086
 "$SCRIPT_DIR/islc-llvm" --profile "$PROFILE" --mode aot -o "$TMP_LL" $INPUTS
-clang -O0 -x ir "$TMP_LL" -x c "$ROOT_DIR/src/isl/compiler/llvm_runtime.c" -o "$OUT_BIN"
+clang -O"$OPT_LEVEL" -fno-fast-math -x ir "$TMP_LL" -x c "$ROOT_DIR/src/isl/compiler/llvm_runtime.c" -o "$OUT_BIN"
 
 if [ "$KEEP_LL" -eq 0 ]; then
   rm -f "$TMP_LL"

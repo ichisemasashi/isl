@@ -1,4 +1,5 @@
 (define-module isl.compiler.runtime
+  (use isl.core)
   (use srfi-1)
   (export make-runtime-state
           runtime-load-units!
@@ -117,7 +118,13 @@
 (define (env-bindings env) (vector-ref env 2))
 (define (set-env-bindings! env bindings) (vector-set! env 2 bindings))
 
+(define (runtime-resolve-symbol sym)
+  (if (symbol? sym)
+      (with-module isl.core (resolve-symbol-in-package sym))
+      sym))
+
 (define (env-define! env sym val)
+  (set! sym (runtime-resolve-symbol sym))
   (let ((bindings (env-bindings env)))
     (let loop ((xs bindings) (acc '()))
       (cond
@@ -129,6 +136,7 @@
         (loop (cdr xs) (cons (car xs) acc)))))))
 
 (define (env-find-pair env sym)
+  (set! sym (runtime-resolve-symbol sym))
   (let loop ((e env))
     (if (not e)
         #f
@@ -136,12 +144,14 @@
           (if p p (loop (env-parent e)))))))
 
 (define (env-ref env sym)
+  (set! sym (runtime-resolve-symbol sym))
   (let ((p (env-find-pair env sym)))
     (if p
         (cdr p)
         (runtime-raise 'unbound-variable "Unbound variable" sym))))
 
 (define (env-set! env sym val)
+  (set! sym (runtime-resolve-symbol sym))
   (let loop ((e env))
     (if (not e)
         (env-define! env sym val)
@@ -282,6 +292,12 @@
         v
         (runtime-raise 'type-error (string-append who " expects number") rv))))
 
+(define (runtime-integer rv who)
+  (let ((v (runtime-number rv who)))
+    (if (integer? v)
+        v
+        (runtime-raise 'type-error (string-append who " expects integer") rv))))
+
 (define (runtime-vector rv who)
   (let ((v (runtime-value->host rv)))
     (if (vector? v)
@@ -293,6 +309,11 @@
     (if (list? v)
         v
         (runtime-raise 'type-error (string-append who " expects list") rv))))
+
+(define (runtime-package-designator x who)
+  (if (or (symbol? x) (string? x))
+      x
+      (runtime-raise 'type-error (string-append who " expects package designator") x)))
 
 (define (runtime-object rv who pred)
   (let ((v (runtime-value->host rv)))
@@ -535,6 +556,65 @@
   (def '>=
     (lambda (args state)
       (runtime-compare-binop ">=" >= args)))
+  (def 'mod
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "mod expects 2 arguments" args))
+      (let ((a (runtime-integer (car args) "mod"))
+            (b (runtime-integer (cadr args) "mod")))
+        (host->runtime-value (modulo a b)))))
+  (def 'floor
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "floor expects 1 argument" args))
+      (host->runtime-value (floor (runtime-number (car args) "floor")))))
+  (def 'ceiling
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "ceiling expects 1 argument" args))
+      (host->runtime-value (ceiling (runtime-number (car args) "ceiling")))))
+  (def 'truncate
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "truncate expects 1 argument" args))
+      (host->runtime-value (truncate (runtime-number (car args) "truncate")))))
+  (def 'round
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "round expects 1 argument" args))
+      (host->runtime-value (round (runtime-number (car args) "round")))))
+  (def 'numberp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "numberp expects 1 argument" args))
+      (host->runtime-value (if (number? (runtime-value->host (car args))) #t #f))))
+  (def 'zerop
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "zerop expects 1 argument" args))
+      (host->runtime-value (if (zero? (runtime-number (car args) "zerop")) #t #f))))
+  (def 'plusp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "plusp expects 1 argument" args))
+      (host->runtime-value (if (> (runtime-number (car args) "plusp") 0) #t #f))))
+  (def 'minusp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "minusp expects 1 argument" args))
+      (host->runtime-value (if (< (runtime-number (car args) "minusp") 0) #t #f))))
+  (def 'evenp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "evenp expects 1 argument" args))
+      (host->runtime-value
+       (if (zero? (modulo (runtime-integer (car args) "evenp") 2)) #t #f))))
+  (def 'oddp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "oddp expects 1 argument" args))
+      (host->runtime-value
+       (if (zero? (modulo (runtime-integer (car args) "oddp") 2)) #f #t))))
   (def 'list
     (lambda (args state)
       (host->runtime-value (map runtime-value->host args))))
@@ -568,6 +648,91 @@
       (write (runtime-value->host (car args)))
       (newline)
       (car args)))
+  (def 'current-package
+    (lambda (args state)
+      (unless (= (length args) 0)
+        (runtime-raise 'arity "current-package expects 0 arguments" args))
+      (host->runtime-value
+       (with-module isl.core
+         (string->symbol (package-name *current-package*))))))
+  (def 'find-package
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "find-package expects 1 argument" args))
+      (let* ((name (runtime-package-designator (runtime-value->host (car args)) "find-package"))
+             (p (with-module isl.core (find-package name))))
+        (host->runtime-value
+         (if p
+             (with-module isl.core (string->symbol (package-name p)))
+             '())))))
+  (def 'use-package
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "use-package expects 1 or 2 arguments" args))
+      (let* ((used-name (runtime-package-designator (runtime-value->host (car args)) "use-package"))
+             (target-name (and (= (length args) 2)
+                               (runtime-package-designator (runtime-value->host (cadr args)) "use-package"))))
+        (with-module isl.core
+          (let ((used (ensure-package! used-name))
+                (target (if target-name (ensure-package! target-name) *current-package*)))
+            (package-use! target used)))
+        (host->runtime-value #t))))
+  (def 'export
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "export expects 1 or 2 arguments" args))
+      (let* ((vals (runtime-value->host (car args)))
+             (pkg-name (and (= (length args) 2)
+                            (runtime-package-designator (runtime-value->host (cadr args)) "export"))))
+        (with-module isl.core
+          (let ((pkg (if pkg-name (ensure-package! pkg-name) *current-package*)))
+            (cond
+             ((symbol? vals) (package-export! pkg vals))
+             ((list? vals)
+              (for-each (lambda (s)
+                          (unless (symbol? s)
+                            (error "export list must contain symbols" s))
+                          (package-export! pkg s))
+                        vals))
+             (else
+              (error "export expects symbol or list of symbols" vals)))))
+        (host->runtime-value #t))))
+  (def 'intern
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "intern expects 1 or 2 arguments" args))
+      (let* ((name-arg (runtime-value->host (car args)))
+             (name (cond
+                    ((symbol? name-arg) (with-module isl.core (symbol-base-name name-arg)))
+                    ((string? name-arg) name-arg)
+                    (else
+                     (runtime-raise 'type-error "intern name must be symbol or string" name-arg))))
+             (pkg-name (and (= (length args) 2)
+                            (runtime-package-designator (runtime-value->host (cadr args)) "intern"))))
+        (host->runtime-value
+         (with-module isl.core
+           (let ((pkg (if pkg-name (ensure-package! pkg-name) *current-package*)))
+             (package-intern! pkg name)))))))
+  (def 'import
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "import expects 1 or 2 arguments" args))
+      (let* ((vals (runtime-value->host (car args)))
+             (pkg-name (and (= (length args) 2)
+                            (runtime-package-designator (runtime-value->host (cadr args)) "import"))))
+        (with-module isl.core
+          (let ((pkg (if pkg-name (ensure-package! pkg-name) *current-package*)))
+            (cond
+             ((symbol? vals) (package-import-symbol! pkg vals))
+             ((list? vals)
+              (for-each (lambda (s)
+                          (unless (symbol? s)
+                            (error "import list must contain symbols" s))
+                          (package-import-symbol! pkg s))
+                        vals))
+             (else
+              (error "import expects symbol or list of symbols" vals)))))
+        (host->runtime-value #t))))
   (def 'make-instance
     (lambda (args state)
       (unless (>= (length args) 1)
@@ -793,6 +958,18 @@
                                 (runtime-eval-expr body henv state))
                               (loop (cdr cs)))))))))
          (runtime-eval-expr protected env state))))
+    ((defpackage)
+     (unless (list? payload)
+       (runtime-raise 'invalid-ir "defpackage payload must be list" payload))
+     (host->runtime-value
+      (with-module isl.core
+        (eval-defpackage payload))))
+    ((in-package)
+     (unless (and (list? payload) (= (length payload) 1))
+       (runtime-raise 'invalid-ir "in-package payload must be one argument list" payload))
+     (host->runtime-value
+      (with-module isl.core
+        (eval-in-package payload))))
     ((defclass)
      (unless (and (list? payload) (= (length payload) 3) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "defclass payload must be (name supers slots)" payload))

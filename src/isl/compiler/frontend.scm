@@ -34,7 +34,7 @@
 (define (compile-time-form? form)
   (and (pair? form)
        (symbol? (car form))
-       (memq (car form) '(defmacro defpackage in-package))))
+       (memq (car form) '(defmacro defpackage in-package use-package export import intern))))
 
 (define (frontend-compile-forms forms env)
   (let loop ((xs forms) (acc '()))

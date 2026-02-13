@@ -2262,7 +2262,7 @@
   (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass)))
 
 (define (extended-special-form? sym)
-  (memq sym '(trace untrace defpackage in-package)))
+  (memq sym '(trace untrace)))
 
 (define (eval-special form env tail?)
   (let ((op (car form))
