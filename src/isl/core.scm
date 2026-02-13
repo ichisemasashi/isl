@@ -3503,6 +3503,12 @@
       (cond
        ((null? args)
         (error "format needs at least a control string"))
+       ;; String destination: append formatted output and return new string.
+       ((and (>= (length args) 2)
+             (string? (car args))
+             (string? (cadr args)))
+        (string-append (car args)
+                       (render-format (cadr args) (cddr args))))
        ;; Backward-compat shorthand: (format "fmt" ...)
        ((string? (car args))
         (let ((out (render-format (car args) (cdr args))))
@@ -3514,7 +3520,7 @@
         (let ((out (render-format (cadr args) (cddr args))))
           (display out)
           '()))
-       ((null? (car args))
+       ((or (null? (car args)) (eq? (car args) #f))
         (render-format (cadr args) (cddr args)))
        ((output-port? (car args))
         (let ((out (render-format (cadr args) (cddr args))))

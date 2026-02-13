@@ -240,6 +240,8 @@
                              :if-does-not-exist nil)
             (if (null s) 'no-create 'created))))
 (check "255" '(format nil "~D" 255))
+(check "42" '(format #f "~D" 42))
+(check "prefix-abc" '(format "prefix-" "~A" "abc"))
 (check "11" '(format nil "~B" 3))
 (check "377" '(format nil "~O" 255))
 (check "ff" '(format nil "~X" 255))
