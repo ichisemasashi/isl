@@ -9,6 +9,7 @@ OUT_BIN=a.out
 KEEP_LL=0
 LL_PATH=
 OPT_LEVEL=0
+OPT_PRESET=
 INPUTS=
 
 while [ "$#" -gt 0 ]; do
@@ -40,8 +41,16 @@ while [ "$#" -gt 0 ]; do
     --opt-level=*)
       OPT_LEVEL=${1#--opt-level=}
       ;;
+    --opt-preset)
+      shift
+      [ "$#" -gt 0 ] || { echo "--opt-preset requires none|safe|aggressive" >&2; exit 2; }
+      OPT_PRESET="$1"
+      ;;
+    --opt-preset=*)
+      OPT_PRESET=${1#--opt-preset=}
+      ;;
     -h|--help)
-      echo "Usage: islc-aot [--profile strict|extended] [--opt-level 0|1|2|3|s|z] [-o output-bin] [--emit-ll out.ll] <file> [file ...]" >&2
+      echo "Usage: islc-aot [--profile strict|extended] [--opt-level 0|1|2|3|s|z] [--opt-preset none|safe|aggressive] [-o output-bin] [--emit-ll out.ll] <file> [file ...]" >&2
       exit 0
       ;;
     *)
@@ -50,6 +59,15 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ -n "$OPT_PRESET" ]; then
+  case "$OPT_PRESET" in
+    none) OPT_LEVEL=0 ;;
+    safe) OPT_LEVEL=2 ;;
+    aggressive) OPT_LEVEL=3 ;;
+    *) echo "invalid --opt-preset: $OPT_PRESET" >&2; exit 2 ;;
+  esac
+fi
 
 case "$OPT_LEVEL" in
   0|1|2|3|s|z) ;;
@@ -67,7 +85,14 @@ fi
 
 # shellcheck disable=SC2086
 "$SCRIPT_DIR/islc-llvm" --profile "$PROFILE" --mode aot -o "$TMP_LL" $INPUTS
-clang -O"$OPT_LEVEL" -fno-fast-math -x ir "$TMP_LL" -x c "$ROOT_DIR/src/isl/compiler/llvm_runtime.c" -o "$OUT_BIN"
+# Whitelist-oriented defaults: keep numeric/observable semantics stable.
+OPT_FLAGS="-fno-fast-math -fno-vectorize -fno-slp-vectorize"
+if [ "$OPT_PRESET" = "aggressive" ]; then
+  OPT_FLAGS="$OPT_FLAGS -funroll-loops"
+fi
+
+# shellcheck disable=SC2086
+clang -O"$OPT_LEVEL" $OPT_FLAGS -x ir "$TMP_LL" -x c "$ROOT_DIR/src/isl/compiler/llvm_runtime.c" -o "$OUT_BIN"
 
 if [ "$KEEP_LL" -eq 0 ]; then
   rm -f "$TMP_LL"

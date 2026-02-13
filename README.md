@@ -130,12 +130,36 @@ LLVM IR + 実行用 `main` を生成:
 ./hello-aot
 ```
 
+最適化段階を指定してネイティブ生成:
+```sh
+./bin/islc-aot --opt-preset none -o hello-o0 examples/hello.lsp
+./bin/islc-aot --opt-preset safe -o hello-o2 examples/hello.lsp
+./bin/islc-aot --opt-preset aggressive -o hello-o3 examples/hello.lsp
+```
+
 M3 codegen / AOT smoke:
 ```sh
 gosh test/compiler/codegen-smoke.scm
 gosh test/compiler/aot-smoke.scm
 ./test/compiler/aot-run-smoke.sh
 ./test/compiler/islc-m3-smoke.sh
+```
+
+## M10. 最適化段階導入（意味不変）
+最適化方針（whitelist）:
+```text
+docs/optimization-policy.md
+```
+
+`-O0/-O2` 同値確認:
+```sh
+./test/compiler/m10-opt-parity-smoke.sh
+./test/compiler/m10-stage-regression.sh
+```
+
+最適化有無比較ベンチ:
+```sh
+./test/compiler/m10-opt-bench.sh
 ```
 
 ## M4. 評価順序と副作用の完全固定

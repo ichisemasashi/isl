@@ -10,6 +10,7 @@ EMIT_OBJ=
 RUN_MODE=0
 OUT_BIN=a.out
 OPT_LEVEL=0
+OPT_PRESET=
 INPUTS=
 
 while [ "$#" -gt 0 ]; do
@@ -48,8 +49,16 @@ while [ "$#" -gt 0 ]; do
     --opt-level=*)
       OPT_LEVEL=${1#--opt-level=}
       ;;
+    --opt-preset)
+      shift
+      [ "$#" -gt 0 ] || { echo "--opt-preset requires none|safe|aggressive" >&2; exit 2; }
+      OPT_PRESET="$1"
+      ;;
+    --opt-preset=*)
+      OPT_PRESET=${1#--opt-preset=}
+      ;;
     -h|--help)
-      echo "Usage: islc [--profile strict|extended] [--opt-level 0|1|2|3|s|z] [--emit-llvm out.ll] [--emit-obj out.o] [--run] [-o out-bin] <file> [file ...]" >&2
+      echo "Usage: islc [--profile strict|extended] [--opt-level 0|1|2|3|s|z] [--opt-preset none|safe|aggressive] [--emit-llvm out.ll] [--emit-obj out.o] [--run] [-o out-bin] <file> [file ...]" >&2
       exit 0
       ;;
     *)
@@ -59,10 +68,24 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+if [ -n "$OPT_PRESET" ]; then
+  case "$OPT_PRESET" in
+    none) OPT_LEVEL=0 ;;
+    safe) OPT_LEVEL=2 ;;
+    aggressive) OPT_LEVEL=3 ;;
+    *) echo "invalid --opt-preset: $OPT_PRESET" >&2; exit 2 ;;
+  esac
+fi
+
 case "$OPT_LEVEL" in
   0|1|2|3|s|z) ;;
   *) echo "invalid --opt-level: $OPT_LEVEL" >&2; exit 2 ;;
 esac
+
+OPT_FLAGS="-fno-fast-math -fno-vectorize -fno-slp-vectorize"
+if [ "$OPT_PRESET" = "aggressive" ]; then
+  OPT_FLAGS="$OPT_FLAGS -funroll-loops"
+fi
 
 [ -n "$INPUTS" ] || { echo "input file is required" >&2; exit 2; }
 
@@ -88,12 +111,14 @@ trap cleanup EXIT
 "$SCRIPT_DIR/islc-llvm" --profile "$PROFILE" --mode aot -o "$TMP_LL" $INPUTS
 
 if [ -n "$EMIT_OBJ" ]; then
-  clang -O"$OPT_LEVEL" -fno-fast-math -c -x ir "$TMP_LL" -o "$EMIT_OBJ"
+  # shellcheck disable=SC2086
+  clang -O"$OPT_LEVEL" $OPT_FLAGS -c -x ir "$TMP_LL" -o "$EMIT_OBJ"
 fi
 
 # binary build is always available unless user explicitly only wants ll/object.
 if [ "$RUN_MODE" -eq 1 ] || { [ -z "$EMIT_LL" ] && [ -z "$EMIT_OBJ" ]; }; then
-  clang -O"$OPT_LEVEL" -fno-fast-math -x ir "$TMP_LL" -x c "$ROOT_DIR/src/isl/compiler/llvm_runtime.c" -o "$OUT_BIN"
+  # shellcheck disable=SC2086
+  clang -O"$OPT_LEVEL" $OPT_FLAGS -x ir "$TMP_LL" -x c "$ROOT_DIR/src/isl/compiler/llvm_runtime.c" -o "$OUT_BIN"
 fi
 
 if [ "$RUN_MODE" -eq 1 ]; then
