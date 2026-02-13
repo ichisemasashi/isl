@@ -134,6 +134,7 @@
 (define *ffi-bridge-source* "src/isl/ffi_bridge.c")
 (define *ffi-bridge-binary* "src/isl/ffi_bridge")
 (define *ffi-result-prefix* "__ISLISP_FFI_RESULT__:")
+(define *ffi-null-token* "__ISLISP_FFI_NULL__")
 
 (define (make-sqlite-connection path)
   (vector 'sqlite-connection path))
@@ -350,23 +351,27 @@
              (loop (cons (string-split-char line separator) acc))))))))
 
 (define (ensure-ffi-bridge!)
-  (unless (file-exists? *ffi-bridge-binary*)
-    (unless (file-exists? *ffi-bridge-source*)
-      (error "ffi bridge source is missing" *ffi-bridge-source*))
-    ;; On Darwin, -ldl is unnecessary and may fail; try with -ldl then fallback.
-    (let* ((with-dl (run-command/capture
-                     (list "cc" "-O2" "-std=c99"
-                           "-o" *ffi-bridge-binary* *ffi-bridge-source*
-                           "-ldl")))
-           (st1 (car with-dl)))
-      (unless (or (eq? st1 0) (eq? st1 #t))
-        (let* ((without-dl (run-command/capture
-                            (list "cc" "-O2" "-std=c99"
-                                  "-o" *ffi-bridge-binary* *ffi-bridge-source*)))
-               (st2 (car without-dl)))
-          (unless (or (eq? st2 0) (eq? st2 #t))
-            (error "failed to build ffi bridge"
-                   (string-append (caddr with-dl) (caddr without-dl)))))))))
+  (unless (file-exists? *ffi-bridge-source*)
+    (error "ffi bridge source is missing" *ffi-bridge-source*))
+  (let ((needs-build
+         (or (not (file-exists? *ffi-bridge-binary*))
+             (> (file-mtime *ffi-bridge-source*)
+                (file-mtime *ffi-bridge-binary*)))))
+    (when needs-build
+      ;; On Darwin, -ldl is unnecessary and may fail; try with -ldl then fallback.
+      (let* ((with-dl (run-command/capture
+                       (list "cc" "-O2" "-std=c99"
+                             "-o" *ffi-bridge-binary* *ffi-bridge-source*
+                             "-ldl")))
+             (st1 (car with-dl)))
+        (unless (or (eq? st1 0) (eq? st1 #t))
+          (let* ((without-dl (run-command/capture
+                              (list "cc" "-O2" "-std=c99"
+                                    "-o" *ffi-bridge-binary* *ffi-bridge-source*)))
+                 (st2 (car without-dl)))
+            (unless (or (eq? st2 0) (eq? st2 #t))
+              (error "failed to build ffi bridge"
+                     (string-append (caddr with-dl) (caddr without-dl))))))))))
 
 (define (normalize-ffi-type x where)
   (let* ((raw
@@ -377,9 +382,31 @@
             (error "ffi type must be symbol or string" where x))))
          (low (list->string (map char-downcase (string->list raw)))))
     (cond
-     ((string=? low "int") "int")
-     ((string=? low "double") "double")
-     ((string=? low "string") "string")
+     ((or (string=? low "int")
+          (string=? low "long")
+          (string=? low "short")
+          (string=? low "char")
+          (string=? low "signed")
+          (string=? low "unsigned")
+          (string=? low "size_t")
+          (string=? low "ssize_t")
+          (string=? low "uintptr_t")
+          (string=? low "intptr_t")
+          (string=? low "ptr")
+          (string=? low "pointer"))
+      "int")
+     ((or (string=? low "double")
+          (string=? low "float"))
+      "double")
+     ((or (string=? low "string")
+          (string=? low "c-string")
+          (string=? low "cstring")
+          (string=? low "char*")
+          (string=? low "char-ptr"))
+      "string")
+     ((or (string=? low "bool")
+          (string=? low "boolean"))
+      "bool")
      ((string=? low "void") "void")
      (else
       (error "unsupported ffi type" where x)))))
@@ -398,6 +425,14 @@
     (unless (string? value)
       (error "ffi string argument must be string" value))
     value)
+   ((string=? type "bool")
+    (cond
+     ((or (eq? value #t) (eq? value t)) "1")
+     ((or (eq? value #f) (null? value)) "0")
+     ((integer? value)
+      (if (= value 0) "0" "1"))
+     (else
+      (error "ffi bool argument must be boolean/nil or integer" value))))
    (else
     (error "unsupported ffi argument type" type))))
 
@@ -411,7 +446,17 @@
           n
           (error "ffi result parse error" out))))
    ((string=? ret-type "string")
-    out)
+    (if (string=? out *ffi-null-token*) '() out))
+   ((string=? ret-type "bool")
+    (let ((n (string->number out)))
+      (if n
+          (if (= n 0) #f #t)
+          (let ((low (list->string (map char-downcase (string->list out)))))
+            (cond
+             ((string=? low "true") #t)
+             ((string=? low "false") #f)
+             (else
+              (error "ffi result parse error" out)))))))
    (else
     (error "unsupported ffi return type" ret-type))))
 
@@ -3428,15 +3473,17 @@
       (let ((ret (normalize-ffi-type return-type "return"))
             (types (map (lambda (t) (normalize-ffi-type t "argument")) arg-types)))
         (ensure-ffi-bridge!)
-        (let* ((pairs
+        (let* ((bridge-ret (if (string=? ret "bool") "int" ret))
+               (bridge-types (map (lambda (t) (if (string=? t "bool") "int" t)) types))
+               (pairs
                 (apply append
-                       (map (lambda (t v) (list t (ffi-arg->string t v)))
-                            types arg-values)))
+                       (map (lambda (t bt v) (list bt (ffi-arg->string t v)))
+                            types bridge-types arg-values)))
                (argv (append (list *ffi-bridge-binary*
                                    library
                                    symbol-name
-                                   ret
-                                   (number->string (length types)))
+                                   bridge-ret
+                                   (number->string (length bridge-types)))
                              pairs))
                (result (run-command/capture argv))
                (status (car result))

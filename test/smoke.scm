@@ -196,6 +196,11 @@
    (else #f)))
 (when ffi-libc
   (check 42 `(ffi-call ,ffi-libc "abs" :int '(:int) '(-42)))
+  (check 5 `(ffi-call ,ffi-libc "strlen" :long '(:string) '("hello")))
+  (check #t `(ffi-call ,ffi-libc "isalpha" :bool '(:int) '(65)))
+  (check #f `(ffi-call ,ffi-libc "isalpha" :bool '(:int) '(48)))
+  (check "smoke3" `(ffi-call ,ffi-libc "getenv" :string '(:string) '("ISL_SMOKE_ENV")))
+  (check '() `(ffi-call ,ffi-libc "getenv" :string '(:string) '("ISL_MISSING_ENV_FOR_FFI")))
   (check 7 `(progn
               (defpackage :ffi-smoke (:use :common-lisp :cffi))
               (in-package :ffi-smoke)
