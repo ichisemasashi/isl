@@ -243,7 +243,19 @@
 (check "11" '(format nil "~B" 3))
 (check "377" '(format nil "~O" 255))
 (check "ff" '(format nil "~X" 255))
+(check "42" '(format nil "~R" 42))
+(check "1.5" '(format nil "~F" 1.5))
+(check "2.5" '(format nil "~E" 2.5))
+(check "3.5" '(format nil "~G" 3.5))
 (check "A" '(format nil "~C" #\A))
+(check "word" '(format nil "~W" "word"))
+(check "1 item" '(format nil "~D item~P" 1 1))
+(check "2 items" '(format nil "~D item~P" 2 2))
+(check "a\tb" '(format nil "~A~T~A" "a" "b"))
+(check "a b" '(format nil "~A~_~A" "a" "b"))
+(check "x-7" '(format nil "~?" "~A-~D" '("x" 7)))
+(check "AB" '(format nil "A~
+   B"))
 (check "stream-format"
        `(progn
           (with-open-file (s ,out-file :direction :output :if-exists :overwrite)
