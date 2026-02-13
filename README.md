@@ -15,9 +15,20 @@ ISLISPの標準仕様に従ったISLISP処理系を目指すプロジェクト�
 ./bin/isl
 ```
 
+準拠プロファイルを指定:
+```sh
+./bin/isl --profile strict
+./bin/isl --profile extended
+```
+
 ファイル実行:
 ```sh
 ./bin/isl examples/hello.lsp
+```
+
+`strict` でファイル実行:
+```sh
+./bin/isl --profile strict examples/hello.lsp
 ```
 
 ## 例
@@ -35,3 +46,20 @@ ISLISPの標準仕様に従ったISLISP処理系を目指すプロジェクト�
 1. ISLISP仕様の章ごとに機能を追加 (オブジェクトシステム・条件システム・ストリーム等)
 2. 仕様項目ごとに準拠テストを追加
 3. R7RS依存部分を明示し、Gauche拡張依存を最小化
+
+## 準拠テスト (M0)
+strict conformance:
+```sh
+gosh test/conformance/run-strict.scm
+```
+
+extended conformance:
+```sh
+gosh test/conformance/run.scm
+```
+
+oracle compare:
+```sh
+gosh test/conformance/oracle-compare.scm strict
+gosh test/conformance/oracle-compare.scm extended
+```

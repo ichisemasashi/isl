@@ -1,8 +1,10 @@
 (add-load-path "./src")
 (use isl.core)
 
-(define (make-test-env)
-  (make-initial-env))
+(define (make-test-env . maybe-profile)
+  (if (null? maybe-profile)
+      (make-initial-env)
+      (make-initial-env (car maybe-profile))))
 
 (define (case-id milestone idx)
   (string-append milestone "-" (number->string idx)))
@@ -54,8 +56,8 @@
          (else
           (fail id "value mismatch" form expected actual)))))))
 
-(define (run-milestone milestone cases)
-  (let ((env (make-test-env)))
+(define (run-milestone milestone cases profile)
+  (let ((env (make-test-env profile)))
     (let loop ((xs cases) (idx 1) (ok 0) (ng 0))
       (if (null? xs)
           (begin
@@ -72,7 +74,8 @@
               (loop (cdr xs) (+ idx 1) (+ ok 1) ng)
               (loop (cdr xs) (+ idx 1) ok (+ ng 1)))))))
 
-(define (run-all milestones)
+(define (run-all milestones . maybe-profile)
+  (let ((profile (if (null? maybe-profile) 'extended (car maybe-profile))))
   (let loop ((xs milestones) (ok 0) (ng 0))
     (if (null? xs)
         (begin
@@ -86,7 +89,7 @@
         (let* ((entry (car xs))
                (name (car entry))
                (cases (cadr entry))
-               (result (run-milestone name cases)))
+               (result (run-milestone name cases profile)))
           (if result
               (loop (cdr xs) (+ ok 1) ng)
-              (loop (cdr xs) ok (+ ng 1)))))))
+              (loop (cdr xs) ok (+ ng 1))))))))

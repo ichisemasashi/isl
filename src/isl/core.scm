@@ -51,6 +51,17 @@
        (else
         (loop (cdr xs) (cons (car xs) acc)))))))
 
+(define (frame-unbind! frame sym)
+  (let ((bindings (frame-bindings frame)))
+    (let loop ((xs bindings) (acc '()))
+      (cond
+       ((null? xs)
+        (set-frame-bindings! frame (reverse acc)))
+       ((eq? (caar xs) sym)
+        (loop (cdr xs) acc))
+       (else
+        (loop (cdr xs) (cons (car xs) acc)))))))
+
 (define (frame-set! frame sym val)
   (let ((pair (frame-find-pair frame sym)))
     (if pair
@@ -85,6 +96,24 @@
 (define *provided-features* '())
 ;; Default shared library used by ffi compatibility layer.
 (define *ffi-current-library* #f)
+(define *isl-profile* 'extended)
+
+(define (strict-profile?)
+  (eq? *isl-profile* 'strict))
+
+(define (normalize-profile profile)
+  (cond
+   ((or (not profile) (eq? profile 'extended) (eq? profile ':extended)) 'extended)
+   ((or (eq? profile 'strict) (eq? profile ':strict)) 'strict)
+   ((string? profile)
+    (let ((up (list->string (map char-upcase (string->list profile)))))
+      (cond
+       ((string=? up "EXTENDED") 'extended)
+       ((string=? up "STRICT") 'strict)
+       (else
+        (error "Unknown profile. Expected strict or extended." profile)))))
+   (else
+    (error "Unknown profile. Expected strict or extended." profile))))
 
 (define (make-package name)
   (vector 'package name '() '() '()))
@@ -2232,9 +2261,14 @@
 (define (special-form? sym)
   (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass)))
 
+(define (extended-special-form? sym)
+  (memq sym '(trace untrace defpackage in-package)))
+
 (define (eval-special form env tail?)
   (let ((op (car form))
         (args (cdr form)))
+    (when (and (strict-profile?) (extended-special-form? op))
+      (error "Special form is unavailable in strict profile" op))
     (case op
       ((quote)
        (if (= (length args) 1)
@@ -3755,7 +3789,27 @@
     (lambda args
       (apply exit args))))
 
-(define (make-initial-env)
+(define *extended-primitive-symbols*
+  '(debug break getenv setenv system
+    sqlite-open sqlite-db-p sqlite-close sqlite-exec sqlite-query sqlite-query-one
+    postgres-open postgres-db-p postgres-close postgres-exec postgres-query postgres-query-one
+    mysql-open mysql-db-p mysql-close mysql-exec mysql-query mysql-query-one
+    tcp-connect tcp-listen tcp-listener-p tcp-accept tcp-listener-close
+    tcp-connection-p tcp-send tcp-send-line tcp-receive-line tcp-receive-char
+    tcp-send-byte tcp-receive-byte tcp-flush tcp-close
+    udp-open udp-socket-p udp-bind udp-connect udp-send udp-receive udp-sendto udp-receive-from udp-close
+    http-get http-head http-post
+    ffi-call load-foreign-library current-foreign-library))
+
+(define (disable-extended-primitives! env)
+  (for-each
+   (lambda (name)
+     (frame-unbind! env (resolve-binding-symbol name)))
+   *extended-primitive-symbols*))
+
+(define (make-initial-env . maybe-profile)
+  (let ((profile (normalize-profile (if (null? maybe-profile) 'extended (car maybe-profile)))))
+    (set! *isl-profile* profile)
   (let ((env (make-frame #f)))
     (set! *package-registry* '())
     (set! *class-table* '())
@@ -3773,56 +3827,59 @@
       (frame-define! env (resolve-binding-symbol 't) #t)
       (package-export! *current-package* 't)
       (install-primitives! env)
-      ;; Lightweight CFFI-compatible facade.
-      (let ((saved *current-package*)
-            (ffi (ensure-package! "FFI"))
-            (cffi (ensure-package! "CFFI")))
-        (package-use! ffi islisp)
-        (let ((isl-ffi-call (resolve-binding-symbol 'ffi-call))
-              (isl-load-lib (resolve-binding-symbol 'load-foreign-library))
-              (isl-cur-lib (resolve-binding-symbol 'current-foreign-library))
-              (ffi-ffi-call (package-intern! ffi "ffi-call"))
-              (ffi-load-lib (package-intern! ffi "load-foreign-library"))
-              (ffi-cur-lib (package-intern! ffi "current-foreign-library")))
-          (frame-define! env ffi-ffi-call (frame-ref env isl-ffi-call))
-          (frame-define! env ffi-load-lib (frame-ref env isl-load-lib))
-          (frame-define! env ffi-cur-lib (frame-ref env isl-cur-lib))
-          (package-export! ffi 'ffi-call)
-          (package-export! ffi 'load-foreign-library)
-          (package-export! ffi 'current-foreign-library))
-        (package-use! cffi ffi)
-        (set! *current-package* ffi)
-        (eval-islisp
-         '(defmacro define-foreign-function (foreign-name spec &rest options)
-            (let* ((lisp-name (first spec))
-                   (params (cdr spec))
-                   (return-type :void)
-                   (arg-types '()))
-              (let ((xs options))
-                (while xs
-                  (let ((k (first xs))
-                        (v (second xs)))
-                    (cond
-                     ((eq k :returning) (setq return-type v))
-                     ((eq k :arguments) (setq arg-types v))
-                     (t (error "define-foreign-function: unsupported option" k)))
-                    (setq xs (cdr (cdr xs))))))
-              (if (not (= (length params) (length arg-types)))
-                  (error "define-foreign-function: param/type length mismatch" spec arg-types)
-                  `(progn
-                     (defun ,lisp-name ,params
-                       (ffi:ffi-call (ffi:current-foreign-library)
-                                     ,foreign-name
-                                     ',return-type
-                                     ',arg-types
-                                     (list ,@params)))
-                     ',lisp-name))))
-         env)
-        (package-export! ffi 'define-foreign-function)
-        (package-export! cffi 'define-foreign-function)
-        (set! *current-package* saved))
+      (when (strict-profile?)
+        (disable-extended-primitives! env))
+      ;; Lightweight CFFI-compatible facade (extended profile only).
+      (unless (strict-profile?)
+        (let ((saved *current-package*)
+              (ffi (ensure-package! "FFI"))
+              (cffi (ensure-package! "CFFI")))
+          (package-use! ffi islisp)
+          (let ((isl-ffi-call (resolve-binding-symbol 'ffi-call))
+                (isl-load-lib (resolve-binding-symbol 'load-foreign-library))
+                (isl-cur-lib (resolve-binding-symbol 'current-foreign-library))
+                (ffi-ffi-call (package-intern! ffi "ffi-call"))
+                (ffi-load-lib (package-intern! ffi "load-foreign-library"))
+                (ffi-cur-lib (package-intern! ffi "current-foreign-library")))
+            (frame-define! env ffi-ffi-call (frame-ref env isl-ffi-call))
+            (frame-define! env ffi-load-lib (frame-ref env isl-load-lib))
+            (frame-define! env ffi-cur-lib (frame-ref env isl-cur-lib))
+            (package-export! ffi 'ffi-call)
+            (package-export! ffi 'load-foreign-library)
+            (package-export! ffi 'current-foreign-library))
+          (package-use! cffi ffi)
+          (set! *current-package* ffi)
+          (eval-islisp
+           '(defmacro define-foreign-function (foreign-name spec &rest options)
+              (let* ((lisp-name (first spec))
+                     (params (cdr spec))
+                     (return-type :void)
+                     (arg-types '()))
+                (let ((xs options))
+                  (while xs
+                    (let ((k (first xs))
+                          (v (second xs)))
+                      (cond
+                       ((eq k :returning) (setq return-type v))
+                       ((eq k :arguments) (setq arg-types v))
+                       (t (error "define-foreign-function: unsupported option" k)))
+                      (setq xs (cdr (cdr xs))))))
+                (if (not (= (length params) (length arg-types)))
+                    (error "define-foreign-function: param/type length mismatch" spec arg-types)
+                    `(progn
+                       (defun ,lisp-name ,params
+                         (ffi:ffi-call (ffi:current-foreign-library)
+                                       ,foreign-name
+                                       ',return-type
+                                       ',arg-types
+                                       (list ,@params)))
+                       ',lisp-name))))
+           env)
+          (package-export! ffi 'define-foreign-function)
+          (package-export! cffi 'define-foreign-function)
+          (set! *current-package* saved)))
       (set! *current-package* user))
-    env))
+    env)))
 
 (define (read-all port)
   (let loop ((acc '()))

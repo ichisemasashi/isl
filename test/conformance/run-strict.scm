@@ -2,4 +2,4 @@
 (load "common.scm")
 (load "milestones.scm")
 
-(exit (run-all extended-milestones 'extended))
+(exit (run-all strict-milestones 'strict))

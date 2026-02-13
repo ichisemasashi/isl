@@ -252,3 +252,19 @@
    (list "M9" m9-cases)
    (list "M10" m10-cases)
    (list "M11" m11-cases)))
+
+(define strict-milestones
+  (list
+   (list "M0" m0-cases)
+   (list "M1" m1-cases)
+   (list "M2" m2-cases)
+   (list "M3" m3-cases)
+   (list "M4" m4-cases)
+   (list "M5" m5-cases)
+   (list "M6" m6-cases)
+   (list "M7" m7-cases)
+   (list "M8" m8-cases)
+   (list "M10" m10-cases)
+   (list "M11" m11-cases)))
+
+(define extended-milestones all-milestones)

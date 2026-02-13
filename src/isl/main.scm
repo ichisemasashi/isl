@@ -4,6 +4,15 @@
 
 (select-module isl.main)
 
+(define (usage)
+  (display "Usage: isl [--profile strict|extended] [file ...]\n"))
+
+(define (starts-with? s prefix)
+  (let ((n (string-length s))
+        (m (string-length prefix)))
+    (and (>= n m)
+         (string=? (substring s 0 m) prefix))))
+
 (define (run-file path env)
   (call-with-input-file path
     (lambda (p)
@@ -11,17 +20,53 @@
                   (eval-islisp form env))
                 (read-all p)))))
 
+(define (parse-main-args argv)
+  (let loop ((xs argv) (profile 'extended) (files '()))
+    (if (null? xs)
+        (list 'ok profile (reverse files))
+        (let ((arg (car xs)))
+          (cond
+           ((or (string=? arg "-h") (string=? arg "--help"))
+            (list 'help))
+           ((string=? arg "--profile")
+            (if (null? (cdr xs))
+                (list 'error "--profile requires a value: strict or extended")
+                (loop (cddr xs) (cadr xs) files)))
+           ((starts-with? arg "--profile=")
+            (loop (cdr xs) (substring arg 10 (string-length arg)) files))
+           (else
+            (loop (cdr xs) profile (cons arg files))))))))
+
 (define (main args)
-  (let ((env (make-initial-env))
-        (rest (cdr args)))
-    (if (null? rest)
-        (begin
-          (display "ISLISP interpreter (Gauche 0.9.15)\n")
-          (display "Ctrl-D to exit.\n")
-          (repl env)
-          0)
-        (begin
-          (for-each (lambda (path)
-                      (run-file path env))
-                    rest)
-          0))))
+  (let ((parsed (parse-main-args (cdr args))))
+    (case (car parsed)
+      ((help)
+       (usage)
+       0)
+      ((error)
+       (usage)
+       (display "Error: ")
+       (display (cadr parsed))
+       (newline)
+       2)
+      ((ok)
+       (let* ((profile (cadr parsed))
+              (files (caddr parsed))
+              (env (make-initial-env profile)))
+         (if (null? files)
+             (begin
+               (display "ISLISP interpreter (Gauche 0.9.15)\n")
+               (display "Profile: ")
+               (display profile)
+               (newline)
+               (display "Ctrl-D to exit.\n")
+               (repl env)
+               0)
+             (begin
+               (for-each (lambda (path)
+                           (run-file path env))
+                         files)
+               0))))
+      (else
+       (usage)
+       2))))
