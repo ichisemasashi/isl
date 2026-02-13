@@ -153,9 +153,11 @@
      (list 'special op (map normalize-expr args)))))
 
 (define (normalize-call op args)
-  (cons 'call
-        (cons (normalize-expr op)
-              (map normalize-expr args))))
+  ;; M4: side-effect-capable operation is wrapped by explicit effect barrier.
+  (list 'effect
+        (cons 'call
+              (cons (normalize-expr op)
+                    (map normalize-expr args)))))
 
 (define (normalize-expr form)
   (cond

@@ -1,0 +1,87 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+PROFILE=extended
+EMIT_LL=
+EMIT_OBJ=
+RUN_MODE=0
+OUT_BIN=a.out
+INPUTS=
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --profile)
+      shift
+      [ "$#" -gt 0 ] || { echo "--profile requires strict|extended" >&2; exit 2; }
+      PROFILE="$1"
+      ;;
+    --profile=*)
+      PROFILE=${1#--profile=}
+      ;;
+    --emit-llvm)
+      shift
+      [ "$#" -gt 0 ] || { echo "--emit-llvm requires output path" >&2; exit 2; }
+      EMIT_LL="$1"
+      ;;
+    --emit-obj)
+      shift
+      [ "$#" -gt 0 ] || { echo "--emit-obj requires output path" >&2; exit 2; }
+      EMIT_OBJ="$1"
+      ;;
+    --run)
+      RUN_MODE=1
+      ;;
+    -o)
+      shift
+      [ "$#" -gt 0 ] || { echo "-o requires output binary path" >&2; exit 2; }
+      OUT_BIN="$1"
+      ;;
+    -h|--help)
+      echo "Usage: islc [--profile strict|extended] [--emit-llvm out.ll] [--emit-obj out.o] [--run] [-o out-bin] <file> [file ...]" >&2
+      exit 0
+      ;;
+    *)
+      INPUTS="$INPUTS $1"
+      ;;
+  esac
+  shift
+done
+
+[ -n "$INPUTS" ] || { echo "input file is required" >&2; exit 2; }
+
+if [ -n "$EMIT_OBJ" ] || [ "$RUN_MODE" -eq 1 ] || { [ -z "$EMIT_LL" ] && [ -z "$EMIT_OBJ" ]; }; then
+  command -v clang >/dev/null 2>&1 || { echo "clang not found" >&2; exit 2; }
+fi
+
+TMP_LL=
+if [ -n "$EMIT_LL" ]; then
+  TMP_LL="$EMIT_LL"
+else
+  TMP_LL=$(mktemp -t islc_XXXXXX.ll)
+fi
+
+cleanup() {
+  if [ -n "$TMP_LL" ] && [ "$TMP_LL" != "$EMIT_LL" ]; then
+    rm -f "$TMP_LL"
+  fi
+}
+trap cleanup EXIT
+
+# shellcheck disable=SC2086
+"$SCRIPT_DIR/islc-llvm" --profile "$PROFILE" --mode aot -o "$TMP_LL" $INPUTS
+
+if [ -n "$EMIT_OBJ" ]; then
+  clang -O0 -c -x ir "$TMP_LL" -o "$EMIT_OBJ"
+fi
+
+# binary build is always available unless user explicitly only wants ll/object.
+if [ "$RUN_MODE" -eq 1 ] || { [ -z "$EMIT_LL" ] && [ -z "$EMIT_OBJ" ]; }; then
+  clang -O0 -x ir "$TMP_LL" -x c "$ROOT_DIR/src/isl/compiler/llvm_runtime.c" -o "$OUT_BIN"
+fi
+
+if [ "$RUN_MODE" -eq 1 ]; then
+  "$OUT_BIN"
+fi

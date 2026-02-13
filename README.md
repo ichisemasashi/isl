@@ -107,7 +107,14 @@ gosh test/compiler/lowering-smoke.scm
 ```
 
 ## M3. LLVM AOT バックエンド最小実装
-LLVM IR モジュールを生成:
+統合フロントエンド (`islc`) を利用:
+```sh
+./bin/islc --emit-llvm out.ll examples/hello.lsp
+./bin/islc --emit-obj out.o examples/hello.lsp
+./bin/islc --run examples/hello.lsp
+```
+
+従来ツール (`islc-llvm`) で LLVM IR モジュールを生成:
 ```sh
 ./bin/islc-llvm --mode module -o out.ll examples/hello.lsp
 ```
@@ -128,14 +135,21 @@ M3 codegen / AOT smoke:
 gosh test/compiler/codegen-smoke.scm
 gosh test/compiler/aot-smoke.scm
 ./test/compiler/aot-run-smoke.sh
+./test/compiler/islc-m3-smoke.sh
 ```
 
 ## M4. 評価順序と副作用の完全固定
 compiler runtime 経路で `setq/let/setf` を実装し、
 副作用を伴う式の評価順（左から）を固定します。
 
+副作用順序仕様:
+```text
+docs/side-effect-order.md
+```
+
 M4 smoke / oracle:
 ```sh
+gosh test/compiler/ir-m4-smoke.scm
 gosh test/compiler/runtime-m4-smoke.scm
 gosh test/compiler/runtime-m4-oracle.scm
 ```
