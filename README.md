@@ -63,3 +63,14 @@ oracle compare:
 gosh test/conformance/oracle-compare.scm strict
 gosh test/conformance/oracle-compare.scm extended
 ```
+
+## コンパイラ前段 (M1)
+フロントエンド（`read -> macroexpand -> normalize(IR)`）の IR ダンプ:
+```sh
+./bin/islc-front --dump-ir examples/hello.lsp
+```
+
+フロントエンド smoke テスト:
+```sh
+gosh test/compiler/frontend-smoke.scm
+```

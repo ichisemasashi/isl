@@ -1,0 +1,75 @@
+#!/usr/bin/env gosh
+(add-load-path "./src")
+(use isl.compiler.frontend)
+
+(define (usage)
+  (display "Usage: islc-front [--profile strict|extended] [--dump-ir] <file> [file ...]\n"))
+
+(define (starts-with? s prefix)
+  (let ((n (string-length s))
+        (m (string-length prefix)))
+    (and (>= n m)
+         (string=? (substring s 0 m) prefix))))
+
+(define (parse-args args)
+  (let loop ((xs args) (profile 'extended) (dump? #f) (files '()))
+    (if (null? xs)
+        (list 'ok profile dump? (reverse files))
+        (let ((a (car xs)))
+          (cond
+           ((or (string=? a "-h") (string=? a "--help"))
+            (list 'help))
+           ((string=? a "--dump-ir")
+            (loop (cdr xs) profile #t files))
+           ((string=? a "--profile")
+            (if (null? (cdr xs))
+                (list 'error "--profile requires strict or extended")
+                (loop (cddr xs) (cadr xs) dump? files)))
+           ((starts-with? a "--profile=")
+            (loop (cdr xs) (substring a 10 (string-length a)) dump? files))
+           (else
+            (loop (cdr xs) profile dump? (cons a files))))))))
+
+(define (main argv)
+  (let ((parsed (parse-args (cdr argv))))
+    (case (car parsed)
+      ((help)
+       (usage)
+       0)
+      ((error)
+       (usage)
+       (display "Error: ")
+       (display (cadr parsed))
+       (newline)
+       2)
+      ((ok)
+       (let ((profile (cadr parsed))
+             (dump? (caddr parsed))
+             (files (cadddr parsed)))
+         (if (null? files)
+             (begin
+               (usage)
+               2)
+             (let ((env (make-frontend-env profile)))
+               (for-each
+                (lambda (f)
+                  (let ((units (frontend-compile-file f env)))
+                    (if dump?
+                        (begin
+                          (display ";; file: ")
+                          (display f)
+                          (newline)
+                          (frontend-dump units))
+                        (begin
+                          (display f)
+                          (display ": ")
+                          (display (length units))
+                          (display " unit(s)")
+                          (newline)))))
+                files)
+               0))))
+      (else
+       (usage)
+       2))))
+
+(exit (main (command-line)))
