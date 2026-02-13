@@ -67,6 +67,27 @@
               (loop (cdr xs) (cons (list 'label x) acc))
               (loop (cdr xs) (cons (list 'form (normalize-expr x)) acc)))))))
 
+(define (normalize-handler-clause clause)
+  (if (and (list? clause) (>= (length clause) 2))
+      (let ((tag (car clause))
+            (rest (cdr clause))
+            (var #f))
+        (if (not (symbol? tag))
+            #f
+            (begin
+              (when (and (pair? rest) (list? (car rest)))
+                (let ((vs (car rest)))
+                  (if (or (null? vs)
+                          (and (= (length vs) 1) (symbol? (car vs))))
+                      (begin
+                        (set! var (and (pair? vs) (car vs)))
+                        (set! rest (cdr rest)))
+                      (set! rest #f))))
+              (if (not rest)
+                  #f
+                  (list tag var (normalize-body rest))))))
+      #f))
+
 (define (normalize-special op args)
   (case op
     ((quote)
@@ -149,6 +170,16 @@
          (list 'invalid-special op args)))
     ((tagbody)
      (list 'special 'tagbody (normalize-tagbody-items args)))
+    ((handler-case)
+     (if (>= (length args) 2)
+         (let ((protected (normalize-expr (car args)))
+               (clauses (map normalize-handler-clause (cdr args))))
+           (if (let loop ((xs clauses))
+                 (and (pair? xs)
+                      (or (not (car xs)) (loop (cdr xs)))))
+               (list 'invalid-special op args)
+               (list 'special 'handler-case (list protected clauses))))
+         (list 'invalid-special op args)))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -168,7 +199,7 @@
           (args (cdr form)))
       (if (symbol? op)
           (case op
-            ((quote if progn lambda setq let setf block return-from catch throw go tagbody)
+            ((quote if progn lambda setq let setf block return-from catch throw go tagbody handler-case)
              (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))

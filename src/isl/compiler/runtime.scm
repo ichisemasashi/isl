@@ -61,6 +61,15 @@
 
 (define (go-signal-tag s) (vector-ref s 1))
 
+;; Dynamic nonlocal target stacks.
+(define *runtime-catch-stack* '())
+
+(define (runtime-catch-active? tag)
+  (let loop ((xs *runtime-catch-stack*))
+    (and (pair? xs)
+         (or (eqv? (car xs) tag)
+             (loop (cdr xs))))))
+
 ;; Tagged value representation used by compiler runtime.
 (define (make-rt-value tag payload)
   (vector 'rt-value tag payload))
@@ -326,6 +335,12 @@
       (car args))))
 
 (define (runtime-eval-special op payload env state)
+  (define (handler-case-tag-match? tag)
+    (or (eq? tag 'error)
+        (eq? tag 'condition)
+        (eq? tag 'serious-condition)
+        (eq? tag 't)
+        (eq? tag 'otherwise)))
   (case op
     ((setq)
      (unless (list? payload)
@@ -401,19 +416,25 @@
        (runtime-raise 'invalid-ir "catch payload must be (tag body)" payload))
      (let ((tag (runtime-value->host (runtime-eval-expr (car payload) env state)))
            (body (cadr payload)))
-       (guard (e
-               ((throw-signal? e)
-                (if (eqv? (throw-signal-tag e) tag)
-                    (throw-signal-value e)
-                    (raise e)))
-               (else (raise e)))
-         (runtime-eval-expr body env state))))
+       (dynamic-wind
+         (lambda () (set! *runtime-catch-stack* (cons tag *runtime-catch-stack*)))
+         (lambda ()
+           (guard (e
+                   ((throw-signal? e)
+                    (if (eqv? (throw-signal-tag e) tag)
+                        (throw-signal-value e)
+                        (raise e)))
+                   (else (raise e)))
+             (runtime-eval-expr body env state)))
+         (lambda () (set! *runtime-catch-stack* (cdr *runtime-catch-stack*))))))
     ((throw)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "throw payload must be (tag value)" payload))
      (let ((tag (runtime-value->host (runtime-eval-expr (car payload) env state)))
            (value (runtime-eval-expr (cadr payload) env state)))
-       (raise (make-throw-signal tag value))))
+       (if (runtime-catch-active? tag)
+           (raise (make-throw-signal tag value))
+           (runtime-raise 'control-error "No enclosing catch for throw" tag))))
     ((go)
      (unless (and (list? payload) (= (length payload) 1))
        (runtime-raise 'invalid-ir "go payload must be (tag)" payload))
@@ -454,6 +475,36 @@
                                 (runtime-raise 'invalid-ir "tagbody item must be label/form pair" it))
                             (+ i 1))))
                      (loop next-i))))))))
+    ((handler-case)
+     (unless (and (list? payload) (= (length payload) 2))
+       (runtime-raise 'invalid-ir "handler-case payload must be (protected clauses)" payload))
+     (let ((protected (car payload))
+           (clauses (cadr payload)))
+       (unless (list? clauses)
+         (runtime-raise 'invalid-ir "handler-case clauses must be list" clauses))
+       (guard (e
+               ;; Nonlocal control transfers are not condition errors.
+               ((or (nonlocal-return? e) (throw-signal? e) (go-signal? e))
+                (raise e))
+               (else
+                (let loop ((cs clauses))
+                  (if (null? cs)
+                      (raise e)
+                      (let ((c (car cs)))
+                        (unless (and (list? c) (= (length c) 3) (symbol? (car c)))
+                          (runtime-raise 'invalid-ir "invalid handler-case clause shape" c))
+                        (let ((tag (car c))
+                              (var (cadr c))
+                              (body (caddr c)))
+                          (if (handler-case-tag-match? tag)
+                              (let ((henv (make-env env)))
+                                (when var
+                                  (unless (symbol? var)
+                                    (runtime-raise 'invalid-ir "handler-case var must be symbol or #f" var))
+                                  (env-define! henv var (host->runtime-value e)))
+                                (runtime-eval-expr body henv state))
+                              (loop (cdr cs)))))))))
+         (runtime-eval-expr protected env state))))
     (else
      (runtime-raise 'unsupported-special "special form is not yet lowered" (list op payload)))))
 

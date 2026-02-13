@@ -162,3 +162,12 @@ M5 smoke / oracle:
 gosh test/compiler/runtime-m5-smoke.scm
 gosh test/compiler/runtime-m5-oracle.scm
 ```
+
+## M6. 条件処理とハンドラ
+compiler runtime 経路で `handler-case` を実装し、`error/condition/...` ハンドラ節で例外を捕捉します。
+
+M6 smoke / oracle:
+```sh
+gosh test/compiler/runtime-m6-smoke.scm
+gosh test/compiler/runtime-m6-oracle.scm
+```
