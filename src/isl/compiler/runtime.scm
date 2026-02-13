@@ -150,6 +150,59 @@
               (set-cdr! p val)
               (loop (env-parent e)))))))
 
+;; Object system (M7 minimal runtime representation)
+(define (make-rt-slot-spec name initform initarg readers writers)
+  (vector 'rt-slot-spec name initform initarg readers writers))
+
+(define (rt-slot-spec? x)
+  (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'rt-slot-spec)))
+
+(define (rt-slot-name s) (vector-ref s 1))
+(define (rt-slot-initform s) (vector-ref s 2))
+(define (rt-slot-initarg s) (vector-ref s 3))
+(define (rt-slot-readers s) (vector-ref s 4))
+(define (rt-slot-writers s) (vector-ref s 5))
+
+(define (make-rt-class name supers own-slots)
+  (vector 'rt-class name supers own-slots))
+
+(define (rt-class? x)
+  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'rt-class)))
+
+(define (rt-class-name c) (vector-ref c 1))
+(define (rt-class-supers c) (vector-ref c 2))
+(define (rt-class-own-slots c) (vector-ref c 3))
+
+(define (make-rt-instance class slots)
+  (vector 'rt-instance class slots))
+
+(define (rt-instance? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'rt-instance)))
+
+(define (rt-instance-class x) (vector-ref x 1))
+(define (rt-instance-slots x) (vector-ref x 2))
+
+(define (make-rt-method specializers params fn-val)
+  (vector 'rt-method specializers params fn-val))
+
+(define (rt-method? x)
+  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'rt-method)))
+
+(define (rt-method-specializers m) (vector-ref m 1))
+(define (rt-method-params m) (vector-ref m 2))
+(define (rt-method-fn m) (vector-ref m 3))
+
+(define (make-rt-generic name params methods)
+  (vector 'rt-generic name params methods))
+
+(define (rt-generic? x)
+  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'rt-generic)))
+
+(define (rt-generic-name g) (vector-ref g 1))
+(define (rt-generic-params g) (vector-ref g 2))
+(define (rt-generic-methods g) (vector-ref g 3))
+(define (set-rt-generic-methods! g methods) (vector-set! g 3 methods))
+
 ;; Function values.
 (define (make-closure name params body env)
   (vector 'closure name params body env 'ir))
@@ -202,6 +255,10 @@
    (else
     (runtime-raise 'invalid-params "invalid parameter list" params))))
 
+(define (validate-params params)
+  (parse-params params)
+  #t)
+
 (define (bind-params! call-env params args)
   (let* ((spec (parse-params params))
          (required (car spec))
@@ -236,6 +293,184 @@
     (if (list? v)
         v
         (runtime-raise 'type-error (string-append who " expects list") rv))))
+
+(define (runtime-object rv who pred)
+  (let ((v (runtime-value->host rv)))
+    (if (pred v)
+        v
+        (runtime-raise 'type-error (string-append who " received invalid object") rv))))
+
+(define (resolve-class-designator obj env)
+  (cond
+   ((rt-class? obj) obj)
+   ((symbol? obj)
+    (let ((v (runtime-value->host (env-ref env obj))))
+      (if (rt-class? v)
+          v
+          (runtime-raise 'type-error "class designator does not resolve to class" obj))))
+   (else
+    (runtime-raise 'type-error "invalid class designator" obj))))
+
+(define (slot-spec-list-merge specs)
+  (let loop ((rest specs) (acc '()))
+    (if (null? rest)
+        (reverse acc)
+        (let* ((s (car rest))
+               (name (rt-slot-name s))
+               (acc2 (filter (lambda (e) (not (eq? (rt-slot-name e) name))) acc)))
+          (loop (cdr rest) (cons s acc2))))))
+
+(define (rt-class-effective-slots class-obj)
+  (let collect ((c class-obj) (seen '()))
+    (if (memq c seen)
+        (runtime-raise 'invalid-ir "Cyclic class precedence list" (rt-class-name c))
+        (let ((seen2 (cons c seen)))
+          (slot-spec-list-merge
+           (append
+            (apply append
+                   (map (lambda (s) (collect s seen2))
+                        (rt-class-supers c)))
+            (rt-class-own-slots c)))))))
+
+(define (find-slot-spec-entry specs slot)
+  (or (find (lambda (s) (eq? (rt-slot-initarg s) slot)) specs)
+      (find (lambda (s) (eq? (rt-slot-name s) slot)) specs)))
+
+(define (find-instance-slot-entry slots slot)
+  (assoc slot slots))
+
+(define (rt-instance-slot-ref obj slot)
+  (unless (rt-instance? obj)
+    (runtime-raise 'type-error "slot-value target must be instance" obj))
+  (unless (symbol? slot)
+    (runtime-raise 'type-error "slot-value slot must be symbol" slot))
+  (let ((entry (find-instance-slot-entry (rt-instance-slots obj) slot)))
+    (if entry
+        (cdr entry)
+        (runtime-raise 'invalid-ir "No such slot in instance" slot))))
+
+(define (rt-instance-slot-set! obj slot value)
+  (unless (rt-instance? obj)
+    (runtime-raise 'type-error "slot-value target must be instance" obj))
+  (unless (symbol? slot)
+    (runtime-raise 'type-error "slot-value slot must be symbol" slot))
+  (let ((entry (find-instance-slot-entry (rt-instance-slots obj) slot)))
+    (if entry
+        (begin
+          (set-cdr! entry value)
+          value)
+        (runtime-raise 'invalid-ir "No such slot in instance" slot))))
+
+(define (rt-class-distance sub super)
+  (let walk ((current sub) (seen '()))
+    (cond
+     ((eq? current super) 0)
+     ((memq current seen) #f)
+     (else
+      (let ((seen2 (cons current seen)))
+        (let loop ((supers (rt-class-supers current)) (best #f))
+          (if (null? supers)
+              best
+              (let ((d (walk (car supers) seen2)))
+                (if d
+                    (let ((cand (+ d 1)))
+                      (if (or (not best) (< cand best))
+                          (loop (cdr supers) cand)
+                          (loop (cdr supers) best)))
+                    (loop (cdr supers) best))))))))))
+
+(define (score<? a b)
+  (let loop ((xs a) (ys b))
+    (cond
+     ((null? xs) #f)
+     ((< (car xs) (car ys)) #t)
+     ((> (car xs) (car ys)) #f)
+     (else (loop (cdr xs) (cdr ys))))))
+
+(define (score=? a b)
+  (equal? a b))
+
+(define (method-applicability-score method args)
+  (let ((specializers (rt-method-specializers method)))
+    (if (< (length args) (length specializers))
+        #f
+        (let loop ((ss specializers) (as args) (acc '()))
+          (if (null? ss)
+              (reverse acc)
+              (let ((spec (car ss))
+                    (arg (runtime-value->host (car as))))
+                (if spec
+                    (if (rt-instance? arg)
+                        (let ((d (rt-class-distance (rt-instance-class arg) spec)))
+                          (if d
+                              (loop (cdr ss) (cdr as) (cons d acc))
+                              #f))
+                        #f)
+                    (loop (cdr ss) (cdr as) (cons 1000000 acc)))))))))
+
+(define (select-generic-method generic args)
+  (let loop ((methods (rt-generic-methods generic))
+             (best-method #f)
+             (best-score #f))
+    (if (null? methods)
+        best-method
+        (let* ((m (car methods))
+               (score (method-applicability-score m args)))
+          (cond
+           ((not score)
+            (loop (cdr methods) best-method best-score))
+           ((or (not best-score) (score<? score best-score))
+            (loop (cdr methods) m score))
+           ((score=? score best-score)
+            (runtime-raise 'invalid-ir
+                           "Ambiguous applicable methods in generic function"
+                           (rt-generic-name generic)))
+           (else
+            (loop (cdr methods) best-method best-score)))))))
+
+(define (ensure-generic-function! sym env params)
+  (let ((pair (env-find-pair env sym)))
+    (cond
+     ((and pair
+           (rt-value? (cdr pair))
+           (eq? (rt-tag (cdr pair)) 'function)
+           (rt-generic? (rt-payload (cdr pair))))
+      (rt-payload (cdr pair)))
+     (pair
+      (runtime-raise 'type-error "Binding already exists and is not a generic function" sym))
+     (else
+      (let ((g (make-rt-generic sym params '())))
+        (env-define! env sym (make-fn-value g))
+        g)))))
+
+(define (parse-method-params params env)
+  (unless (list? params)
+    (runtime-raise 'invalid-ir "defmethod parameter list must be list" params))
+  (let parse-required ((xs params) (plain-required '()) (specializers '()))
+    (if (or (null? xs)
+            (eq? (car xs) '&optional)
+            (eq? (car xs) '&rest)
+            (eq? (car xs) '&body))
+        (let* ((plain-params (append (reverse plain-required) xs))
+               (spec (parse-params plain-params))
+               (required-spec (car spec)))
+          (when (null? required-spec)
+            (runtime-raise 'invalid-ir "defmethod requires at least one required parameter" params))
+          (unless (= (length required-spec) (length specializers))
+            (runtime-raise 'invalid-ir "defmethod required parameter parse mismatch" params))
+          (list plain-params (reverse specializers)))
+        (let ((x (car xs)))
+          (cond
+           ((symbol? x)
+            (parse-required (cdr xs)
+                            (cons x plain-required)
+                            (cons #f specializers)))
+           ((and (list? x) (= (length x) 2) (symbol? (car x)))
+            (parse-required (cdr xs)
+                            (cons (car x) plain-required)
+                            (cons (resolve-class-designator (cadr x) env) specializers)))
+           (else
+            (runtime-raise 'invalid-ir "invalid defmethod required parameter" x)))))))
 
 (define (runtime-compare-binop who pred args)
   (unless (= (length args) 2)
@@ -332,7 +567,60 @@
         (runtime-raise 'arity "print expects 1 argument" args))
       (write (runtime-value->host (car args)))
       (newline)
-      (car args))))
+      (car args)))
+  (def 'make-instance
+    (lambda (args state)
+      (unless (>= (length args) 1)
+        (runtime-raise 'arity "make-instance needs class designator" args))
+      (let* ((class-obj (resolve-class-designator (runtime-value->host (car args))
+                                                  (state-global-env state)))
+             (raw-initargs (cdr args)))
+        (unless (even? (length raw-initargs))
+          (runtime-raise 'arity "make-instance initargs must be key/value pairs" raw-initargs))
+        (let* ((slot-specs (rt-class-effective-slots class-obj))
+               (slots
+                (map (lambda (s)
+                       (cons (rt-slot-name s)
+                             (runtime-value->host
+                              (runtime-eval-expr (rt-slot-initform s)
+                                                 (state-global-env state)
+                                                 state))))
+                     slot-specs))
+               (obj (make-rt-instance class-obj slots)))
+          (let apply-initargs ((rest raw-initargs))
+            (unless (null? rest)
+              (let* ((k (runtime-value->host (car rest)))
+                     (v (runtime-value->host (cadr rest))))
+                (unless (symbol? k)
+                  (runtime-raise 'type-error "make-instance initarg key must be symbol" k))
+                (let ((spec (find-slot-spec-entry slot-specs k)))
+                  (unless spec
+                    (runtime-raise 'invalid-ir "Unknown initarg for make-instance" k))
+                  (rt-instance-slot-set! obj (rt-slot-name spec) v))
+                (apply-initargs (cddr rest)))))
+          (host->runtime-value obj)))))
+  (def 'class-of
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "class-of expects 1 argument" args))
+      (let ((obj (runtime-value->host (car args))))
+        (cond
+         ((rt-instance? obj) (host->runtime-value (rt-instance-class obj)))
+         ((rt-class? obj) (car args))
+         (else
+          (runtime-raise 'type-error "class-of target must be instance or class" obj))))))
+  (def 'instancep
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "instancep expects 1 argument" args))
+      (host->runtime-value (if (rt-instance? (runtime-value->host (car args))) #t #f))))
+  (def 'slot-value
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "slot-value expects 2 arguments" args))
+      (let ((obj (runtime-value->host (car args)))
+            (slot (runtime-value->host (cadr args))))
+        (host->runtime-value (rt-instance-slot-ref obj slot))))))
 
 (define (runtime-eval-special op payload env state)
   (define (handler-case-tag-match? tag)
@@ -505,6 +793,90 @@
                                 (runtime-eval-expr body henv state))
                               (loop (cdr cs)))))))))
          (runtime-eval-expr protected env state))))
+    ((defclass)
+     (unless (and (list? payload) (= (length payload) 3) (symbol? (car payload)))
+       (runtime-raise 'invalid-ir "defclass payload must be (name supers slots)" payload))
+     (let* ((name (car payload))
+            (super-forms (cadr payload))
+            (slot-forms (caddr payload)))
+       (unless (list? super-forms)
+         (runtime-raise 'invalid-ir "defclass superclasses must be list" super-forms))
+       (unless (list? slot-forms)
+         (runtime-raise 'invalid-ir "defclass slots must be list" slot-forms))
+       (let* ((supers
+               (map (lambda (s)
+                      (unless (symbol? s)
+                        (runtime-raise 'invalid-ir "defclass superclass must be symbol" s))
+                      (resolve-class-designator s env))
+                    super-forms))
+              (own-slots
+               (map (lambda (slot)
+                      (unless (and (list? slot) (= (length slot) 6) (eq? (car slot) 'slot-spec))
+                        (runtime-raise 'invalid-ir "invalid defclass slot-spec payload" slot))
+                      (make-rt-slot-spec (cadr slot) (caddr slot) (cadddr slot) (list-ref slot 4) (list-ref slot 5)))
+                    slot-forms))
+              (class-obj (make-rt-class name supers own-slots)))
+         (env-set! env name (host->runtime-value class-obj))
+         ;; Install generated readers/writers as generic methods.
+         (for-each
+          (lambda (s)
+            (let ((slot-name (rt-slot-name s)))
+              (for-each
+               (lambda (reader)
+                 (let* ((generic (ensure-generic-function! reader env '(obj)))
+                        (reader-fn
+                         (make-fn-value
+                          (make-primitive
+                           reader
+                           (lambda (args st)
+                             (unless (= (length args) 1)
+                               (runtime-raise 'arity "reader expects 1 argument" args))
+                             (host->runtime-value
+                              (rt-instance-slot-ref (runtime-value->host (car args)) slot-name))))))
+                        (method (make-rt-method (list class-obj) '(obj) reader-fn)))
+                   (set-rt-generic-methods! generic (cons method (rt-generic-methods generic)))))
+               (rt-slot-readers s))
+              (for-each
+               (lambda (writer)
+                 (let* ((generic (ensure-generic-function! writer env '(obj value)))
+                        (writer-fn
+                         (make-fn-value
+                          (make-primitive
+                           writer
+                           (lambda (args st)
+                             (unless (= (length args) 2)
+                               (runtime-raise 'arity "writer expects 2 arguments" args))
+                             (let ((obj (runtime-value->host (car args)))
+                                   (v (runtime-value->host (cadr args))))
+                               (host->runtime-value
+                                (rt-instance-slot-set! obj slot-name v)))))))
+                        (method (make-rt-method (list class-obj #f) '(obj value) writer-fn)))
+                   (set-rt-generic-methods! generic (cons method (rt-generic-methods generic)))))
+               (rt-slot-writers s))))
+          own-slots)
+         (host->runtime-value name))))
+    ((defgeneric)
+     (unless (and (list? payload) (= (length payload) 2) (symbol? (car payload)))
+       (runtime-raise 'invalid-ir "defgeneric payload must be (name params)" payload))
+     (let ((name (car payload))
+           (params (cadr payload)))
+       (validate-params params)
+       (ensure-generic-function! name env params)
+       (host->runtime-value name)))
+    ((defmethod)
+     (unless (and (list? payload) (= (length payload) 3) (symbol? (car payload)))
+       (runtime-raise 'invalid-ir "defmethod payload must be (name params body)" payload))
+     (let* ((name (car payload))
+            (raw-params (cadr payload))
+            (body (caddr payload))
+            (parsed (parse-method-params raw-params env))
+            (plain-params (car parsed))
+            (specializers (cadr parsed))
+            (method-fn (make-fn-value (make-closure name plain-params body env)))
+            (generic (ensure-generic-function! name env plain-params))
+            (method (make-rt-method specializers plain-params method-fn)))
+       (set-rt-generic-methods! generic (cons method (rt-generic-methods generic)))
+       (host->runtime-value name)))
     (else
      (runtime-raise 'unsupported-special "special form is not yet lowered" (list op payload)))))
 
@@ -513,6 +885,7 @@
         (global-env (make-env #f)))
     (env-define! global-env 'nil (host->runtime-value '()))
     (env-define! global-env 't (host->runtime-value #t))
+    (env-define! global-env 'object (host->runtime-value (make-rt-class 'object '() '())))
     (install-primitives! global-env)
     (vector 'runtime-state profile global-env (host->runtime-value '()))))
 
@@ -627,6 +1000,11 @@
     (cond
      ((primitive? fn)
       ((primitive-proc fn) arg-vals state))
+     ((rt-generic? fn)
+      (let ((m (select-generic-method fn arg-vals)))
+        (if m
+            (runtime-apply (rt-method-fn m) arg-vals state)
+            (runtime-raise 'invalid-ir "No applicable method for generic function" (rt-generic-name fn)))))
      ((closure? fn)
       (let ((call-env (make-env (closure-env fn))))
         (bind-params! call-env (closure-params fn) arg-vals)

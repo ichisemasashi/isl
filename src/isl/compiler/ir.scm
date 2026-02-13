@@ -88,6 +88,113 @@
                   (list tag var (normalize-body rest))))))
       #f))
 
+(define (all-truthy? xs)
+  (if (null? xs)
+      #t
+      (and (car xs) (all-truthy? (cdr xs)))))
+
+(define (normalize-defclass-slot slot-spec)
+  (cond
+   ((symbol? slot-spec)
+    (list 'slot-spec
+          slot-spec
+          '(const ())
+          (string->symbol (string-append ":" (symbol->string slot-spec)))
+          '()
+          '()))
+   ((and (list? slot-spec) (pair? slot-spec) (symbol? (car slot-spec)))
+    (let ((name (car slot-spec))
+          (rest (cdr slot-spec))
+          (initform '(const ()))
+          (initarg #f)
+          (readers '())
+          (writers '()))
+      (let parse ((xs rest))
+        (cond
+         ((null? xs)
+          (list 'slot-spec
+                name
+                initform
+                (if initarg
+                    initarg
+                    (string->symbol (string-append ":" (symbol->string name))))
+                (reverse readers)
+                (reverse writers)))
+         ((or (null? (cdr xs))
+              (not (or (symbol? (car xs)) (keyword? (car xs)))))
+          #f)
+         (else
+          (let ((k (car xs))
+                (v (cadr xs)))
+            (cond
+             ((eq? k ':initform)
+              (set! initform (normalize-expr v))
+              (parse (cddr xs)))
+             ((eq? k ':accessor)
+              (if (symbol? v)
+                  (begin
+                    (set! readers (cons v readers))
+                    (set! writers (cons v writers))
+                    (parse (cddr xs)))
+                  #f))
+             ((eq? k ':reader)
+              (if (symbol? v)
+                  (begin
+                    (set! readers (cons v readers))
+                    (parse (cddr xs)))
+                  #f))
+             ((eq? k ':writer)
+              (if (symbol? v)
+                  (begin
+                    (set! writers (cons v writers))
+                    (parse (cddr xs)))
+                  #f))
+             ((eq? k ':initarg)
+              (if (or (symbol? v) (keyword? v))
+                  (begin
+                    (set! initarg v)
+                    (parse (cddr xs)))
+                  #f))
+             (else #f))))))))
+   (else #f)))
+
+(define (normalize-defclass-payload args)
+  (if (= (length args) 3)
+      (let ((name (car args))
+            (supers (cadr args))
+            (slots (caddr args)))
+        (if (and (symbol? name) (list? supers) (list? slots))
+            (let ((norm-slots (map normalize-defclass-slot slots)))
+              (if (all-truthy? norm-slots)
+                  (list name supers norm-slots)
+                  #f))
+            #f))
+      #f))
+
+(define (normalize-defgeneric-payload args)
+  (if (and (= (length args) 2) (symbol? (car args)) (list? (cadr args)))
+      (list (car args) (cadr args))
+      #f))
+
+(define (normalize-defmethod-param p)
+  (cond
+   ((symbol? p) p)
+   ((and (list? p) (= (length p) 2) (symbol? (car p)) (symbol? (cadr p))) p)
+   (else #f)))
+
+(define (normalize-defmethod-payload args)
+  (if (>= (length args) 3)
+      (let ((name (car args))
+            (params (cadr args))
+            (body (cddr args)))
+        (if (and (symbol? name) (list? params))
+            (let ((norm-params (map normalize-defmethod-param params)))
+              (if (all-truthy? norm-params)
+                  (list name norm-params (normalize-body body))
+                  #f))
+            #f))
+      #f))
+
 (define (normalize-special op args)
   (case op
     ((quote)
@@ -180,6 +287,21 @@
                (list 'invalid-special op args)
                (list 'special 'handler-case (list protected clauses))))
          (list 'invalid-special op args)))
+    ((defclass)
+     (let ((p (normalize-defclass-payload args)))
+       (if p
+           (list 'special 'defclass p)
+           (list 'invalid-special op args))))
+    ((defgeneric)
+     (let ((p (normalize-defgeneric-payload args)))
+       (if p
+           (list 'special 'defgeneric p)
+           (list 'invalid-special op args))))
+    ((defmethod)
+     (let ((p (normalize-defmethod-payload args)))
+       (if p
+           (list 'special 'defmethod p)
+           (list 'invalid-special op args))))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -199,7 +321,8 @@
           (args (cdr form)))
       (if (symbol? op)
           (case op
-            ((quote if progn lambda setq let setf block return-from catch throw go tagbody handler-case)
+            ((quote if progn lambda setq let setf block return-from catch throw go tagbody handler-case
+                    defclass defgeneric defmethod)
              (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))
