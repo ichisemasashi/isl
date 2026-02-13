@@ -1,0 +1,64 @@
+#!/usr/bin/env gosh
+(add-load-path "./src")
+(use isl.compiler.runner)
+
+(define (usage)
+  (display "Usage: islc-run [--profile strict|extended] <file> [file ...]\n"))
+
+(define (starts-with? s prefix)
+  (let ((n (string-length s))
+        (m (string-length prefix)))
+    (and (>= n m)
+         (string=? (substring s 0 m) prefix))))
+
+(define (parse-args args)
+  (let loop ((xs args) (profile 'extended) (files '()))
+    (if (null? xs)
+        (list 'ok profile (reverse files))
+        (let ((a (car xs)))
+          (cond
+           ((or (string=? a "-h") (string=? a "--help"))
+            (list 'help))
+           ((string=? a "--profile")
+            (if (null? (cdr xs))
+                (list 'error "--profile requires strict or extended")
+                (loop (cddr xs) (cadr xs) files)))
+           ((starts-with? a "--profile=")
+            (loop (cdr xs) (substring a 10 (string-length a)) files))
+           (else
+            (loop (cdr xs) profile (cons a files))))))))
+
+(define (main argv)
+  (let ((parsed (parse-args (cdr argv))))
+    (case (car parsed)
+      ((help)
+       (usage)
+       0)
+      ((error)
+       (usage)
+       (display "Error: ")
+       (display (cadr parsed))
+       (newline)
+       2)
+      ((ok)
+       (let ((profile (cadr parsed))
+             (files (caddr parsed)))
+         (if (null? files)
+             (begin
+               (usage)
+               2)
+             (begin
+               (for-each
+                (lambda (f)
+                  (let ((result (run-file f profile)))
+                    (display f)
+                    (display " => ")
+                    (write result)
+                    (newline)))
+                files)
+               0))))
+      (else
+       (usage)
+       2))))
+
+(exit (main (command-line)))

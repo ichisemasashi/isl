@@ -74,3 +74,24 @@ gosh test/conformance/oracle-compare.scm extended
 ```sh
 gosh test/compiler/frontend-smoke.scm
 ```
+
+## コンパイラランタイム最小核 (M2)
+ランタイム経路でファイル実行:
+```sh
+./bin/islc-run examples/hello.lsp
+```
+
+M2 smoke テスト:
+```sh
+gosh test/compiler/runtime-m2-smoke.scm
+```
+
+M2 oracle 比較（interpreter と結果一致）:
+```sh
+gosh test/compiler/runtime-m2-oracle.scm
+```
+
+ランタイム ABI:
+```text
+docs/runtime-abi.md
+```
