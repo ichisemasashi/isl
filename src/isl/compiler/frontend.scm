@@ -1,10 +1,12 @@
 (define-module isl.compiler.frontend
   (use isl.core)
   (use isl.compiler.ir)
+  (use isl.compiler.lowering)
   (export make-frontend-env
           frontend-read-all
           frontend-macroexpand
           frontend-normalize
+          frontend-lower
           frontend-compile-forms
           frontend-compile-file
           frontend-dump))
@@ -26,6 +28,9 @@
 (define (frontend-normalize expanded-form)
   (normalize-top-level-form expanded-form))
 
+(define (frontend-lower top-ir)
+  (lower-top-level-form top-ir))
+
 (define (compile-time-form? form)
   (and (pair? form)
        (symbol? (car form))
@@ -37,7 +42,8 @@
         (reverse acc)
         (let* ((form (car xs))
                (expanded (frontend-macroexpand form env))
-               (ir (frontend-normalize expanded)))
+               (ir (frontend-normalize expanded))
+               (ll (frontend-lower ir)))
           ;; Keep compile-time environment synchronized for subsequent expansions.
           (when (compile-time-form? form)
             (eval-islisp form env))
@@ -45,7 +51,8 @@
                 (cons (list 'unit
                             (list 'source form)
                             (list 'expanded expanded)
-                            (list 'ir ir))
+                            (list 'ir ir)
+                            (list 'll ll))
                       acc))))))
 
 (define (frontend-compile-file path env)
@@ -60,7 +67,8 @@
         (let* ((u (car xs))
                (src (cadr (assoc 'source (cdr u))))
                (expanded (cadr (assoc 'expanded (cdr u))))
-               (ir (cadr (assoc 'ir (cdr u)))))
+               (ir (cadr (assoc 'ir (cdr u))))
+               (ll (cadr (assoc 'll (cdr u)))))
           (display "[" port)
           (display idx port)
           (display "] source: " port)
@@ -71,5 +79,8 @@
           (newline port)
           (display "    ir: " port)
           (display (render-ir ir) port)
+          (newline port)
+          (display "    ll: " port)
+          (display (render-ll ll) port)
           (newline port))
         (loop (cdr xs) (+ idx 1))))))

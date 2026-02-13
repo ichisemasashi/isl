@@ -1,4 +1,5 @@
 (define-module isl.compiler.runtime
+  (use srfi-1)
   (export make-runtime-state
           runtime-load-units!
           runtime-eval-top
@@ -101,15 +102,19 @@
 
 ;; Function values.
 (define (make-closure name params body env)
-  (vector 'closure name params body env))
+  (vector 'closure name params body env 'ir))
+
+(define (make-closure/cfg name params cfg env)
+  (vector 'closure name params cfg env 'cfg))
 
 (define (closure? x)
-  (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'closure)))
+  (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'closure)))
 
 (define (closure-name c) (vector-ref c 1))
 (define (closure-params c) (vector-ref c 2))
 (define (closure-body c) (vector-ref c 3))
 (define (closure-env c) (vector-ref c 4))
+(define (closure-kind c) (vector-ref c 5))
 
 (define (make-primitive name proc)
   (vector 'primitive name proc))
@@ -272,6 +277,100 @@
         last
         (loop (cdr xs) (runtime-eval-expr (car xs) env state)))))
 
+(define (find-block cfg label)
+  (let* ((blocks (caddr cfg))
+         (p (find (lambda (b) (and (pair? b) (eq? (cadr b) label))) blocks)))
+    (if p
+        p
+        (runtime-raise 'invalid-ir "unknown block label" label))))
+
+(define (phi-pairs rhs)
+  (if (and (pair? rhs) (eq? (car rhs) 'phi) (pair? (cdr rhs)))
+      (cadr rhs)
+      #f))
+
+(define (eval-rhs rhs env state pred-label)
+  (unless (and (pair? rhs) (symbol? (car rhs)))
+    (runtime-raise 'invalid-ir "invalid assignment rhs" rhs))
+  (case (car rhs)
+    ((const)
+     (if (= (length rhs) 2)
+         (host->runtime-value (cadr rhs))
+         (runtime-raise 'invalid-ir "const rhs expects one payload" rhs)))
+    ((var)
+     (if (= (length rhs) 2)
+         (env-ref env (cadr rhs))
+         (runtime-raise 'invalid-ir "var rhs expects one symbol" rhs)))
+    ((call)
+     (let ((fn (env-ref env (cadr rhs)))
+           (args (map (lambda (s) (env-ref env s)) (caddr rhs))))
+       (runtime-apply fn args state)))
+    ((lambda)
+     (if (= (length rhs) 3)
+         (make-fn-value (make-closure #f (cadr rhs) (caddr rhs) env))
+         (runtime-raise 'invalid-ir "lambda rhs expects params/body" rhs)))
+    ((special)
+     (runtime-raise 'unsupported-special "special form is not yet lowered" rhs))
+    ((invalid-special)
+     (runtime-raise 'invalid-ir "invalid special form shape in rhs" rhs))
+    ((phi)
+     (let ((pairs (phi-pairs rhs)))
+       (unless (list? pairs)
+         (runtime-raise 'invalid-ir "phi rhs expects predecessor pairs" rhs))
+       (let ((selected
+              (if pred-label
+                  (find (lambda (x) (and (pair? x) (eq? (car x) pred-label))) pairs)
+                  #f)))
+         (if selected
+             (env-ref env (cadr selected))
+             (if (null? pairs)
+                 (runtime-raise 'invalid-ir "phi has no incoming pairs" rhs)
+                 (env-ref env (cadar pairs)))))))
+    (else
+     (runtime-raise 'invalid-ir "unknown assignment rhs op" rhs))))
+
+(define (exec-block-instrs instrs env state pred-label)
+  (for-each
+   (lambda (instr)
+     (unless (and (pair? instr) (eq? (car instr) 'assign) (= (length instr) 3))
+       (runtime-raise 'invalid-ir "instruction must be (assign dst rhs)" instr))
+     (let ((dst (cadr instr))
+           (rhs (caddr instr)))
+       (unless (symbol? dst)
+         (runtime-raise 'invalid-ir "assign destination must be symbol" dst))
+       (env-define! env dst (eval-rhs rhs env state pred-label))))
+   instrs))
+
+(define (runtime-exec-cfg cfg env state)
+  (unless (and (pair? cfg) (eq? (car cfg) 'cfg) (= (length cfg) 3))
+    (runtime-raise 'invalid-ir "cfg shape must be (cfg entry blocks)" cfg))
+  (let ((entry (cadr cfg)))
+    (let loop ((label entry) (pred #f))
+      (let* ((block (find-block cfg label))
+             (instrs (caddr block))
+             (term (cadddr block)))
+        (exec-block-instrs instrs env state pred)
+        (unless (and (pair? term) (symbol? (car term)))
+          (runtime-raise 'invalid-ir "block terminator is missing or invalid" block))
+        (case (car term)
+          ((ret)
+           (if (= (length term) 2)
+               (env-ref env (cadr term))
+               (runtime-raise 'invalid-ir "ret expects one value symbol" term)))
+          ((jmp)
+           (if (= (length term) 2)
+               (loop (cadr term) label)
+               (runtime-raise 'invalid-ir "jmp expects target label" term)))
+          ((br)
+           (if (= (length term) 4)
+               (let ((cond-v (env-ref env (cadr term))))
+                 (if (runtime-truthy? cond-v)
+                     (loop (caddr term) label)
+                     (loop (cadddr term) label)))
+               (runtime-raise 'invalid-ir "br expects cond then else labels" term)))
+          (else
+           (runtime-raise 'invalid-ir "unknown terminator op" term)))))))
+
 (define (runtime-apply fn-val arg-vals state)
   (let ((fn (fn-from-value fn-val)))
     (cond
@@ -280,7 +379,9 @@
      ((closure? fn)
       (let ((call-env (make-env (closure-env fn))))
         (bind-params! call-env (closure-params fn) arg-vals)
-        (runtime-eval-expr (closure-body fn) call-env state)))
+        (if (eq? (closure-kind fn) 'cfg)
+            (runtime-exec-cfg (closure-body fn) call-env state)
+            (runtime-eval-expr (closure-body fn) call-env state))))
      (else
       (runtime-raise 'type-error "invalid function object" fn)))))
 
@@ -338,6 +439,17 @@
                (env-define! global name fn)
                fn))
            (runtime-raise 'invalid-ir "define-fun expects name params body" top-ir)))
+      ((ll-define-fun)
+       (if (= (length top-ir) 4)
+           (let ((name (cadr top-ir))
+                 (params (caddr top-ir))
+                 (cfg (cadddr top-ir)))
+             (unless (symbol? name)
+               (runtime-raise 'invalid-ir "ll-define-fun name must be symbol" name))
+             (let ((fn (make-fn-value (make-closure/cfg name params cfg global))))
+               (env-define! global name fn)
+               fn))
+           (runtime-raise 'invalid-ir "ll-define-fun expects name params cfg" top-ir)))
       ((define-global)
        (if (= (length top-ir) 3)
            (let ((name (cadr top-ir))
@@ -348,13 +460,30 @@
                (env-define! global name val)
                val))
            (runtime-raise 'invalid-ir "define-global expects name expr" top-ir)))
+      ((ll-define-global)
+       (if (= (length top-ir) 3)
+           (let ((name (cadr top-ir))
+                 (cfg (caddr top-ir)))
+             (unless (symbol? name)
+               (runtime-raise 'invalid-ir "ll-define-global name must be symbol" name))
+             (let ((val (runtime-exec-cfg cfg global state)))
+               (env-define! global name val)
+               val))
+           (runtime-raise 'invalid-ir "ll-define-global expects name cfg" top-ir)))
       ((define-macro)
        ;; Macros are compile-time only and should be eliminated from executable IR.
+       (host->runtime-value '()))
+      ((ll-define-macro)
+       ;; compile-time only
        (host->runtime-value '()))
       ((expr)
        (if (= (length top-ir) 2)
            (runtime-eval-expr (cadr top-ir) global state)
            (runtime-raise 'invalid-ir "expr expects one payload" top-ir)))
+      ((ll-expr)
+       (if (= (length top-ir) 2)
+           (runtime-exec-cfg (cadr top-ir) global state)
+           (runtime-raise 'invalid-ir "ll-expr expects one cfg payload" top-ir)))
       ((invalid-top)
        (runtime-raise 'invalid-ir "invalid top-level form" top-ir))
       (else
@@ -367,9 +496,13 @@
           (set-state-last-value! state last)
           last)
         (let* ((unit (car xs))
+               (ll-pair (and (pair? unit) (assoc 'll (cdr unit))))
                (ir-pair (and (pair? unit) (assoc 'ir (cdr unit))))
-               (ir (and ir-pair (cadr ir-pair))))
-          (unless ir
-            (runtime-raise 'invalid-unit "unit has no ir field" unit))
+               (top (cond
+                     (ll-pair (cadr ll-pair))
+                     (ir-pair (cadr ir-pair))
+                     (else #f))))
+          (unless top
+            (runtime-raise 'invalid-unit "unit has no ll/ir field" unit))
           (loop (cdr xs)
-                (runtime-eval-top ir state))))))
+                (runtime-eval-top top state))))))

@@ -95,3 +95,13 @@ gosh test/compiler/runtime-m2-oracle.scm
 ```text
 docs/runtime-abi.md
 ```
+
+## M3 向け IR 分解（LLVM 直交CFG）
+`frontend` は正規化IRに加えて、`ll`（基本ブロックCFG）を出力します。  
+`ll` は `assign/call/br/jmp/ret/phi` ノードで構成され、LLVM IR へ 1 対 1 で落とせる粒度です。
+
+確認:
+```sh
+./bin/islc-front --dump-ir examples/hello.lsp
+gosh test/compiler/lowering-smoke.scm
+```
