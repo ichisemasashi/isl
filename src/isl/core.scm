@@ -686,10 +686,10 @@
 (define (method? obj)
   (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'method)))
 
-(define (make-method specializer params proc)
-  (vector 'method specializer params proc))
+(define (make-method specializers params proc)
+  (vector 'method specializers params proc))
 
-(define (method-specializer m) (vector-ref m 1))
+(define (method-specializers m) (vector-ref m 1))
 (define (method-params m) (vector-ref m 2))
 (define (method-proc m) (vector-ref m 3))
 
@@ -994,38 +994,74 @@
 (define (parse-method-params params env)
   (unless (list? params)
     (error "defmethod parameter list must be a list" params))
-  (when (null? params)
-    (error "defmethod requires at least one required parameter for dispatch"))
-  (let* ((first (car params))
-         (rest (cdr params))
-         (plain-first
+  (let parse-required ((xs params)
+                       (plain-required '())
+                       (specializers '()))
+    (if (or (null? xs)
+            (eq? (car xs) '&optional)
+            (eq? (car xs) '&rest)
+            (eq? (car xs) '&body))
+        (let* ((plain-params (append (reverse plain-required) xs))
+               (spec (parse-params plain-params))
+               (required-spec (car spec)))
+          (when (null? required-spec)
+            (error "defmethod requires at least one required parameter for dispatch"))
+          (unless (= (length required-spec) (length specializers))
+            (error "defmethod required parameter parse mismatch" params))
+          (list plain-params (reverse specializers)))
+        (let ((x (car xs)))
           (cond
-           ((symbol? first) first)
-           ((and (list? first) (= (length first) 2) (symbol? (car first)))
-            (car first))
+           ((symbol? x)
+            (parse-required (cdr xs)
+                            (cons x plain-required)
+                            (cons #f specializers)))
+           ((and (list? x) (= (length x) 2) (symbol? (car x)))
+            (parse-required (cdr xs)
+                            (cons (car x) plain-required)
+                            (cons (resolve-class-designator (cadr x) env) specializers)))
            (else
-            (error "invalid defmethod first parameter" first))))
-         (specializer
-          (cond
-           ((symbol? first) #f)
-           (else
-            (resolve-class-designator (cadr first) env))))
-         (plain-params (cons plain-first rest))
-         (spec (parse-params plain-params)))
-    (when (null? (car spec))
-      (error "defmethod needs at least one required parameter" params))
-    (list plain-params specializer)))
+            (error "invalid defmethod required parameter" x)))))))
+
+(define (score<? a b)
+  (let loop ((xs a) (ys b))
+    (cond
+     ((null? xs) #f)
+     ((< (car xs) (car ys)) #t)
+     ((> (car xs) (car ys)) #f)
+     (else
+      (loop (cdr xs) (cdr ys))))))
+
+(define (score=? a b)
+  (equal? a b))
+
+(define (method-applicability-score method args)
+  (let ((specializers (method-specializers method)))
+    (if (< (length args) (length specializers))
+        #f
+        (let loop ((ss specializers)
+                   (as args)
+                   (acc '()))
+          (if (null? ss)
+              (reverse acc)
+              (let ((spec (car ss))
+                    (arg (car as)))
+                (if spec
+                    (if (instance? arg)
+                        (let ((d (class-distance (instance-class arg) spec)))
+                          (if d
+                              (loop (cdr ss) (cdr as) (cons d acc))
+                              #f))
+                        #f)
+                    (loop (cdr ss) (cdr as) (cons 1000000 acc)))))))))
+
+(define (method-more-specific-conflict? m1 m2)
+  (let ((s1 (method-specializers m1))
+        (s2 (method-specializers m2)))
+    (and (not (equal? s1 s2))
+         (not (null? s1)))))
 
 (define (generic-method-score method args)
-  (if (null? args)
-      #f
-      (let ((specializer (method-specializer method)))
-        (if specializer
-            (let ((arg0 (car args)))
-              (if (instance? arg0)
-                  (class-distance (instance-class arg0) specializer)
-                  #f))
-            1000000))))
+  (method-applicability-score method args))
 
 (define (select-generic-method generic args)
   (let loop ((methods (generic-methods generic))
@@ -1038,18 +1074,15 @@
           (cond
            ((not score)
             (loop (cdr methods) best-method best-score))
-           ((or (not best-score) (< score best-score))
+           ((or (not best-score) (score<? score best-score))
             (loop (cdr methods) m score))
-           ((= score best-score)
+           ((score=? score best-score)
             (if (and best-method
-                     (method-specializer best-method)
-                     (method-specializer m)
-                     (not (eq? (method-specializer best-method)
-                               (method-specializer m))))
+                     (method-more-specific-conflict? best-method m))
                 (error "Ambiguous applicable methods in generic function"
                        (generic-name generic)
-                       (list (method-specializer best-method)
-                             (method-specializer m))
+                       (list (method-specializers best-method)
+                             (method-specializers m))
                        args)
                 (loop (cdr methods) best-method best-score)))
            (else
@@ -1745,12 +1778,12 @@
            (for-each
             (lambda (reader)
               (let* ((method-proc
-                      (make-closure '(obj)
+                     (make-closure '(obj)
                                     (list (list 'slot-value 'obj (list 'quote slot-name)))
                                     env
                                     reader))
                      (generic (ensure-generic-function! reader env '(obj)))
-                     (method (make-method class-obj '(obj) method-proc)))
+                     (method (make-method (list class-obj) '(obj) method-proc)))
                 (set-generic-methods! generic (cons method (generic-methods generic)))))
             (slot-spec-readers s))
            (for-each
@@ -1763,7 +1796,7 @@
                                     env
                                     writer))
                      (generic (ensure-generic-function! writer env '(obj value)))
-                     (method (make-method class-obj '(obj value) method-proc)))
+                     (method (make-method (list class-obj #f) '(obj value) method-proc)))
                 (set-generic-methods! generic (cons method (generic-methods generic)))))
             (slot-spec-writers s))
            (let ((acc (slot-spec-accessor s)))
@@ -1806,10 +1839,10 @@
       (error "defmethod name must be symbol" name))
     (let* ((parsed (parse-method-params raw-params env))
            (plain-params (car parsed))
-           (specializer (cadr parsed))
+           (specializers (cadr parsed))
            (method-proc (make-closure plain-params body env name))
            (generic (ensure-generic-function! name env plain-params))
-           (method (make-method specializer plain-params method-proc)))
+           (method (make-method specializers plain-params method-proc)))
       ;; Newer methods of same specificity should win.
       (set-generic-methods! generic (cons method (generic-methods generic)))
       name)))

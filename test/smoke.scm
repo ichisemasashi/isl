@@ -380,6 +380,37 @@
 (check-error '(progn
                 (defglobal b1 (make-instance 'botha))
                 (amb b1)))
+(check 'ISLISP-USER::pair-kind '(defgeneric pair-kind (a b)))
+(check 'ISLISP-USER::pair-kind
+       '(defmethod pair-kind ((a person) (b person))
+          "person-person"))
+(check 'ISLISP-USER::pair-kind
+       '(defmethod pair-kind ((a person) b)
+          "person-*"))
+(check 'ISLISP-USER::pair-kind
+       '(defmethod pair-kind (a (b person))
+          "*-person"))
+(check 'ISLISP-USER::pair-kind
+       '(defmethod pair-kind (a b)
+          "default"))
+(check "person-person" '(progn
+                          (defglobal p4 (make-instance 'person))
+                          (pair-kind p2 p4)))
+(check "person-*" '(pair-kind p2 1))
+(check "*-person" '(pair-kind 1 p2))
+(check "default" '(pair-kind 1 2))
+(check 'ISLISP-USER::pair-amb '(defgeneric pair-amb (a b)))
+(check 'ISLISP-USER::pair-amb
+       '(defmethod pair-amb ((a lefta) (b righta))
+          "lr"))
+(check 'ISLISP-USER::pair-amb
+       '(defmethod pair-amb ((a righta) (b lefta))
+          "rl"))
+(check-error '(progn
+                (defglobal la1 (make-instance 'lefta))
+                (defglobal ra1 (make-instance 'righta))
+                (defglobal ba1 (make-instance 'botha))
+                (pair-amb ba1 ba1)))
 (check 'ISLISP-USER::person2
        '(defclass person2 ()
           ((name :accessor person2-name :initform "Anonymous")
