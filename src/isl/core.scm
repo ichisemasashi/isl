@@ -659,15 +659,17 @@
 (define (class-own-slots c) (vector-ref c 3))
 
 (define (slot-spec? obj)
-  (and (vector? obj) (= (vector-length obj) 5) (eq? (vector-ref obj 0) 'slot-spec)))
+  (and (vector? obj) (= (vector-length obj) 7) (eq? (vector-ref obj 0) 'slot-spec)))
 
-(define (make-slot-spec name initform accessor initarg)
-  (vector 'slot-spec name initform accessor initarg))
+(define (make-slot-spec name initform accessor initarg readers writers)
+  (vector 'slot-spec name initform accessor initarg readers writers))
 
 (define (slot-spec-name s) (vector-ref s 1))
 (define (slot-spec-initform s) (vector-ref s 2))
 (define (slot-spec-accessor s) (vector-ref s 3))
 (define (slot-spec-initarg s) (vector-ref s 4))
+(define (slot-spec-readers s) (vector-ref s 5))
+(define (slot-spec-writers s) (vector-ref s 6))
 
 (define (instance? obj)
   (and (vector? obj) (= (vector-length obj) 3) (eq? (vector-ref obj 0) 'instance)))
@@ -802,13 +804,20 @@
   (cond
    ((symbol? slot-spec)
     (let ((name (resolve-binding-symbol slot-spec)))
-      (make-slot-spec name '() #f (string->symbol (string-append ":" (symbol-base-name name))))))
+      (make-slot-spec name
+                      '()
+                      #f
+                      (string->symbol (string-append ":" (symbol-base-name name)))
+                      '()
+                      '())))
    ((and (list? slot-spec) (pair? slot-spec) (symbol? (car slot-spec)))
     (let ((name (resolve-binding-symbol (car slot-spec)))
           (rest (cdr slot-spec))
           (initform '())
           (accessor #f)
-          (initarg #f))
+          (initarg #f)
+          (readers '())
+          (writers '()))
       (let parse ((xs rest))
         (unless (null? xs)
           (unless (and (pair? xs) (pair? (cdr xs)))
@@ -821,7 +830,17 @@
              ((eq? k ':accessor)
               (unless (symbol? v)
                 (error ":accessor value must be symbol" v))
-              (set! accessor (resolve-binding-symbol v)))
+              (let ((sym (resolve-binding-symbol v)))
+                (set! accessor sym)
+                (set! readers (cons sym readers))))
+             ((eq? k ':reader)
+              (unless (symbol? v)
+                (error ":reader value must be symbol" v))
+              (set! readers (cons (resolve-binding-symbol v) readers)))
+             ((eq? k ':writer)
+              (unless (symbol? v)
+                (error ":writer value must be symbol" v))
+              (set! writers (cons (resolve-binding-symbol v) writers)))
              ((eq? k ':initarg)
               (unless (symbol? v)
                 (error ":initarg value must be symbol" v))
@@ -834,7 +853,9 @@
                       accessor
                       (if initarg
                           initarg
-                          (string->symbol (string-append ":" (symbol-base-name name)))))))
+                          (string->symbol (string-append ":" (symbol-base-name name))))
+                      (delete-duplicates (reverse readers) eq?)
+                      (delete-duplicates (reverse writers) eq?))))
    (else
     (error "Invalid slot specifier in defclass" slot-spec))))
 
@@ -1627,17 +1648,34 @@
       (class-table-set! name class-obj)
       (for-each
        (lambda (s)
-         (let ((acc (slot-spec-accessor s)))
-           (when acc
-             (let* ((method-proc
-                     (make-closure '(obj)
-                                   (list (list 'slot-value 'obj (list 'quote (slot-spec-name s))))
-                                   env
-                                   acc))
-                    (generic (ensure-generic-function! acc env '(obj)))
-                    (method (make-method class-obj '(obj) method-proc)))
-               (set-generic-methods! generic (cons method (generic-methods generic))))
-             (accessor-slot-set! acc (slot-spec-name s)))))
+         (let ((slot-name (slot-spec-name s)))
+           (for-each
+            (lambda (reader)
+              (let* ((method-proc
+                      (make-closure '(obj)
+                                    (list (list 'slot-value 'obj (list 'quote slot-name)))
+                                    env
+                                    reader))
+                     (generic (ensure-generic-function! reader env '(obj)))
+                     (method (make-method class-obj '(obj) method-proc)))
+                (set-generic-methods! generic (cons method (generic-methods generic)))))
+            (slot-spec-readers s))
+           (for-each
+            (lambda (writer)
+              (let* ((method-proc
+                      (make-closure '(obj value)
+                                    (list (list 'setf
+                                                (list 'slot-value 'obj (list 'quote slot-name))
+                                                'value))
+                                    env
+                                    writer))
+                     (generic (ensure-generic-function! writer env '(obj value)))
+                     (method (make-method class-obj '(obj value) method-proc)))
+                (set-generic-methods! generic (cons method (generic-methods generic)))))
+            (slot-spec-writers s))
+           (let ((acc (slot-spec-accessor s)))
+             (when acc
+               (accessor-slot-set! acc slot-name)))))
        own-slots)
       name)))
 

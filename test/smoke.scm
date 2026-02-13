@@ -384,6 +384,19 @@
                   (defglobal pp3 (make-instance 'person3 :person-name "Carol" :person-age 25))
                   (person3-name pp3)))
 (check 25 '(person3-age pp3))
+(check 'ISLISP-USER::person4
+       '(defclass person4 ()
+          ((name :initform "none" :reader person4-name :writer set-person4-name)
+           (age :initform 0 :reader person4-age :writer set-person4-age))))
+(check "none" '(progn
+                 (defglobal pp4 (make-instance 'person4))
+                 (person4-name pp4)))
+(check 41 '(progn
+             (set-person4-age pp4 41)
+             (person4-age pp4)))
+(check "Dave" '(progn
+                 (set-person4-name pp4 "Dave")
+                 (person4-name pp4)))
 (check 'ok '(progn (defglobal g 10)
                    (setq g 20)
                    'ok))
