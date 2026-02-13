@@ -1,0 +1,60 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+PROFILE=extended
+OUT_BIN=a.out
+KEEP_LL=0
+LL_PATH=
+INPUTS=
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --profile)
+      shift
+      [ "$#" -gt 0 ] || { echo "--profile requires strict|extended" >&2; exit 2; }
+      PROFILE="$1"
+      ;;
+    --profile=*)
+      PROFILE=${1#--profile=}
+      ;;
+    -o)
+      shift
+      [ "$#" -gt 0 ] || { echo "-o requires output path" >&2; exit 2; }
+      OUT_BIN="$1"
+      ;;
+    --emit-ll)
+      shift
+      [ "$#" -gt 0 ] || { echo "--emit-ll requires path" >&2; exit 2; }
+      LL_PATH="$1"
+      KEEP_LL=1
+      ;;
+    -h|--help)
+      echo "Usage: islc-aot [--profile strict|extended] [-o output-bin] [--emit-ll out.ll] <file> [file ...]" >&2
+      exit 0
+      ;;
+    *)
+      INPUTS="$INPUTS $1"
+      ;;
+  esac
+  shift
+done
+
+[ -n "$INPUTS" ] || { echo "input file is required" >&2; exit 2; }
+command -v clang >/dev/null 2>&1 || { echo "clang not found" >&2; exit 2; }
+
+if [ "$KEEP_LL" -eq 1 ]; then
+  TMP_LL="$LL_PATH"
+else
+  TMP_LL=$(mktemp -t isl_aot_XXXXXX.ll)
+fi
+
+# shellcheck disable=SC2086
+"$SCRIPT_DIR/islc-llvm" --profile "$PROFILE" --mode aot -o "$TMP_LL" $INPUTS
+clang -O0 -x ir "$TMP_LL" -x c "$ROOT_DIR/src/isl/compiler/llvm_runtime.c" -o "$OUT_BIN"
+
+if [ "$KEEP_LL" -eq 0 ]; then
+  rm -f "$TMP_LL"
+fi

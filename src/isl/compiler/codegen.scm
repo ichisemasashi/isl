@@ -1,6 +1,7 @@
 (define-module isl.compiler.codegen
   (use srfi-1)
-  (export ll-units->llvm-module))
+  (export ll-units->llvm-module
+          ll-units->llvm-aot-module))
 
 (select-module isl.compiler.codegen)
 
@@ -94,56 +95,106 @@
   (let loop ((xs params) (i 0))
     (cond
      ((null? xs) #f)
+     ((eq? (car xs) '&rest) #f)
      ((eq? (car xs) sym) i)
      (else (loop (cdr xs) (+ i 1))))))
+
+(define (cg-next-name! cg-ref)
+  (let ((n (car cg-ref)))
+    (set-car! cg-ref (+ n 1))
+    (string-append "%cg" (number->string n))))
+
+(define (emit-call-rhs dst rhs cg-ref)
+  (let* ((f (llvm-val (cadr rhs)))
+         (args (caddr rhs))
+         (argc (length args)))
+    (if (= argc 0)
+        (list (indent 2
+                      (string-append dst
+                                     " = call ptr @isl_rt_call(ptr %env, ptr "
+                                     f
+                                     ", i32 0, ptr null)")))
+        (let* ((arr (cg-next-name! cg-ref))
+               (arr-type (string-append "[" (number->string argc) " x ptr]"))
+               (slots
+                (let loop ((xs args) (i 0) (acc '()))
+                  (if (null? xs)
+                      (reverse acc)
+                      (loop (cdr xs)
+                            (+ i 1)
+                            (cons
+                             (list (cg-next-name! cg-ref)
+                                   (car xs)
+                                   i)
+                             acc))))))
+          (append
+           (list (indent 2 (string-append arr " = alloca " arr-type)))
+           (apply append
+                  (map (lambda (slot)
+                         (let ((slot-name (car slot))
+                               (arg-sym (cadr slot))
+                               (idx (caddr slot)))
+                           (list
+                            (indent 2 (string-append slot-name
+                                                     " = getelementptr inbounds "
+                                                     arr-type
+                                                     ", ptr "
+                                                     arr
+                                                     ", i64 0, i64 "
+                                                     (number->string idx)))
+                            (indent 2 (string-append "store ptr "
+                                                     (llvm-val arg-sym)
+                                                     ", ptr "
+                                                     slot-name)))))
+                       slots))
+           (list (indent 2
+                         (string-append dst
+                                        " = call ptr @isl_rt_call(ptr %env, ptr "
+                                        f
+                                        ", i32 "
+                                        (number->string argc)
+                                        ", ptr "
+                                        arr
+                                        ")"))))))))
 
 (define (emit-rhs dst rhs params cg-ref)
   (let ((op (car rhs)))
     (cond
-      ((eq? op 'const)
-       (let ((v (cadr rhs)))
-         (cond
-           ((integer? v)
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_make_int(i64 " (number->string v) ")"))))
-           ((eq? v #t)
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
-           ((eq? v #f)
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_false()"))))
-           ((null? v)
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_nil()"))))
-           ((symbol? v)
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string v)) ")"))))
-           ((string? v)
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_make_string(ptr " (str-ptr v) ")"))))
-           (else
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")")))))))
-      ((eq? op 'var)
-       (let ((idx (param-index params (cadr rhs))))
-         (if idx
-             (list (indent 2 (string-append dst " = call ptr @isl_rt_lookup_param(ptr %env, i32 " (number->string idx) ")")))
-             (list (indent 2 (string-append dst " = call ptr @isl_rt_lookup(ptr %env, ptr " (str-ptr (symbol->string (cadr rhs))) ")"))))))
-      ((eq? op 'call)
-       (let* ((f (llvm-val (cadr rhs)))
-              (args (caddr rhs))
-              (argc (length args)))
-         ;; M3 core mapping: `call` node is lowered to runtime call site.
-         ;; Argument vector materialization is deferred to next iteration.
-         (list
-           (indent 2
-                   (string-append dst
-                                  " = call ptr @isl_rt_call(ptr %env, ptr "
-                                  f
-                                  ", i32 "
-                                  (number->string argc)
-                                  ", ptr null)")))))
-      ((eq? op 'phi)
-       (let* ((pairs (cadr rhs))
-              (items (map (lambda (pr)
-                            (string-append "[ " (llvm-val (cadr pr)) ", %" (mangle-symbol (car pr)) " ]"))
-                          pairs)))
-         (list (indent 2 (string-append dst " = phi ptr " (join-comma items))))))
-      (else
-       (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "lowering pending") ")")))))))
+     ((eq? op 'const)
+      (let ((v (cadr rhs)))
+        (cond
+         ((integer? v)
+          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_int(i64 " (number->string v) ")"))))
+         ((eq? v #t)
+          (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
+         ((eq? v #f)
+          (list (indent 2 (string-append dst " = call ptr @isl_rt_false()"))))
+         ((null? v)
+          (list (indent 2 (string-append dst " = call ptr @isl_rt_nil()"))))
+         ((symbol? v)
+          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string v)) ")"))))
+         ((string? v)
+          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_string(ptr " (str-ptr v) ")"))))
+         (else
+          (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")")))))))
+     ((eq? op 'var)
+      (let ((idx (param-index params (cadr rhs))))
+        (if idx
+            (list (indent 2 (string-append dst " = call ptr @isl_rt_lookup_param(ptr %env, i32 " (number->string idx) ")")))
+            (let ((key (cg-next-name! cg-ref)))
+              (list
+               (indent 2 (string-append key " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string (cadr rhs))) ")"))
+               (indent 2 (string-append dst " = call ptr @isl_rt_lookup(ptr %env, ptr " key ")")))))))
+     ((eq? op 'call)
+      (emit-call-rhs dst rhs cg-ref))
+     ((eq? op 'phi)
+      (let* ((pairs (cadr rhs))
+             (items (map (lambda (pr)
+                           (string-append "[ " (llvm-val (cadr pr)) ", %" (mangle-symbol (car pr)) " ]"))
+                         pairs)))
+        (list (indent 2 (string-append dst " = phi ptr " (join-comma items))))))
+     (else
+      (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "lowering pending") ")")))))))
 
 (define (emit-terminator term cg-ref)
   (case (car term)
@@ -152,9 +203,7 @@
     ((jmp)
      (list (indent 2 (string-append "br label %" (mangle-symbol (cadr term))))))
     ((br)
-     (let* ((n (car cg-ref))
-            (c (string-append "%cg" (number->string n))))
-       (set-car! cg-ref (+ n 1))
+     (let ((c (cg-next-name! cg-ref)))
        (list
         (indent 2 (string-append c " = call i1 @isl_rt_truthy(ptr " (llvm-val (cadr term)) ")"))
         (indent 2 (string-append "br i1 " c ", label %" (mangle-symbol (caddr term)) ", label %" (mangle-symbol (cadddr term)))))))
@@ -197,38 +246,121 @@
                     '()
                     (cadr ll)))
     ((ll-define-macro)
-     (list (string-append ";; skipped macro " (symbol->string (cadr ll)))) )
+     (list (string-append ";; skipped macro " (symbol->string (cadr ll)))))
     (else
      (list ";; skipped invalid top"))))
 
-(define (ll-units->llvm-module units)
+(define (collect-ll-tops units)
+  (let loop ((xs units) (acc '()))
+    (if (null? xs)
+        (reverse acc)
+        (let* ((u (car xs))
+               (llp (assoc 'll (cdr u))))
+          (if llp
+              (loop (cdr xs) (cons (cadr llp) acc))
+              (loop (cdr xs) acc))))))
+
+(define (emit-fun-register ll cg-ref)
+  (let* ((name (cadr ll))
+         (params (caddr ll))
+         (sym (cg-next-name! cg-ref))
+         (fval (cg-next-name! cg-ref))
+         (arity (length (filter (lambda (x) (and (symbol? x) (not (eq? x '&rest)))) params))))
+    (list
+     (indent 2 (string-append sym " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string name)) ")"))
+     (indent 2 (string-append fval
+                              " = call ptr @isl_rt_make_compiled_fun(ptr @isl_fun_"
+                              (mangle-symbol name)
+                              ", i32 "
+                              (number->string arity)
+                              ")"))
+     (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " sym ", ptr " fval ")")))))
+
+(define (emit-global-init ll cg-ref)
+  (let* ((name (cadr ll))
+         (sym (cg-next-name! cg-ref))
+         (val (cg-next-name! cg-ref)))
+    (list
+     (indent 2 (string-append sym " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string name)) ")"))
+     (indent 2 (string-append val " = call ptr @isl_global_init_" (mangle-symbol name) "(ptr %env)"))
+     (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " sym ", ptr " val ")")))))
+
+(define (emit-aot-main tops)
+  (let ((cg-ref (list 1000)))
+    (let loop ((xs tops) (idx 0) (acc '()) (last #f))
+      (if (null? xs)
+          (append
+           (list "define i32 @main() {" "entry:" "  %env = call ptr @isl_rt_create_env()")
+           (list "  call void @isl_rt_install_primitives(ptr %env)")
+           acc
+           (list "  ret i32 0" "}"))
+          (let ((ll (car xs)))
+            (case (car ll)
+              ((ll-define-fun)
+               (loop (cdr xs)
+                     (+ idx 1)
+                     (append acc (emit-fun-register ll cg-ref))
+                     last))
+              ((ll-define-global)
+               (loop (cdr xs)
+                     (+ idx 1)
+                     (append acc (emit-global-init ll cg-ref))
+                     last))
+              ((ll-expr)
+               (let ((r (cg-next-name! cg-ref)))
+                 (loop (cdr xs)
+                       (+ idx 1)
+                       (append acc
+                               (list (indent 2 (string-append r " = call ptr @isl_expr_" (number->string idx) "(ptr %env)"))))
+                       r)))
+              (else
+               (loop (cdr xs) (+ idx 1) acc last))))))))
+
+(define (module-decls)
+  (list
+   "declare ptr @isl_rt_make_int(i64)"
+   "declare ptr @isl_rt_make_symbol(ptr)"
+   "declare ptr @isl_rt_make_string(ptr)"
+   "declare ptr @isl_rt_nil()"
+   "declare ptr @isl_rt_true()"
+   "declare ptr @isl_rt_false()"
+   "declare ptr @isl_rt_lookup(ptr, ptr)"
+   "declare ptr @isl_rt_lookup_param(ptr, i32)"
+   "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
+   "declare i1 @isl_rt_truthy(ptr)"
+   "declare ptr @isl_rt_unsupported(ptr)"))
+
+(define (aot-extra-decls)
+  (list
+   "declare ptr @isl_rt_create_env()"
+   "declare void @isl_rt_install_primitives(ptr)"
+   "declare ptr @isl_rt_make_compiled_fun(ptr, i32)"
+   "declare void @isl_rt_define(ptr, ptr, ptr)"))
+
+(define (emit-module units include-main?)
   (cg-reset!)
-  (let* ((fun-lines
+  (let* ((tops (collect-ll-tops units))
+         (fun-lines
           (apply append
-                 (let loop ((xs units) (i 0) (acc '()))
+                 (let loop ((xs tops) (i 0) (acc '()))
                    (if (null? xs)
                        (reverse acc)
-                       (let* ((u (car xs))
-                              (llp (assoc 'll (cdr u)))
-                              (chunk (if llp (emit-top (cadr llp) i) '())))
-                         (loop (cdr xs) (+ i 1) (cons chunk acc)))))))
-         (decls
-          (list
-           "declare ptr @isl_rt_make_int(i64)"
-           "declare ptr @isl_rt_make_symbol(ptr)"
-           "declare ptr @isl_rt_make_string(ptr)"
-           "declare ptr @isl_rt_nil()"
-           "declare ptr @isl_rt_true()"
-           "declare ptr @isl_rt_false()"
-           "declare ptr @isl_rt_lookup(ptr, ptr)"
-           "declare ptr @isl_rt_lookup_param(ptr, i32)"
-           "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
-           "declare i1 @isl_rt_truthy(ptr)"
-           "declare ptr @isl_rt_unsupported(ptr)"))
-         (consts (map emit-string-constant *cg-string-pool*)))
+                       (loop (cdr xs) (+ i 1) (cons (emit-top (car xs) i) acc))))))
+         (decls (if include-main?
+                    (append (module-decls) (aot-extra-decls))
+                    (module-decls)))
+         (consts (map emit-string-constant *cg-string-pool*))
+         (main-lines (if include-main? (emit-aot-main tops) '())))
     (join-lines
      (append
       (list ";; Auto-generated by isl.compiler.codegen")
       decls
       (if (null? consts) '() (append (list "") consts))
-      (if (null? fun-lines) '() (append (list "") fun-lines))))))
+      (if (null? fun-lines) '() (append (list "") fun-lines))
+      (if (null? main-lines) '() (append (list "") main-lines))))))
+
+(define (ll-units->llvm-module units)
+  (emit-module units #f))
+
+(define (ll-units->llvm-aot-module units)
+  (emit-module units #t))

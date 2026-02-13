@@ -4,7 +4,7 @@
 (use isl.compiler.codegen)
 
 (define (usage)
-  (display "Usage: islc-llvm [--profile strict|extended] [-o output.ll] <file> [file ...]\n"))
+  (display "Usage: islc-llvm [--profile strict|extended] [--mode module|aot] [-o output.ll] <file> [file ...]\n"))
 
 (define (starts-with? s prefix)
   (let ((n (string-length s))
@@ -13,9 +13,9 @@
          (string=? (substring s 0 m) prefix))))
 
 (define (parse-args args)
-  (let loop ((xs args) (profile 'extended) (out #f) (files '()))
+  (let loop ((xs args) (profile 'extended) (mode 'module) (out #f) (files '()))
     (if (null? xs)
-        (list 'ok profile out (reverse files))
+        (list 'ok profile mode out (reverse files))
         (let ((a (car xs)))
           (cond
            ((or (string=? a "-h") (string=? a "--help"))
@@ -23,15 +23,21 @@
            ((string=? a "--profile")
             (if (null? (cdr xs))
                 (list 'error "--profile requires strict or extended")
-                (loop (cddr xs) (cadr xs) out files)))
+                (loop (cddr xs) (cadr xs) mode out files)))
            ((starts-with? a "--profile=")
-            (loop (cdr xs) (substring a 10 (string-length a)) out files))
+            (loop (cdr xs) (substring a 10 (string-length a)) mode out files))
+           ((string=? a "--mode")
+            (if (null? (cdr xs))
+                (list 'error "--mode requires module or aot")
+                (loop (cddr xs) profile (string->symbol (cadr xs)) out files)))
+           ((starts-with? a "--mode=")
+            (loop (cdr xs) profile (string->symbol (substring a 7 (string-length a))) out files))
            ((string=? a "-o")
             (if (null? (cdr xs))
                 (list 'error "-o requires output path")
-                (loop (cddr xs) profile (cadr xs) files)))
+                (loop (cddr xs) profile mode (cadr xs) files)))
            (else
-            (loop (cdr xs) profile out (cons a files))))))))
+            (loop (cdr xs) profile mode out (cons a files))))))))
 
 (define (main argv)
   (let ((parsed (parse-args (cdr argv))))
@@ -47,8 +53,9 @@
        2)
       ((ok)
        (let ((profile (cadr parsed))
-             (out (caddr parsed))
-             (files (cadddr parsed)))
+             (mode (caddr parsed))
+             (out (cadddr parsed))
+             (files (car (cddddr parsed))))
          (if (null? files)
              (begin
                (usage)
@@ -56,7 +63,9 @@
              (let ((env (make-frontend-env profile)))
                (let loop ((xs files) (all-units '()))
                  (if (null? xs)
-                     (let ((llvm (ll-units->llvm-module (reverse all-units))))
+                     (let ((llvm (if (eq? mode 'aot)
+                                     (ll-units->llvm-aot-module (reverse all-units))
+                                     (ll-units->llvm-module (reverse all-units)))))
                        (if out
                            (call-with-output-file out
                              (lambda (p)

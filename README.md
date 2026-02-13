@@ -105,3 +105,27 @@ docs/runtime-abi.md
 ./bin/islc-front --dump-ir examples/hello.lsp
 gosh test/compiler/lowering-smoke.scm
 ```
+
+## M3. LLVM AOT バックエンド最小実装
+LLVM IR モジュールを生成:
+```sh
+./bin/islc-llvm --mode module -o out.ll examples/hello.lsp
+```
+
+LLVM IR + 実行用 `main` を生成:
+```sh
+./bin/islc-llvm --mode aot -o out-aot.ll examples/hello.lsp
+```
+
+ネイティブバイナリ生成（`clang` 必須）:
+```sh
+./bin/islc-aot -o hello-aot examples/hello.lsp
+./hello-aot
+```
+
+M3 codegen / AOT smoke:
+```sh
+gosh test/compiler/codegen-smoke.scm
+gosh test/compiler/aot-smoke.scm
+./test/compiler/aot-run-smoke.sh
+```
