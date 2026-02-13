@@ -377,6 +377,54 @@
 (check 8 '(progn
             (in-package :islisp-user)
             (my-package:greed 6)))
+(check 'ISLISP-USER '(progn
+                    (defpackage :pkg-base
+                      (:use :islisp)
+                      (:intern hidden)
+                      (:export base-fn base-val))
+                    (in-package :pkg-base)
+                    (defun base-fn () 123)
+                    (defglobal base-val 77)
+                    (defglobal hidden 88)
+                    (in-package :islisp-user)
+                    (current-package)))
+(check 77 '(progn
+             (defpackage :pkg-consumer
+               (:nicknames :pc)
+               (:use :islisp)
+               (:import-from :pkg-base base-val)
+               (:shadow base-fn)
+               (:intern local-val)
+               (:export base-fn local-val base-val))
+             (in-package :pkg-consumer)
+             (defun base-fn () 999)
+             (defglobal local-val 55)
+             base-val))
+(check 999 '(progn
+              (in-package :islisp-user)
+              (pc:base-fn)))
+(check 55 '(progn
+             (in-package :islisp-user)
+             pc:local-val))
+(check 77 '(progn
+             (in-package :islisp-user)
+             pc:base-val))
+(check 77 '(progn
+             (defpackage :pkg-collide-a
+               (:use :islisp)
+               (:export val))
+             (in-package :pkg-collide-a)
+             (defglobal val 77)
+             (defpackage :pkg-collide-b
+               (:use :islisp)
+               (:export val))
+             (in-package :pkg-collide-b)
+             (defglobal val 900)
+             (defpackage :pkg-collide-user
+               (:use :islisp :pkg-collide-a :pkg-collide-b)
+               (:shadowing-import-from :pkg-collide-a val))
+             (in-package :pkg-collide-user)
+             val))
 (check 'demo '(progn
                 (defpackage demo (:use islisp) (:export sq v))
                 (in-package demo)

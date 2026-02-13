@@ -436,13 +436,25 @@
   (let ((entry (assoc-string (normalize-package-name name) *package-registry*)))
     (and entry (cdr entry))))
 
+(define (register-package-name! name pkg)
+  (let* ((n (normalize-package-name name))
+         (entry (assoc-string n *package-registry*)))
+    (cond
+     ((not entry)
+      (set! *package-registry* (cons (cons n pkg) *package-registry*))
+      pkg)
+     ((eq? (cdr entry) pkg)
+      pkg)
+     (else
+      (error "Package name already in use" name)))))
+
 (define (ensure-package! name)
   (let* ((n (normalize-package-name name))
          (p (find-package n)))
     (if p
         p
         (let ((pkg (make-package n)))
-          (set! *package-registry* (cons (cons n pkg) *package-registry*))
+          (register-package-name! n pkg)
           pkg))))
 
 (define (package-internal-symbol pkg sym-name)
@@ -488,10 +500,41 @@
         (delete-duplicates (append local from-uses) eq?))))
 
 (define (package-import-symbol! pkg sym)
-  (let ((name (symbol->string sym)))
-    (unless (assoc-string name (package-internals pkg))
-      (set-package-internals! pkg (cons (cons name sym) (package-internals pkg))))
+  (let ((name (symbol-base-name sym))
+        (entry (assoc-string (symbol-base-name sym) (package-internals pkg))))
+    (cond
+     ((not entry)
+      (set-package-internals! pkg (cons (cons name sym) (package-internals pkg)))
+      sym)
+     ((eq? (cdr entry) sym)
+      sym)
+     (else
+      (error "import symbol conflicts with existing symbol" name)))))
+
+(define (package-shadow-symbol! pkg sym-or-name)
+  (let* ((name (if (symbol? sym-or-name) (symbol-base-name sym-or-name) sym-or-name))
+         (sym (make-qualified-symbol (package-name pkg) name)))
+    (set-package-internals!
+     pkg
+     (cons (cons name sym)
+           (filter (lambda (e) (not (string=? (car e) name)))
+                   (package-internals pkg))))
     sym))
+
+(define (package-shadowing-import-symbol! pkg sym)
+  (let ((name (symbol-base-name sym)))
+    (set-package-internals!
+     pkg
+     (cons (cons name sym)
+           (filter (lambda (e) (not (string=? (car e) name)))
+                   (package-internals pkg))))
+    sym))
+
+(define (package-find-external-symbol-by-name pkg sym-or-name)
+  (package-external-symbol pkg
+                           (if (symbol? sym-or-name)
+                               (symbol-base-name sym-or-name)
+                               sym-or-name)))
 
 (define (string-find-substr s pat)
   (let ((n (string-length s))
@@ -1751,6 +1794,12 @@
     (error "defpackage needs package name" args))
   (let* ((name (car args))
          (pkg (ensure-package! name)))
+    (define (require-symbol-list vals who)
+      (for-each
+       (lambda (x)
+         (unless (symbol? x)
+           (error who "expects symbols" x)))
+       vals))
     (for-each
      (lambda (opt)
        (unless (and (list? opt) (not (null? opt)))
@@ -1758,11 +1807,60 @@
        (let ((tag (car opt))
              (vals (cdr opt)))
          (cond
+          ((eq? tag ':nicknames)
+           (for-each
+            (lambda (x)
+              (unless (or (symbol? x) (string? x))
+                (error "defpackage :nicknames expects symbol/string designators" x))
+              (register-package-name! x pkg))
+            vals))
           ((eq? tag ':use)
            (for-each
             (lambda (x)
               (package-use! pkg (ensure-package! x)))
             vals))
+          ((eq? tag ':intern)
+           (require-symbol-list vals "defpackage :intern")
+           (for-each
+            (lambda (x)
+              (package-intern! pkg (symbol-base-name x)))
+            vals))
+          ((eq? tag ':shadow)
+           (require-symbol-list vals "defpackage :shadow")
+           (for-each
+            (lambda (x)
+              (package-shadow-symbol! pkg x))
+            vals))
+          ((eq? tag ':import-from)
+           (unless (>= (length vals) 2)
+             (error "defpackage :import-from expects package and at least one symbol" opt))
+           (let ((from (ensure-package! (car vals)))
+                 (syms (cdr vals)))
+             (require-symbol-list syms "defpackage :import-from")
+             (for-each
+              (lambda (x)
+                (let ((s (package-find-external-symbol-by-name from x)))
+                  (unless s
+                    (error "defpackage :import-from symbol is not exported"
+                           (car vals)
+                           x))
+                  (package-import-symbol! pkg s)))
+              syms)))
+          ((eq? tag ':shadowing-import-from)
+           (unless (>= (length vals) 2)
+             (error "defpackage :shadowing-import-from expects package and at least one symbol" opt))
+           (let ((from (ensure-package! (car vals)))
+                 (syms (cdr vals)))
+             (require-symbol-list syms "defpackage :shadowing-import-from")
+             (for-each
+              (lambda (x)
+                (let ((s (package-find-external-symbol-by-name from x)))
+                  (unless s
+                    (error "defpackage :shadowing-import-from symbol is not exported"
+                           (car vals)
+                           x))
+                  (package-shadowing-import-symbol! pkg s)))
+              syms)))
           ((eq? tag ':export)
            (for-each
             (lambda (x)
@@ -1770,6 +1868,16 @@
                 (error "defpackage :export expects symbols" x))
               (package-export! pkg x))
             vals))
+          ((eq? tag ':size)
+           (unless (= (length vals) 1)
+             (error "defpackage :size expects one integer value" opt))
+           (unless (and (integer? (car vals)) (>= (car vals) 0))
+             (error "defpackage :size expects non-negative integer" (car vals))))
+          ((eq? tag ':documentation)
+           (unless (= (length vals) 1)
+             (error "defpackage :documentation expects one string value" opt))
+           (unless (string? (car vals))
+             (error "defpackage :documentation expects string" (car vals))))
           (else
            (error "unsupported defpackage option" tag)))))
      (cdr args))
