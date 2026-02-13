@@ -209,6 +209,36 @@
 (check "This is a test"
        `(with-open-file (stream ,out-file :direction :input)
           (read-line stream nil)))
+(check 'missing-ok
+       '(with-open-file (s "test/with-open-missing-in.lsp"
+                           :direction :input
+                           :if-does-not-exist nil)
+          (if (null s) 'missing-ok 'ng)))
+(check-error
+ '(with-open-file (s "test/with-open-missing-in.lsp"
+                     :direction :input
+                     :if-does-not-exist :error)
+    (read s)))
+(check "kept"
+       '(progn
+          (with-open-file (s "test/with-open-existing.txt"
+                             :direction :output
+                             :if-exists :overwrite)
+            (write-line "kept" s))
+          (with-open-file (s "test/with-open-existing.txt"
+                             :direction :output
+                             :if-exists nil)
+            (if (null s) 'skipped (write-line "overwritten" s)))
+          (with-open-file (s "test/with-open-existing.txt"
+                             :direction :input)
+            (read-line s nil))))
+(check 'no-create
+       '(progn
+          (delete-file "test/with-open-no-create.txt")
+          (with-open-file (s "test/with-open-no-create.txt"
+                             :direction :output
+                             :if-does-not-exist nil)
+            (if (null s) 'no-create 'created))))
 (check "255" '(format nil "~D" 255))
 (check "11" '(format nil "~B" 3))
 (check "377" '(format nil "~O" 255))

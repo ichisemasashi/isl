@@ -1693,7 +1693,8 @@
                (filename (eval-islisp* (cadr spec) env #f))
                (opts (cddr spec))
                (direction ':input)
-               (if-exists ':supersede))
+               (if-exists ':supersede)
+               (if-does-not-exist ':default))
           (unless (string? filename)
             (error "with-open-file filename must evaluate to string" filename))
           (let parse ((xs opts))
@@ -1707,26 +1708,47 @@
                   (set! direction v))
                  ((eq? k ':if-exists)
                   (set! if-exists v))
+                 ((eq? k ':if-does-not-exist)
+                  (set! if-does-not-exist v))
                  (else
                   (error "unsupported with-open-file option" k))))
               (parse (cddr xs))))
           (let ((port
-                 (guard (e
-                         (else #f))
-                   (cond
-                    ((eq? direction ':input)
-                     (open-input-file filename))
-                    ((eq? direction ':output)
-                     (let ((mode
-                            (cond
-                             ((or (eq? if-exists ':overwrite) (eq? if-exists ':supersede)) :supersede)
-                             ((eq? if-exists ':append) :append)
-                             ((eq? if-exists ':error) :error)
-                             (else
-                              (error "with-open-file :if-exists must be :overwrite, :supersede, :append or :error" if-exists)))))
-                       (open-output-file filename :if-exists mode)))
-                    (else
-                     (error "with-open-file :direction must be :input or :output" direction))))))
+                 (cond
+                  ((eq? direction ':input)
+                   (let ((mode
+                          (cond
+                           ((eq? if-does-not-exist ':default) #f)
+                           ((or (null? if-does-not-exist) (eq? if-does-not-exist #f)) #f)
+                           ((eq? if-does-not-exist ':error) :error)
+                           (else
+                            (error "with-open-file :if-does-not-exist for :input must be nil or :error"
+                                   if-does-not-exist)))))
+                     (open-input-file filename :if-does-not-exist mode)))
+                  ((eq? direction ':output)
+                   (let ((exists-mode
+                          (cond
+                           ((or (eq? if-exists ':overwrite) (eq? if-exists ':supersede)) :supersede)
+                           ((eq? if-exists ':append) :append)
+                           ((eq? if-exists ':error) :error)
+                           ((or (null? if-exists) (eq? if-exists #f)) #f)
+                           (else
+                            (error "with-open-file :if-exists must be :overwrite, :supersede, :append, :error or nil"
+                                   if-exists))))
+                         (missing-mode
+                          (cond
+                           ((eq? if-does-not-exist ':default) :create)
+                           ((eq? if-does-not-exist ':create) :create)
+                           ((eq? if-does-not-exist ':error) :error)
+                           ((or (null? if-does-not-exist) (eq? if-does-not-exist #f)) #f)
+                           (else
+                            (error "with-open-file :if-does-not-exist for :output must be :create, :error or nil"
+                                   if-does-not-exist)))))
+                     (open-output-file filename
+                                       :if-exists exists-mode
+                                       :if-does-not-exist missing-mode)))
+                  (else
+                   (error "with-open-file :direction must be :input or :output" direction)))))
             (let ((file-env (make-frame env)))
               (frame-define! file-env var (if port port '()))
               (if port
