@@ -7,6 +7,20 @@
   (let ((v (getenv name)))
     (if (null v) "" v)))
 
+(defun request-method ()
+  (let ((m (env-or-empty "REQUEST_METHOD")))
+    (if (= (length m) 0) "GET" m)))
+
+(defun starts-with (s prefix)
+  (let ((n (length s))
+        (m (length prefix)))
+    (if (< n m)
+        nil
+        (string= (substring s 0 m) prefix))))
+
+(defun shell-quote (s)
+  (string-append "'" (safe-text s) "'"))
+
 (defun app-base ()
   (let ((script-name (env-or-empty "SCRIPT_NAME")))
     (if (= (length script-name) 0)
@@ -164,6 +178,65 @@
     (delete-file path)
     (error (e) '())))
 
+(defun python-bin ()
+  (let ((v (getenv "ISL_WIKI_PYTHON")))
+    (if (null v)
+        "/opt/homebrew/bin/python3"
+        v)))
+
+(defun read-request-body ()
+  (with-open-file (s "/dev/stdin" :direction :input)
+    (let ((line (read-line s #f))
+          (acc "")
+          (first-line t))
+      (while (not (null line))
+        (if first-line
+            (progn
+              (setq acc line)
+              (setq first-line nil))
+            (setq acc (string-append acc "\n" line)))
+        (setq line (read-line s #f)))
+      acc)))
+
+(defun parse-form-field (raw-body field-name)
+  (let* ((base (next-temp-base))
+         (in-path (string-append base ".form"))
+         (out-path (string-append base ".txt"))
+         (cmd (string-append
+               (python-bin)
+               " -c 'import sys,urllib.parse,pathlib;"
+               "data=pathlib.Path(sys.argv[1]).read_text(encoding=\"utf-8\");"
+               "p=urllib.parse.parse_qs(data,keep_blank_values=True);"
+               "pathlib.Path(sys.argv[3]).write_text(p.get(sys.argv[2],[\"\"])[0],encoding=\"utf-8\")'"
+               " "
+               (shell-quote in-path)
+               " "
+               (shell-quote field-name)
+               " "
+               (shell-quote out-path))))
+    (write-file-text in-path raw-body)
+    (let ((status (system cmd)))
+      (if (= status 0)
+          (let ((value (read-file-text out-path)))
+            (safe-delete-file in-path)
+            (safe-delete-file out-path)
+            value)
+          (progn
+            (safe-delete-file in-path)
+            (safe-delete-file out-path)
+            (error "form parse failed" cmd status))))))
+
+(defun blank-text-p (s)
+  (let ((text (safe-text s))
+        (i 0)
+        (all-space t))
+    (while (if all-space (< i (length text)) nil)
+      (if (not (null (string-index (substring text i (+ i 1)) " \t\r\n")))
+          nil
+          (setq all-space nil))
+      (setq i (+ i 1)))
+    all-space))
+
 (defun markdown->html (body-md)
   (let* ((base (next-temp-base))
          (md-path (string-append base ".md"))
@@ -204,12 +277,21 @@
   (format t "Status: 404 Not Found~%")
   (format t "Content-Type: text/html; charset=UTF-8~%~%"))
 
+(defun print-headers-400 ()
+  (format t "Status: 400 Bad Request~%")
+  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+
 (defun print-headers-500 ()
   (format t "Status: 500 Internal Server Error~%")
   (format t "Content-Type: text/html; charset=UTF-8~%~%"))
 
 (defun print-headers-301 (location)
   (format t "Status: 301 Moved Permanently~%")
+  (format t "Location: ~A~%" location)
+  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+
+(defun print-headers-303 (location)
+  (format t "Status: 303 See Other~%")
   (format t "Location: ~A~%" location)
   (format t "Content-Type: text/html; charset=UTF-8~%~%"))
 
@@ -235,6 +317,14 @@
   (format t "<p>指定されたページは見つかりませんでした。</p>~%")
   (print-layout-foot))
 
+(defun render-bad-request (message)
+  (print-headers-400)
+  (print-layout-head "Bad Request")
+  (format t "<h1>400 Bad Request</h1>~%")
+  (format t "<p>リクエスト内容が不正です。</p>~%")
+  (format t "<pre>~A</pre>~%" (html-escape message))
+  (print-layout-foot))
+
 (defun render-error (message)
   (print-headers-500)
   (print-layout-head "Internal Server Error")
@@ -250,6 +340,13 @@
   (format t "<p>Canonical URL: <a href=\"~A\">~A</a></p>~%"
           (html-escape location)
           (html-escape location))
+  (print-layout-foot))
+
+(defun render-see-other (location)
+  (print-headers-303 location)
+  (print-layout-head "Saved")
+  (format t "<h1>Saved</h1>~%")
+  (format t "<p><a href=\"~A\">continue</a></p>~%" (html-escape location))
   (print-layout-foot))
 
 (defun render-index (db)
@@ -300,6 +397,49 @@
               (format t "<pre>~A</pre>~%" (html-escape body-md))
               (print-layout-foot)))))))
 
+(defun save-page (db slug)
+  (if (not (slug-safe-p slug))
+      (render-not-found)
+      (let ((page (fetch-page db slug)))
+        (if (null page)
+            (render-not-found)
+            (let ((content-type (env-or-empty "CONTENT_TYPE")))
+              (if (not (starts-with content-type "application/x-www-form-urlencoded"))
+                  (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
+                  (let* ((raw-body (read-request-body))
+                         (title (parse-form-field raw-body "title"))
+                         (body-md (parse-form-field raw-body "body_md"))
+                         (edit-summary (parse-form-field raw-body "edit_summary")))
+                    (if (blank-text-p title)
+                        (render-bad-request "title must not be blank")
+                        (let ((sql
+                               (string-append
+                                "with target as ("
+                                "  select p.id as page_id,"
+                                "         coalesce((select max(r.rev_no) from page_revisions r where r.page_id = p.id), 0) + 1 as next_rev"
+                                "    from pages p"
+                                "   where p.slug = '" (sql-escape slug) "'"
+                                "), updated as ("
+                                "  update pages p"
+                                "     set title = '" (sql-escape title) "',"
+                                "         body_md = '" (sql-escape body-md) "',"
+                                "         last_edited_by = 'web'"
+                                "    from target t"
+                                "   where p.id = t.page_id"
+                                "  returning p.id, t.next_rev"
+                                ") "
+                                "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+                                "select u.id, u.next_rev, '"
+                                (sql-escape title)
+                                "', '"
+                                (sql-escape body-md)
+                                "', 'web', '"
+                                (sql-escape edit-summary)
+                                "' "
+                                "from updated u")))
+                          (postgres-exec db sql)
+                          (render-see-other (string-append (app-base) "/" slug)))))))))))
+
 (defun render-edit (db slug)
   (if (not (slug-safe-p slug))
       (render-not-found)
@@ -311,22 +451,25 @@
               (print-headers-ok)
               (print-layout-head (string-append "Edit: " title))
               (format t "<h1>Edit: ~A</h1>~%" (html-escape title))
-              (format t "<p>この画面はMVP表示のみです。保存処理は次ステップで実装します。</p>~%")
-              (format t "<form method=\"post\" action=\"#\">~%")
+              (format t "<form method=\"post\" action=\"~A/~A/edit\">~%"
+                      (app-base)
+                      (html-escape slug))
               (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"~A\" style=\"width:100%\"></label></p>~%"
                       (html-escape title))
               (format t "  <p><label>Body (Markdown)<br><textarea name=\"body_md\">~A</textarea></label></p>~%"
                       (html-escape body-md))
-              (format t "  <p><button type=\"submit\" disabled>Save (not implemented)</button></p>~%")
+              (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"\" style=\"width:100%\"></label></p>~%")
+              (format t "  <p><button type=\"submit\">Save</button></p>~%")
               (format t "</form>~%")
               (print-layout-foot))))))
 
 (defun render-app ()
-  (let* ((raw-path (env-or-empty "PATH_INFO"))
+  (let* ((method (request-method))
+         (raw-path (env-or-empty "PATH_INFO"))
          (segments (path-segments))
          (n (length segments))
          (db (postgres-open (db-url))))
-    (if (needs-canonical-redirect-p raw-path)
+    (if (if (string= method "GET") (needs-canonical-redirect-p raw-path) nil)
         (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
         (if (= n 0)
             (render-index db)
@@ -334,7 +477,9 @@
                     (render-view db (first segments))
                 (if (= n 2)
                     (if (string= (second segments) "edit")
-                        (render-edit db (first segments))
+                        (if (string= method "POST")
+                            (save-page db (first segments))
+                            (render-edit db (first segments)))
                         (render-not-found))
                     (render-not-found)))))
     (postgres-close db)))

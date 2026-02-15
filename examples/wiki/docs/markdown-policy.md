@@ -53,9 +53,9 @@ pandoc --from=gfm-raw_html --to=html5
 
 ## 次ステップ
 
-1. 編集保存（POST）実装時に `page_revisions` へ追記。
-2. HTMLサニタイズ層を追加。
-3. 変換失敗時の監視ログ整備（request id, slug, command status）。
+1. HTMLサニタイズ層を追加。
+2. 変換失敗時の監視ログ整備（request id, slug, command status）。
+3. 変換結果キャッシュ（`updated_at` ベース）を追加。
 
 ## 実装状況（2026-02-15）
 
@@ -64,3 +64,4 @@ pandoc --from=gfm-raw_html --to=html5
 1. PostgreSQL (`pages.body_md`) から本文取得。
 2. `markdown->html` で `pandoc` 変換。
 3. HTMLプレビューとして表示（併せて Markdown Source も表示）。
+4. `/wiki/{slug}/edit` の POST 保存で `pages` 更新 + `page_revisions` 追記。

@@ -14,7 +14,7 @@ Wiki システムを段階的に構築するための実装です。
 ## MVP 3画面
 - `/wiki` : ページ一覧
 - `/wiki/{slug}` : ページ表示（DBの Markdown を HTML 変換して表示）
-- `/wiki/{slug}/edit` : 編集画面（表示のみ。保存未実装）
+- `/wiki/{slug}/edit` : 編集画面（POSTで保存可能）
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
 
@@ -61,6 +61,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_
 
 ```sh
 export ISL_WIKI_DB_URL='postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki'
+export ISL_WIKI_PYTHON='/opt/homebrew/bin/python3'
 ```
 
 ## Apache 設定
@@ -77,4 +78,14 @@ Include "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/conf/httpd-wiki.co
 http://localhost:8080/wiki
 http://localhost:8080/wiki/home
 http://localhost:8080/wiki/home/edit
+```
+
+保存（POST）確認例:
+
+```sh
+curl -i -X POST "http://localhost:8080/wiki/home/edit" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "title=Home" \
+  --data-urlencode "body_md=# Updated from curl" \
+  --data-urlencode "edit_summary=curl test"
 ```
