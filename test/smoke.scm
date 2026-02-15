@@ -685,6 +685,7 @@
 (check '() '(string-index "zz" "abcd"))
 (check 2 '(string-index "" "abcd" 2))
 (check 65 '(char->integer #\A))
+(check 65 '(char->integer "A"))
 (check #\A '(integer->char 65))
 (check 12354 '(char->integer (integer->char 12354)))
 (check 4 '(length "abcd"))

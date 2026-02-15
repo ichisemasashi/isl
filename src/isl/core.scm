@@ -3066,8 +3066,13 @@
         (string-index* haystack needle start "string-index"))))
   (def 'char->integer
     (lambda (ch)
-      (ensure-char ch "char->integer")
-      (char->integer ch)))
+      (cond
+       ((char? ch)
+        (char->integer ch))
+       ((and (string? ch) (= (string-length ch) 1))
+        (char->integer (string-ref ch 0)))
+       (else
+        (error "char->integer needs a character or one-character string" ch)))))
   (def 'integer->char
     (lambda (code)
       (unless (integer? code)
