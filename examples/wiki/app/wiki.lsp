@@ -375,12 +375,19 @@
 
 (defun fetch-page (db slug)
   (let* ((sql (string-append
-                "select slug, title, body_md, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') "
+                "select slug, title, body_md "
                 "from pages where slug='" (sql-escape slug) "' limit 1"))
          (rows (postgres-query db sql)))
     (if (null rows)
         '()
         (first rows))))
+
+(defun fetch-page-updated-at (db slug)
+  (postgres-query-one
+   db
+   (string-append
+    "select to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') "
+    "from pages where slug='" (sql-escape slug) "' limit 1")))
 
 (defun print-headers-ok ()
   (format t "Content-Type: text/html; charset=UTF-8~%~%"))
@@ -492,7 +499,7 @@
             (render-not-found)
             (let ((title (second row))
                   (body-md (third row))
-                  (updated-at (fourth row)))
+                  (updated-at (fetch-page-updated-at db slug)))
               (let ((body-html (markdown->html body-md)))
               (print-headers-ok)
               (print-layout-head title)
