@@ -234,6 +234,12 @@
 (defun utf8-cont-byte-p (b)
   (and (>= b 128) (<= b 191)))
 
+(defun rest2 (xs)
+  (cdr (cdr xs)))
+
+(defun rest3 (xs)
+  (cdr (rest2 xs)))
+
 (defun decode-utf8-bytes (bytes)
   (let ((rest bytes)
         (out ""))
@@ -251,9 +257,9 @@
                     (error "invalid UTF-8 continuation byte" b2)
                     (progn
                       (setq out (string-append out (string (integer->char (+ (* (- b1 192) 64) (- b2 128))))))
-                      (setq rest (cddr rest)))))))
+                      (setq rest (rest2 rest)))))))
          ((and (>= b1 224) (<= b1 239))
-          (if (or (null (cdr rest)) (null (cddr rest)))
+          (if (or (null (cdr rest)) (null (rest2 rest)))
               (error "invalid UTF-8 sequence")
               (let ((b2 (second rest))
                     (b3 (third rest)))
@@ -267,9 +273,9 @@
                           (setq out (string-append out (string (integer->char (+ (* (- b1 224) 4096)
                                                                                   (* (- b2 128) 64)
                                                                                   (- b3 128))))))
-                          (setq rest (cdddr rest))))))))
+                          (setq rest (rest3 rest))))))))
          ((and (>= b1 240) (<= b1 244))
-          (if (or (null (cdr rest)) (null (cddr rest)) (null (cdddr rest)))
+          (if (or (null (cdr rest)) (null (rest2 rest)) (null (rest3 rest)))
               (error "invalid UTF-8 sequence")
               (let ((b2 (second rest))
                     (b3 (third rest))
@@ -286,7 +292,7 @@
                                                                                   (* (- b2 128) 4096)
                                                                                   (* (- b3 128) 64)
                                                                                   (- b4 128))))))
-                          (setq rest (cdr (cdddr rest)))))))))
+                          (setq rest (cdr (rest3 rest)))))))))
          (t
           (error "invalid UTF-8 leading byte" b1)))))
     out))
