@@ -2259,7 +2259,7 @@
       (error "Attempt to call non-function" current-fn)))))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass)))
+  (memq sym '(quote quasiquote if cond case and or loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass)))
 
 (define (extended-special-form? sym)
   (memq sym '(trace untrace)))
@@ -2328,6 +2328,22 @@
                                    (eval-sequence* body env tail?))
                                (loop (cdr xs)))))))))
            (error "case needs key and clauses" form)))
+      ((and)
+       (let loop ((rest args) (last #t))
+         (if (null? rest)
+             last
+             (let ((value (eval-islisp* (car rest) env #f)))
+               (if (truthy? value)
+                   (loop (cdr rest) value)
+                   value)))))
+      ((or)
+       (let loop ((rest args))
+         (if (null? rest)
+             '()
+             (let ((value (eval-islisp* (car rest) env #f)))
+               (if (truthy? value)
+                   value
+                   (loop (cdr rest)))))))
       ((loop)
        (eval-loop args env))
       ((while)
