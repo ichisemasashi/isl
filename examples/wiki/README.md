@@ -61,7 +61,6 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_
 
 ```sh
 export ISL_WIKI_DB_URL='postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki'
-export ISL_WIKI_PYTHON='/opt/homebrew/bin/python3'
 ```
 
 ## Apache 設定

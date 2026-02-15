@@ -3045,6 +3045,17 @@
             (haystack (cadr args))
             (start (if (= (length args) 3) (caddr args) 0)))
         (string-index* haystack needle start "string-index"))))
+  (def 'char->integer
+    (lambda (ch)
+      (ensure-char ch "char->integer")
+      (char->integer ch)))
+  (def 'integer->char
+    (lambda (code)
+      (unless (integer? code)
+        (error "integer->char needs an integer" code))
+      (unless (and (>= code 0) (<= code #x10FFFF))
+        (error "integer->char code out of range (0..1114111)" code))
+      (integer->char code)))
   (def 'length isl-length)
   (def 'print
     (lambda (x)

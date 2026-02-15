@@ -18,9 +18,6 @@
         nil
         (string= (substring s 0 m) prefix))))
 
-(defun shell-quote (s)
-  (string-append "'" (safe-text s) "'"))
-
 (defun app-base ()
   (let ((script-name (env-or-empty "SCRIPT_NAME")))
     (if (= (length script-name) 0)
@@ -178,12 +175,6 @@
     (delete-file path)
     (error (e) '())))
 
-(defun python-bin ()
-  (let ((v (getenv "ISL_WIKI_PYTHON")))
-    (if (null v)
-        "/opt/homebrew/bin/python3"
-        v)))
-
 (defun read-request-body ()
   (with-open-file (s "/dev/stdin" :direction :input)
     (let ((line (read-line s #f))
@@ -198,33 +189,134 @@
         (setq line (read-line s #f)))
       acc)))
 
+(defun hex-digit-value (ch)
+  (let ((up (string-upcase ch))
+        (p (string-index (string-upcase ch) "0123456789ABCDEF")))
+    (if (null p) -1 p)))
+
+(defglobal *ascii-visible*
+  " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~")
+
+(defun ascii-byte (ch)
+  (cond
+   ((string= ch "\t") 9)
+   ((string= ch "\n") 10)
+   ((string= ch "\r") 13)
+   (t
+    (let ((p (string-index ch *ascii-visible*)))
+      (if (null p)
+          (error "non-ascii character must be percent-encoded" ch)
+          (+ p 32))))))
+
+(defun split-on (s delim)
+  (if (= (length s) 0)
+      '()
+      (let ((p (string-index delim s)))
+        (if (null p)
+            (list s)
+            (cons (substring s 0 p)
+                  (split-on (substring s (+ p 1)) delim))))))
+
+(defun split-once (s delim)
+  (let ((p (string-index delim s)))
+    (if (null p)
+        (list s "")
+        (list (substring s 0 p)
+              (substring s (+ p 1))))))
+
+(defun utf8-cont-byte-p (b)
+  (and (>= b 128) (<= b 191)))
+
+(defun decode-utf8-bytes (bytes)
+  (let loop ((rest bytes) (out ""))
+    (if (null rest)
+        out
+        (let ((b1 (first rest)))
+          (cond
+           ((< b1 128)
+            (loop (cdr rest) (string-append out (string (integer->char b1)))))
+           ((and (>= b1 194) (<= b1 223))
+            (if (null (cdr rest))
+                (error "invalid UTF-8 sequence")
+                (let ((b2 (second rest)))
+                  (if (not (utf8-cont-byte-p b2))
+                      (error "invalid UTF-8 continuation byte" b2)
+                      (let ((cp (+ (* (- b1 192) 64) (- b2 128))))
+                        (loop (cddr rest) (string-append out (string (integer->char cp)))))))))
+           ((and (>= b1 224) (<= b1 239))
+            (if (or (null (cdr rest)) (null (cddr rest)))
+                (error "invalid UTF-8 sequence")
+                (let ((b2 (second rest))
+                      (b3 (third rest)))
+                  (if (or (not (utf8-cont-byte-p b2))
+                          (not (utf8-cont-byte-p b3)))
+                      (error "invalid UTF-8 continuation byte")
+                      (if (or (and (= b1 224) (< b2 160))
+                              (and (= b1 237) (> b2 159)))
+                          (error "invalid UTF-8 code point")
+                          (let ((cp (+ (* (- b1 224) 4096)
+                                       (* (- b2 128) 64)
+                                       (- b3 128))))
+                            (loop (cdddr rest) (string-append out (string (integer->char cp))))))))))
+           ((and (>= b1 240) (<= b1 244))
+            (if (or (null (cdr rest)) (null (cddr rest)) (null (cdddr rest)))
+                (error "invalid UTF-8 sequence")
+                (let ((b2 (second rest))
+                      (b3 (third rest))
+                      (b4 (fourth rest)))
+                  (if (or (not (utf8-cont-byte-p b2))
+                          (not (utf8-cont-byte-p b3))
+                          (not (utf8-cont-byte-p b4)))
+                      (error "invalid UTF-8 continuation byte")
+                      (if (or (and (= b1 240) (< b2 144))
+                              (and (= b1 244) (> b2 143)))
+                          (error "invalid UTF-8 code point")
+                          (let ((cp (+ (* (- b1 240) 262144)
+                                       (* (- b2 128) 4096)
+                                       (* (- b3 128) 64)
+                                       (- b4 128))))
+                            (loop (cdr (cdddr rest)) (string-append out (string (integer->char cp))))))))))
+           (t
+            (error "invalid UTF-8 leading byte" b1)))))))
+
+(defun url-decode (s)
+  (let ((i 0)
+        (n (length s))
+        (bytes '()))
+    (while (< i n)
+      (let ((ch (substring s i (+ i 1))))
+        (if (string= ch "+")
+            (progn
+              (setq bytes (append bytes (list 32)))
+              (setq i (+ i 1)))
+            (if (string= ch "%")
+                (if (< (+ i 2) n)
+                    (let* ((h1 (substring s (+ i 1) (+ i 2)))
+                           (h2 (substring s (+ i 2) (+ i 3)))
+                           (v1 (hex-digit-value h1))
+                           (v2 (hex-digit-value h2)))
+                      (if (or (< v1 0) (< v2 0))
+                          (error "invalid percent-encoding" s)
+                          (progn
+                            (setq bytes (append bytes (list (+ (* v1 16) v2))))
+                            (setq i (+ i 3)))))
+                    (error "truncated percent-encoding" s))
+                (progn
+                  (setq bytes (append bytes (list (ascii-byte ch))))
+                  (setq i (+ i 1)))))))
+    (decode-utf8-bytes bytes)))
+
 (defun parse-form-field (raw-body field-name)
-  (let* ((base (next-temp-base))
-         (in-path (string-append base ".form"))
-         (out-path (string-append base ".txt"))
-         (cmd (string-append
-               (python-bin)
-               " -c 'import sys,urllib.parse,pathlib;"
-               "data=pathlib.Path(sys.argv[1]).read_text(encoding=\"utf-8\");"
-               "p=urllib.parse.parse_qs(data,keep_blank_values=True);"
-               "pathlib.Path(sys.argv[3]).write_text(p.get(sys.argv[2],[\"\"])[0],encoding=\"utf-8\")'"
-               " "
-               (shell-quote in-path)
-               " "
-               (shell-quote field-name)
-               " "
-               (shell-quote out-path))))
-    (write-file-text in-path raw-body)
-    (let ((status (system cmd)))
-      (if (= status 0)
-          (let ((value (read-file-text out-path)))
-            (safe-delete-file in-path)
-            (safe-delete-file out-path)
-            value)
-          (progn
-            (safe-delete-file in-path)
-            (safe-delete-file out-path)
-            (error "form parse failed" cmd status))))))
+  (let ((pairs (split-on raw-body "&")))
+    (let loop ((rest pairs))
+      (if (null rest)
+          ""
+          (let* ((kv (split-once (first rest) "="))
+                 (k (url-decode (first kv)))
+                 (v (url-decode (second kv))))
+            (if (string= k field-name)
+                v
+                (loop (cdr rest))))))))
 
 (defun blank-text-p (s)
   (let ((text (safe-text s))
