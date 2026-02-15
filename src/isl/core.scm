@@ -2972,6 +2972,21 @@
   (def 'symbolp symbol?)
   (def 'listp list?)
   (def 'stringp string?)
+  (def 'string
+    (lambda args
+      (if (null? args)
+          ""
+          (let ((x (car args)))
+            (if (null? (cdr args))
+                (cond
+                 ((char? x) (string x))
+                 ((string? x) x)
+                 ((symbol? x) (symbol->string x))
+                 (else
+                  (error "string needs character/string/symbol or multiple characters" x)))
+                (begin
+                  (for-each (lambda (c) (ensure-char c "string")) args)
+                  (list->string args)))))))
   (def 'create-string
     (lambda args
       (unless (or (= (length args) 1) (= (length args) 2))

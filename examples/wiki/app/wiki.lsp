@@ -227,17 +227,14 @@
 (defun utf8-cont-byte-p (b)
   (and (>= b 128) (<= b 191)))
 
-(defun char->string1 (ch)
-  (format nil "~C" ch))
-
 (defun decode-utf8-bytes (bytes)
   (let ((rest bytes)
         (out ""))
     (while (not (null rest))
       (let ((b1 (first rest)))
-        (cond
+         (cond
          ((< b1 128)
-          (setq out (string-append out (char->string1 (integer->char b1))))
+          (setq out (string-append out (string (integer->char b1))))
           (setq rest (cdr rest)))
          ((and (>= b1 194) (<= b1 223))
           (if (null (cdr rest))
@@ -246,7 +243,7 @@
                 (if (not (utf8-cont-byte-p b2))
                     (error "invalid UTF-8 continuation byte" b2)
                     (progn
-                      (setq out (string-append out (char->string1 (integer->char (+ (* (- b1 192) 64) (- b2 128))))))
+                      (setq out (string-append out (string (integer->char (+ (* (- b1 192) 64) (- b2 128))))))
                       (setq rest (cddr rest)))))))
          ((and (>= b1 224) (<= b1 239))
           (if (or (null (cdr rest)) (null (cddr rest)))
@@ -260,9 +257,9 @@
                             (and (= b1 237) (> b2 159)))
                         (error "invalid UTF-8 code point")
                         (progn
-                          (setq out (string-append out (char->string1 (integer->char (+ (* (- b1 224) 4096)
-                                                                                         (* (- b2 128) 64)
-                                                                                         (- b3 128))))))
+                          (setq out (string-append out (string (integer->char (+ (* (- b1 224) 4096)
+                                                                                  (* (- b2 128) 64)
+                                                                                  (- b3 128))))))
                           (setq rest (cdddr rest))))))))
          ((and (>= b1 240) (<= b1 244))
           (if (or (null (cdr rest)) (null (cddr rest)) (null (cdddr rest)))
@@ -278,10 +275,10 @@
                             (and (= b1 244) (> b2 143)))
                         (error "invalid UTF-8 code point")
                         (progn
-                          (setq out (string-append out (char->string1 (integer->char (+ (* (- b1 240) 262144)
-                                                                                         (* (- b2 128) 4096)
-                                                                                         (* (- b3 128) 64)
-                                                                                         (- b4 128))))))
+                          (setq out (string-append out (string (integer->char (+ (* (- b1 240) 262144)
+                                                                                  (* (- b2 128) 4096)
+                                                                                  (* (- b3 128) 64)
+                                                                                  (- b4 128))))))
                           (setq rest (cdr (cdddr rest)))))))))
          (t
           (error "invalid UTF-8 leading byte" b1)))))
