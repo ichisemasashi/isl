@@ -389,6 +389,16 @@
     "select to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') "
     "from pages where slug='" (sql-escape slug) "' limit 1")))
 
+(defun fetch-latest-edit-summary (db slug)
+  (postgres-query-one
+   db
+   (string-append
+    "select coalesce(edit_summary, '') "
+    "from page_revisions r "
+    "join pages p on p.id = r.page_id "
+    "where p.slug='" (sql-escape slug) "' "
+    "order by r.rev_no desc limit 1")))
+
 (defun print-headers-ok ()
   (format t "Content-Type: text/html; charset=UTF-8~%~%"))
 
@@ -499,7 +509,8 @@
             (render-not-found)
             (let ((title (second row))
                   (body-md (third row))
-                  (updated-at (fetch-page-updated-at db slug)))
+                  (updated-at (fetch-page-updated-at db slug))
+                  (latest-summary (fetch-latest-edit-summary db slug)))
               (let ((body-html (markdown->html body-md)))
               (print-headers-ok)
               (print-layout-head title)
@@ -510,6 +521,9 @@
               (format t "<p><small>updated: ~A / slug: <code>~A</code></small></p>~%"
                       (html-escape updated-at)
                       (html-escape slug))
+              (if (string= latest-summary "")
+                  nil
+                  (format t "<p><small>latest summary: ~A</small></p>~%" (html-escape latest-summary)))
               (format t "<h2>Preview (HTML)</h2>~%")
               (format t "<article class=\"wiki-body\">~A</article>~%" body-html)
               (format t "<h2>Markdown Source</h2>~%")

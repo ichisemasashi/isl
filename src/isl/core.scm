@@ -305,7 +305,10 @@
     (error "postgres connection info must be a string" conninfo))
   (unless (string? sql)
     (error "postgres sql must be a string" sql))
-  (let* ((argv (list "psql" "-X" "-A" "-t" "-F" (string #\x1f)
+  ;; Use ASCII Record Separator (0x1e) so text fields can contain newlines.
+  (let* ((argv (list "psql" "-X" "-A" "-t"
+                     "-R" (string #\x1e)
+                     "-F" (string #\x1f)
                      "-d" conninfo "-c" sql))
          (result (run-command/capture argv))
          (status (car result))
@@ -369,15 +372,16 @@
               (loop (+ i 1) (+ i 1) (cons (substring s start i) acc))
               (loop (+ i 1) start acc))))))
 
-(define (sql-output->rows out separator)
-  (call-with-input-string
-   out
-   (lambda (p)
-     (let loop ((acc '()))
-       (let ((line (read-line p)))
-         (if (eof-object? line)
-             (reverse acc)
-             (loop (cons (string-split-char line separator) acc))))))))
+(define (sql-output->rows out separator . maybe-row-separator)
+  (let* ((row-separator (if (null? maybe-row-separator) #\newline (car maybe-row-separator)))
+         (lines (string-split-char out row-separator)))
+    (let loop ((rest lines) (acc '()))
+      (if (null? rest)
+          (reverse acc)
+          (let ((line (car rest)))
+            (if (string=? line "")
+                (loop (cdr rest) acc)
+                (loop (cdr rest) (cons (string-split-char line separator) acc))))))))
 
 (define (ensure-ffi-bridge!)
   (unless (file-exists? *ffi-bridge-source*)
@@ -3241,12 +3245,12 @@
     (lambda (db sql)
       (unless (postgres-connection? db)
         (error "postgres-query needs postgres db object" db))
-      (sql-output->rows (postgres-run (postgres-connection-info db) sql) #\x1f)))
+      (sql-output->rows (postgres-run (postgres-connection-info db) sql) #\x1f #\x1e)))
   (def 'postgres-query-one
     (lambda (db sql)
       (unless (postgres-connection? db)
         (error "postgres-query-one needs postgres db object" db))
-      (let ((rows (sql-output->rows (postgres-run (postgres-connection-info db) sql) #\x1f)))
+      (let ((rows (sql-output->rows (postgres-run (postgres-connection-info db) sql) #\x1f #\x1e)))
         (if (null? rows)
             '()
             (if (null? (car rows))
