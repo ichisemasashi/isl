@@ -141,7 +141,7 @@
 (defun media-public-base ()
   (let ((v (getenv "ISL_WIKI_MEDIA_BASE_URL")))
     (if (null v)
-        "/wiki/files"
+        "/cgi-bin/wiki.cgi/files"
         v)))
 
 (defun media-delivery-url (stored-filename)
@@ -834,14 +834,23 @@
   (format t "Content-Type: text/plain; charset=UTF-8~%~%")
   (format t "Not Found~%"))
 
+(defun print-media-headers-ok (mime-type)
+  (format t "Status: 200 OK~%")
+  (if (blank-text-p mime-type)
+      (format t "Content-Type: application/octet-stream~%~%")
+      (format t "Content-Type: ~A~%~%" mime-type)))
+
 (defun render-media-file (db stored-filename)
   (let ((meta (fetch-media-file-meta db stored-filename)))
     (if (null meta)
         (render-file-not-found)
-        (let ((storage-path (first meta)))
+        (let ((storage-path (first meta))
+              (mime-type (second meta)))
           (if (null (probe-file storage-path))
               (render-file-not-found)
-              (render-see-other (media-delivery-url stored-filename)))))))
+              (progn
+                (print-media-headers-ok mime-type)
+                (system (string-append "cat " (shell-quote storage-path)))))))))
 
 (defun render-media-new ()
   (let ((base (app-base)))
