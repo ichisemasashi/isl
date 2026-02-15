@@ -8,6 +8,7 @@ Wiki システムを段階的に構築するための実装です。
 - `cgi-bin/wiki.cgi`: Apache から呼ばれる CGI エントリ
 - `conf/httpd-wiki.conf`: httpd に include する設定例
 - `db/001_init.sql`: PostgreSQL 初期スキーマ
+- `docs/markdown-policy.md`: Markdown変換方式の決定記録
 
 ## MVP 3画面
 - `/wiki` : ページ一覧
@@ -15,6 +16,16 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/{slug}/edit` : 編集画面（表示のみ。保存未実装）
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
+
+## Markdown変換方式（決定）
+
+`pandoc` を外部コマンドとして利用します。
+詳細は `docs/markdown-policy.md` を参照してください。
+
+要点:
+- 変換コマンド: `pandoc --from=gfm-raw_html --to=html5`
+- `ISL` から `system` 経由で実行
+- 入出力は一時ファイル経由
 
 ## PostgreSQL スキーマ（MVP）
 
