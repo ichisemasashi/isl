@@ -128,6 +128,9 @@
             (setq i (+ i 1)))
           ok)))))
 
+(defun reserved-slug-p (slug)
+  (or (string= slug "new")))
+
 (defun db-url ()
   (let ((v (getenv "ISL_WIKI_DB_URL")))
     (if (null v)
@@ -484,6 +487,7 @@
     (print-headers-ok)
     (print-layout-head "Wiki Index")
     (format t "<h1>Wiki Pages</h1>~%")
+    (format t "<p><a href=\"~A/new\">Create New Page</a></p>~%" base)
     (if (null rows)
         (format t "<p>ページがありません。</p>~%")
         (progn
@@ -518,6 +522,7 @@
               (format t "<p><a href=\"~A/~A/edit\">Edit this page</a></p>~%"
                       base
                       (html-escape slug))
+              (format t "<p><a href=\"~A/new\">Create New Page</a></p>~%" base)
               (format t "<p><small>updated: ~A / slug: <code>~A</code></small></p>~%"
                       (html-escape updated-at)
                       (html-escape slug))
@@ -531,7 +536,7 @@
               (print-layout-foot)))))))
 
 (defun save-page (db slug)
-  (if (not (slug-safe-p slug))
+  (if (or (not (slug-safe-p slug)) (reserved-slug-p slug))
       (render-not-found)
       (let ((page (fetch-page db slug)))
         (if (null page)
@@ -573,6 +578,52 @@
                           (postgres-exec db sql)
                           (render-see-other (string-append (app-base) "/" slug)))))))))))
 
+(defun create-page (db)
+  (let ((content-type (env-or-empty "CONTENT_TYPE")))
+    (if (not (starts-with content-type "application/x-www-form-urlencoded"))
+        (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
+        (let* ((raw-body (read-request-body))
+               (slug (parse-form-field raw-body "slug"))
+               (title (parse-form-field raw-body "title"))
+               (body-md (parse-form-field raw-body "body_md"))
+               (edit-summary (parse-form-field raw-body "edit_summary")))
+          (if (or (not (slug-safe-p slug)) (reserved-slug-p slug))
+              (render-bad-request "invalid slug")
+              (if (blank-text-p title)
+                  (render-bad-request "title must not be blank")
+                  (if (null (fetch-page db slug))
+                      (let ((sql
+                             (string-append
+                              "with inserted as ("
+                              "  insert into pages (slug, title, body_md, last_edited_by) "
+                              "  values ('" (sql-escape slug) "', '"
+                              (sql-escape title) "', '"
+                              (sql-escape body-md) "', 'web') "
+                              "  returning id, title, body_md"
+                              ") "
+                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+                              "select i.id, 1, i.title, i.body_md, 'web', '"
+                              (sql-escape edit-summary)
+                              "' from inserted i")))
+                        (postgres-exec db sql)
+                        (render-see-other (string-append (app-base) "/" slug)))
+                      (render-bad-request "slug already exists"))))))))
+
+(defun render-new ()
+  (let ((base (app-base)))
+    (print-headers-ok)
+    (print-layout-head "Create New Page")
+    (format t "<h1>Create New Page</h1>~%")
+    (format t "<form method=\"post\" action=\"~A/new\">~%" base)
+    (format t "  <p><label>Slug<br><input type=\"text\" name=\"slug\" value=\"\" style=\"width:100%\" placeholder=\"new-page\"></label></p>~%")
+    (format t "  <p><small>slug: a-z, 0-9, '-' のみ。先頭末尾 '-' 不可。</small></p>~%")
+    (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
+    (format t "  <p><label>Body (Markdown)<br><textarea name=\"body_md\"></textarea></label></p>~%")
+    (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"create page\" style=\"width:100%\"></label></p>~%")
+    (format t "  <p><button type=\"submit\">Create</button></p>~%")
+    (format t "</form>~%")
+    (print-layout-foot)))
+
 (defun render-edit (db slug)
   (if (not (slug-safe-p slug))
       (render-not-found)
@@ -607,7 +658,11 @@
         (if (= n 0)
             (render-index db)
                 (if (= n 1)
-                    (render-view db (first segments))
+                    (if (string= (first segments) "new")
+                        (if (string= method "POST")
+                            (create-page db)
+                            (render-new))
+                        (render-view db (first segments)))
                 (if (= n 2)
                     (if (string= (second segments) "edit")
                         (if (string= method "POST")

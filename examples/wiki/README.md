@@ -15,6 +15,7 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki` : ページ一覧
 - `/wiki/{slug}` : ページ表示（DBの Markdown を HTML 変換して表示）
 - `/wiki/{slug}/edit` : 編集画面（POSTで保存可能）
+- `/wiki/new` : 新規ページ作成（POSTで保存可能）
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
 
@@ -77,6 +78,7 @@ Include "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/conf/httpd-wiki.co
 http://localhost:8080/wiki
 http://localhost:8080/wiki/home
 http://localhost:8080/wiki/home/edit
+http://localhost:8080/wiki/new
 ```
 
 保存（POST）確認例:
