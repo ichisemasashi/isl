@@ -141,7 +141,7 @@
 (defun media-public-base ()
   (let ((v (getenv "ISL_WIKI_MEDIA_BASE_URL")))
     (if (null v)
-        "/cgi-bin/wiki.cgi/files"
+        (string-append (app-base) "/files")
         v)))
 
 (defun media-delivery-url (stored-filename)

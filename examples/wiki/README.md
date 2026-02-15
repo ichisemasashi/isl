@@ -66,13 +66,13 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/002_
 
 ```sh
 export ISL_WIKI_DB_URL='postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki'
-export ISL_WIKI_MEDIA_BASE_URL='/cgi-bin/wiki.cgi/files'
+export ISL_WIKI_MEDIA_BASE_URL='/wiki/files'   # 任意。未指定時は自動で「現在のベースURL/files」
 ```
 
 ## Apache 設定
 
 `conf/httpd-wiki.conf` の `ScriptAliasMatch` を include し、`mod_cgi` を有効化してください。  
-メディア配信は CGI (`/cgi-bin/wiki.cgi/files/...`) 経由でも動作します。
+メディアURLはデフォルトで現在のベースURLに追従し（`/wiki/files/...` または `/cgi-bin/wiki.cgi/files/...`）、CGI経由で配信されます。
 
 ```apache
 Include "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/conf/httpd-wiki.conf"
