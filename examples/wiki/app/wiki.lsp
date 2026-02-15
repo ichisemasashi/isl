@@ -190,9 +190,16 @@
       acc)))
 
 (defun hex-digit-value (ch)
-  (let ((up (string-upcase ch))
-        (p (string-index (string-upcase ch) "0123456789ABCDEF")))
-    (if (null p) -1 p)))
+  (let ((p (string-index ch "0123456789")))
+    (if (null p)
+        (let ((pa (string-index ch "ABCDEF")))
+          (if (null pa)
+              (let ((pl (string-index ch "abcdef")))
+                (if (null pl)
+                    -1
+                    (+ 10 pl)))
+              (+ 10 pa)))
+        p)))
 
 (defglobal *ascii-visible*
   " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~")
