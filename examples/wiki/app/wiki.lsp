@@ -144,8 +144,12 @@
         "/wiki/files"
         v)))
 
+(defun media-delivery-url (stored-filename)
+  (string-append (media-public-base) "/" stored-filename))
+
 (defun ensure-media-dir ()
-  (system (string-append "mkdir -p " (media-root-dir))))
+  (system (string-append "mkdir -p " (shell-quote (media-root-dir))))
+  (system (string-append "chmod 755 " (shell-quote (media-root-dir)))))
 
 (defun contains-char-p (s ch)
   (not (null (string-index ch s))))
@@ -522,7 +526,7 @@
   (postgres-query
    db
    (string-append
-    "select m.id, m.media_type, coalesce(m.title, ''), m.public_url, m.mime_type, "
+    "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
     "coalesce((select p.slug from pages p where p.id = m.page_id), '') "
     "from media_assets m order by m.id desc")))
 
@@ -530,11 +534,19 @@
   (postgres-query
    db
    (string-append
-    "select m.media_type, coalesce(m.title, ''), m.public_url, m.mime_type "
+    "select m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type "
     "from media_assets m "
     "join pages p on p.id = m.page_id "
     "where p.slug='" (sql-escape slug) "' "
     "order by m.id desc")))
+
+(defun fetch-media-file-meta (db stored-filename)
+  (let ((rows (postgres-query
+               db
+               (string-append
+                "select storage_path, mime_type from media_assets "
+                "where stored_filename='" (sql-escape stored-filename) "' limit 1"))))
+    (if (null rows) '() (first rows))))
 
 (defun print-headers-ok ()
   (format t "Content-Type: text/html; charset=UTF-8~%~%"))
@@ -676,8 +688,9 @@
                     (dolist (m media-rows)
                       (let ((media-type (first m))
                             (media-title (second m))
-                            (media-url (third m))
+                            (stored-filename (third m))
                             (media-mime (fourth m)))
+                        (let ((media-url (media-delivery-url stored-filename)))
                         (format t "<div style=\"margin:0 0 1rem 0\">~%")
                         (if (string= media-title "")
                             nil
@@ -695,7 +708,7 @@
                                 (html-escape media-url)
                                 (html-escape media-url)
                                 (html-escape media-mime))
-                        (format t "</div>~%")))))
+                        (format t "</div>~%"))))))
               (print-layout-foot)))))))
 
 (defun save-page (db slug)
@@ -785,9 +798,10 @@
           (let ((media-id (first row))
                 (media-type (second row))
                 (media-title (third row))
-                (media-url (fourth row))
+                (stored-filename (fourth row))
                 (media-mime (fifth row))
                 (page-slug (sixth row)))
+            (let ((media-url (media-delivery-url stored-filename)))
             (format t "<section style=\"margin:0 0 1.5rem 0;padding:1rem;border:1px solid #ddd;border-radius:8px\">~%")
             (format t "<p><strong>#~A</strong> [~A]</p>~%" (html-escape media-id) (html-escape media-type))
             (if (string= media-title "")
@@ -812,8 +826,22 @@
                         base
                         (html-escape page-slug)
                         (html-escape page-slug)))
-            (format t "</section>~%"))))
+            (format t "</section>~%")))))
     (print-layout-foot)))
+
+(defun render-file-not-found ()
+  (format t "Status: 404 Not Found~%")
+  (format t "Content-Type: text/plain; charset=UTF-8~%~%")
+  (format t "Not Found~%"))
+
+(defun render-media-file (db stored-filename)
+  (let ((meta (fetch-media-file-meta db stored-filename)))
+    (if (null meta)
+        (render-file-not-found)
+        (let ((storage-path (first meta)))
+          (if (null (probe-file storage-path))
+              (render-file-not-found)
+              (render-see-other (media-delivery-url stored-filename)))))))
 
 (defun render-media-new ()
   (let ((base (app-base)))
@@ -862,7 +890,7 @@
                                        "-"
                                        safe-name))
                          (storage-path (string-append (media-root-dir) "/" stored-name))
-                         (public-url (string-append (media-public-base) "/" stored-name))
+                         (public-url (media-delivery-url stored-name))
                          (page-id-sql
                           (if (blank-text-p page-slug)
                               "NULL"
@@ -877,27 +905,29 @@
                               (ensure-media-dir)
                               (let ((copy-status (system (string-append "cp " (shell-quote source-path) " " (shell-quote storage-path)))))
                                 (if (= copy-status 0)
-                                    (let ((sql (string-append
-                                                "insert into media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) values ("
-                                                page-id-sql ", '"
-                                                (sql-escape media-type) "', '"
-                                                (sql-escape title) "', '"
-                                                (sql-escape base-name) "', '"
-                                                (sql-escape stored-name) "', '"
-                                                (sql-escape mime-type) "', '"
-                                                (sql-escape storage-path) "', '"
-                                                (sql-escape public-url) "', 'web')")))
-                                      (postgres-exec db sql)
-                                      (if (blank-text-p edit-summary)
-                                          nil
-                                          (postgres-exec
-                                           db
-                                           (string-append
-                                            "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-                                            "select p.id, coalesce((select max(r.rev_no) from page_revisions r where r.page_id=p.id),0)+1, p.title, p.body_md, 'web', '"
-                                            (sql-escape edit-summary)
-                                            "' from pages p where p.slug='" (sql-escape page-slug) "'")))
-                                      (render-see-other (string-append (app-base) "/media")))
+                                    (progn
+                                      (system (string-append "chmod 644 " (shell-quote storage-path)))
+                                      (let ((sql (string-append
+                                                  "insert into media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) values ("
+                                                  page-id-sql ", '"
+                                                  (sql-escape media-type) "', '"
+                                                  (sql-escape title) "', '"
+                                                  (sql-escape base-name) "', '"
+                                                  (sql-escape stored-name) "', '"
+                                                  (sql-escape mime-type) "', '"
+                                                  (sql-escape storage-path) "', '"
+                                                  (sql-escape public-url) "', 'web')")))
+                                        (postgres-exec db sql)
+                                        (if (blank-text-p edit-summary)
+                                            nil
+                                            (postgres-exec
+                                             db
+                                             (string-append
+                                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+                                              "select p.id, coalesce((select max(r.rev_no) from page_revisions r where r.page_id=p.id),0)+1, p.title, p.body_md, 'web', '"
+                                              (sql-escape edit-summary)
+                                              "' from pages p where p.slug='" (sql-escape page-slug) "'")))
+                                        (render-see-other (string-append (app-base) "/media"))))
                                     (render-bad-request "file copy failed")))))))))))))
 
 (defun render-new ()
@@ -963,11 +993,13 @@
                                 (create-media db)
                                 (render-media-new))
                             (render-not-found))
+                        (if (string= (first segments) "files")
+                            (render-media-file db (second segments))
                         (if (string= (second segments) "edit")
                             (if (string= method "POST")
                                 (save-page db (first segments))
                                 (render-edit db (first segments)))
-                            (render-not-found)))
+                            (render-not-found))))
                     (render-not-found)))))
     (postgres-close db)))
 
