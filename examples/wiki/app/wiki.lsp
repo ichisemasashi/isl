@@ -36,6 +36,33 @@
         '()
         (split-path trimmed))))
 
+(defun trim-trailing-slashes (s)
+  (let ((n (length s)))
+    (if (> n 1)
+        (if (string= (substring s (- n 1) n) "/")
+            (trim-trailing-slashes (substring s 0 (- n 1)))
+            s)
+        s)))
+
+(defun canonical-path-info (raw)
+  (if (= (length raw) 0)
+      ""
+      (let ((t1 (trim-trailing-slashes raw)))
+        (if (= (length t1) 0)
+            ""
+            (if (string= (substring t1 0 1) "/")
+                t1
+                (string-append "/" t1))))))
+
+(defun needs-canonical-redirect-p (raw)
+  (if (= (length raw) 0)
+      nil
+      (if (string= raw "/")
+          nil
+          (if (string= raw (canonical-path-info raw))
+              nil
+              t))))
+
 (defun safe-text (v)
   (if (null v) "" v))
 
@@ -181,6 +208,11 @@
   (format t "Status: 500 Internal Server Error~%")
   (format t "Content-Type: text/html; charset=UTF-8~%~%"))
 
+(defun print-headers-301 (location)
+  (format t "Status: 301 Moved Permanently~%")
+  (format t "Location: ~A~%" location)
+  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+
 (defun print-layout-head (title)
   (format t "<!doctype html>~%")
   (format t "<html lang=\"ja\">~%")
@@ -209,6 +241,15 @@
   (format t "<h1>500 Internal Server Error</h1>~%")
   (format t "<p>アプリケーション内部でエラーが発生しました。</p>~%")
   (format t "<pre>~A</pre>~%" (html-escape message))
+  (print-layout-foot))
+
+(defun render-redirect (location)
+  (print-headers-301 location)
+  (print-layout-head "Moved")
+  (format t "<h1>301 Moved Permanently</h1>~%")
+  (format t "<p>Canonical URL: <a href=\"~A\">~A</a></p>~%"
+          (html-escape location)
+          (html-escape location))
   (print-layout-foot))
 
 (defun render-index (db)
@@ -281,18 +322,21 @@
               (print-layout-foot))))))
 
 (defun render-app ()
-  (let* ((segments (path-segments))
+  (let* ((raw-path (env-or-empty "PATH_INFO"))
+         (segments (path-segments))
          (n (length segments))
          (db (postgres-open (db-url))))
-    (if (= n 0)
-        (render-index db)
-            (if (= n 1)
-                (render-view db (first segments))
-            (if (= n 2)
-                (if (string= (second segments) "edit")
-                    (render-edit db (first segments))
-                    (render-not-found))
-                (render-not-found))))
+    (if (needs-canonical-redirect-p raw-path)
+        (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
+        (if (= n 0)
+            (render-index db)
+                (if (= n 1)
+                    (render-view db (first segments))
+                (if (= n 2)
+                    (if (string= (second segments) "edit")
+                        (render-edit db (first segments))
+                        (render-not-found))
+                    (render-not-found)))))
     (postgres-close db)))
 
 (handler-case

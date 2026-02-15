@@ -9,6 +9,7 @@ Wiki システムを段階的に構築するための実装です。
 - `conf/httpd-wiki.conf`: httpd に include する設定例
 - `db/001_init.sql`: PostgreSQL 初期スキーマ
 - `docs/markdown-policy.md`: Markdown変換方式の決定記録
+- `docs/url-naming-conventions.md`: URL / 命名規約の固定
 
 ## MVP 3画面
 - `/wiki` : ページ一覧
@@ -16,6 +17,14 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/{slug}/edit` : 編集画面（表示のみ。保存未実装）
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
+
+## URL / 命名規約（固定）
+
+`docs/url-naming-conventions.md` に固定済みです。
+要点:
+- Canonical URL は末尾スラッシュなし
+- `slug` は `^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$`
+- URL は `title` ではなく `slug` を使用
 
 ## Markdown変換方式（決定）
 
