@@ -12,7 +12,7 @@ Wiki システムを段階的に構築するための実装です。
 
 ## MVP 3画面
 - `/wiki` : ページ一覧
-- `/wiki/{slug}` : ページ表示
+- `/wiki/{slug}` : ページ表示（DBの Markdown を HTML 変換して表示）
 - `/wiki/{slug}/edit` : 編集画面（表示のみ。保存未実装）
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。

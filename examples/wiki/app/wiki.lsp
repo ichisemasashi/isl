@@ -96,6 +96,67 @@
         "postgresql://127.0.0.1:5432/isl_wiki"
         v)))
 
+(defglobal *markdown-temp-counter* 0)
+
+(defun pandoc-bin ()
+  (let ((v (getenv "ISL_WIKI_PANDOC")))
+    (if (null v)
+        "/opt/homebrew/bin/pandoc"
+        v)))
+
+(defun next-temp-base ()
+  (setq *markdown-temp-counter* (+ *markdown-temp-counter* 1))
+  (string-append "/tmp/isl-wiki-"
+                 (format nil "~A" (get-universal-time))
+                 "-"
+                 (format nil "~A" *markdown-temp-counter*)))
+
+(defun write-file-text (path text)
+  (with-open-file (s path
+                     :direction :output
+                     :if-does-not-exist :create
+                     :if-exists :supersede)
+    (format s "~A" (safe-text text))))
+
+(defun read-file-text (path)
+  (with-open-file (s path :direction :input)
+    (let ((line (read-line s #f))
+          (acc "")
+          (first-line t))
+      (while (not (null line))
+        (if first-line
+            (progn
+              (setq acc line)
+              (setq first-line nil))
+            (setq acc (string-append acc "\n" line)))
+        (setq line (read-line s #f)))
+      acc)))
+
+(defun safe-delete-file (path)
+  (handler-case
+    (delete-file path)
+    (error (e) '())))
+
+(defun markdown->html (body-md)
+  (let* ((base (next-temp-base))
+         (md-path (string-append base ".md"))
+         (html-path (string-append base ".html"))
+         (cmd (string-append (pandoc-bin)
+                             " --from=gfm-raw_html --to=html5"
+                             " --output " html-path
+                             " " md-path)))
+    (write-file-text md-path body-md)
+    (let ((status (system cmd)))
+      (if (= status 0)
+          (let ((html (read-file-text html-path)))
+            (safe-delete-file md-path)
+            (safe-delete-file html-path)
+            html)
+          (progn
+            (safe-delete-file md-path)
+            (safe-delete-file html-path)
+            (error "pandoc conversion failed" cmd status))))))
+
 (defun fetch-pages (db)
   (postgres-query db
     "select slug, title, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') from pages order by slug"))
@@ -127,7 +188,7 @@
   (format t "  <meta charset=\"UTF-8\">~%")
   (format t "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">~%")
   (format t "  <title>~A</title>~%" (html-escape title))
-  (format t "  <style>body{font-family:system-ui,-apple-system,sans-serif;margin:2rem;line-height:1.6}main{max-width:840px}textarea{width:100%;min-height:18rem;font-family:ui-monospace,SFMono-Regular,monospace}code{background:#f4f4f4;padding:.1rem .3rem;border-radius:4px}pre{background:#f7f7f7;padding:1rem;border-radius:6px;overflow:auto}a{color:#0b5394}</style>~%")
+  (format t "  <style>body{font-family:system-ui,-apple-system,sans-serif;margin:2rem;line-height:1.6}main{max-width:840px}textarea{width:100%;min-height:18rem;font-family:ui-monospace,SFMono-Regular,monospace}code{background:#f4f4f4;padding:.1rem .3rem;border-radius:4px}pre{background:#f7f7f7;padding:1rem;border-radius:6px;overflow:auto}a{color:#0b5394}.wiki-body{border:1px solid #ddd;border-radius:8px;padding:1rem;background:#fff}.wiki-body :first-child{margin-top:0}.wiki-body :last-child{margin-bottom:0}</style>~%")
   (format t "</head>~%")
   (format t "<body><main>~%")
   (format t "<p><a href=\"~A\">Wiki Index</a></p>~%" (app-base)))
@@ -182,6 +243,7 @@
             (let ((title (second row))
                   (body-md (third row))
                   (updated-at (fourth row)))
+              (let ((body-html (markdown->html body-md)))
               (print-headers-ok)
               (print-layout-head title)
               (format t "<h1>~A</h1>~%" (html-escape title))
@@ -191,9 +253,11 @@
               (format t "<p><small>updated: ~A / slug: <code>~A</code></small></p>~%"
                       (html-escape updated-at)
                       (html-escape slug))
-              (format t "<h2>Markdown</h2>~%")
+              (format t "<h2>Preview (HTML)</h2>~%")
+              (format t "<article class=\"wiki-body\">~A</article>~%" body-html)
+              (format t "<h2>Markdown Source</h2>~%")
               (format t "<pre>~A</pre>~%" (html-escape body-md))
-              (print-layout-foot))))))
+              (print-layout-foot)))))))
 
 (defun render-edit (db slug)
   (if (not (slug-safe-p slug))

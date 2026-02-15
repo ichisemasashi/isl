@@ -53,6 +53,14 @@ pandoc --from=gfm-raw_html --to=html5
 
 ## 次ステップ
 
-1. `wiki.lsp` のページ表示で `body_md` を `markdown->html` 経由で表示。
-2. 編集保存（POST）実装時に `page_revisions` へ追記。
-3. HTMLサニタイズ層を追加。
+1. 編集保存（POST）実装時に `page_revisions` へ追記。
+2. HTMLサニタイズ層を追加。
+3. 変換失敗時の監視ログ整備（request id, slug, command status）。
+
+## 実装状況（2026-02-15）
+
+縦スライス1本目として、`/wiki/{slug}` は次の流れを実装済み。
+
+1. PostgreSQL (`pages.body_md`) から本文取得。
+2. `markdown->html` で `pandoc` 変換。
+3. HTMLプレビューとして表示（併せて Markdown Source も表示）。
