@@ -129,7 +129,123 @@
           ok)))))
 
 (defun reserved-slug-p (slug)
-  (or (string= slug "new")))
+  (or (string= slug "new")
+      (string= slug "media")))
+
+(defun media-root-dir ()
+  (let ((v (getenv "ISL_WIKI_MEDIA_DIR")))
+    (if (null v)
+        "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/storage/media"
+        v)))
+
+(defun media-public-base ()
+  (let ((v (getenv "ISL_WIKI_MEDIA_BASE_URL")))
+    (if (null v)
+        "/wiki/files"
+        v)))
+
+(defun ensure-media-dir ()
+  (system (string-append "mkdir -p " (media-root-dir))))
+
+(defun contains-char-p (s ch)
+  (not (null (string-index ch s))))
+
+(defun shell-quote (s)
+  (if (contains-char-p s "'")
+      (error "single quote is not supported in file path" s)
+      (string-append "'" s "'")))
+
+(defun last-index-of (s needle)
+  (let ((i 0)
+        (last '()))
+    (while (< i (length s))
+      (if (string= (substring s i (+ i 1)) needle)
+          (setq last i)
+          nil)
+      (setq i (+ i 1)))
+    last))
+
+(defun basename (path)
+  (let ((p (last-index-of path "/")))
+    (if (null p)
+        path
+        (substring path (+ p 1)))))
+
+(defun ascii-downcase-string (s)
+  (let ((i 0)
+        (out ""))
+    (while (< i (length s))
+      (let* ((ch (substring s i (+ i 1)))
+             (code (char->integer ch)))
+        (if (and (>= code 65) (<= code 90))
+            (setq out (string-append out (string (integer->char (+ code 32)))))
+            (setq out (string-append out ch))))
+      (setq i (+ i 1)))
+    out))
+
+(defun file-ext-lower (name)
+  (let ((p (last-index-of name ".")))
+    (if (null p)
+        ""
+        (ascii-downcase-string (substring name (+ p 1))))))
+
+(defun safe-file-char-p (ch)
+  (or (not (null (string-index ch "abcdefghijklmnopqrstuvwxyz")))
+      (not (null (string-index ch "ABCDEFGHIJKLMNOPQRSTUVWXYZ")))
+      (not (null (string-index ch "0123456789")))
+      (string= ch ".")
+      (string= ch "-")
+      (string= ch "_")))
+
+(defun sanitize-filename (name)
+  (let ((i 0)
+        (out ""))
+    (while (< i (length name))
+      (let ((ch (substring name i (+ i 1))))
+        (if (safe-file-char-p ch)
+            (setq out (string-append out ch))
+            (setq out (string-append out "_"))))
+      (setq i (+ i 1)))
+    (if (= (length out) 0) "file.bin" out)))
+
+(defun valid-media-type-p (media-type)
+  (or (string= media-type "image")
+      (string= media-type "video")
+      (string= media-type "audio")))
+
+(defun infer-media-type (filename)
+  (let ((ext (file-ext-lower filename)))
+    (if (or (string= ext "png") (string= ext "jpg") (string= ext "jpeg") (string= ext "gif") (string= ext "webp") (string= ext "svg"))
+        "image"
+        (if (or (string= ext "mp4") (string= ext "webm") (string= ext "mov") (string= ext "mkv"))
+            "video"
+            (if (or (string= ext "mp3") (string= ext "wav") (string= ext "ogg") (string= ext "m4a") (string= ext "flac"))
+                "audio"
+                "image")))))
+
+(defun infer-mime-type (filename media-type)
+  (let ((ext (file-ext-lower filename)))
+    (cond
+     ((string= ext "png") "image/png")
+     ((or (string= ext "jpg") (string= ext "jpeg")) "image/jpeg")
+     ((string= ext "gif") "image/gif")
+     ((string= ext "webp") "image/webp")
+     ((string= ext "svg") "image/svg+xml")
+     ((string= ext "mp4") "video/mp4")
+     ((string= ext "webm") "video/webm")
+     ((string= ext "mov") "video/quicktime")
+     ((string= ext "mkv") "video/x-matroska")
+     ((string= ext "mp3") "audio/mpeg")
+     ((string= ext "wav") "audio/wav")
+     ((string= ext "ogg") "audio/ogg")
+     ((string= ext "m4a") "audio/mp4")
+     ((string= ext "flac") "audio/flac")
+     (t
+      (if (string= media-type "video")
+          "video/mp4"
+          (if (string= media-type "audio")
+              "audio/mpeg"
+              "image/png"))))))
 
 (defun db-url ()
   (let ((v (getenv "ISL_WIKI_DB_URL")))
@@ -402,6 +518,24 @@
     "where p.slug='" (sql-escape slug) "' "
     "order by r.rev_no desc limit 1")))
 
+(defun fetch-media-list (db)
+  (postgres-query
+   db
+   (string-append
+    "select m.id, m.media_type, coalesce(m.title, ''), m.public_url, m.mime_type, "
+    "coalesce((select p.slug from pages p where p.id = m.page_id), '') "
+    "from media_assets m order by m.id desc")))
+
+(defun fetch-media-for-page (db slug)
+  (postgres-query
+   db
+   (string-append
+    "select m.media_type, coalesce(m.title, ''), m.public_url, m.mime_type "
+    "from media_assets m "
+    "join pages p on p.id = m.page_id "
+    "where p.slug='" (sql-escape slug) "' "
+    "order by m.id desc")))
+
 (defun print-headers-ok ()
   (format t "Content-Type: text/html; charset=UTF-8~%~%"))
 
@@ -437,7 +571,8 @@
   (format t "  <style>body{font-family:system-ui,-apple-system,sans-serif;margin:2rem;line-height:1.6}main{max-width:840px}textarea{width:100%;min-height:18rem;font-family:ui-monospace,SFMono-Regular,monospace}code{background:#f4f4f4;padding:.1rem .3rem;border-radius:4px}pre{background:#f7f7f7;padding:1rem;border-radius:6px;overflow:auto}a{color:#0b5394}.wiki-body{border:1px solid #ddd;border-radius:8px;padding:1rem;background:#fff}.wiki-body :first-child{margin-top:0}.wiki-body :last-child{margin-bottom:0}</style>~%")
   (format t "</head>~%")
   (format t "<body><main>~%")
-  (format t "<p><a href=\"~A\">Wiki Index</a></p>~%" (app-base)))
+  (format t "<p><a href=\"~A\">Wiki Index</a> | <a href=\"~A/new\">New Page</a> | <a href=\"~A/media\">Media</a></p>~%"
+          (app-base) (app-base) (app-base)))
 
 (defun print-layout-foot ()
   (format t "</main></body>~%</html>~%"))
@@ -487,7 +622,7 @@
     (print-headers-ok)
     (print-layout-head "Wiki Index")
     (format t "<h1>Wiki Pages</h1>~%")
-    (format t "<p><a href=\"~A/new\">Create New Page</a></p>~%" base)
+    (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
     (if (null rows)
         (format t "<p>ページがありません。</p>~%")
         (progn
@@ -514,7 +649,8 @@
             (let ((title (second row))
                   (body-md (third row))
                   (updated-at (fetch-page-updated-at db slug))
-                  (latest-summary (fetch-latest-edit-summary db slug)))
+                  (latest-summary (fetch-latest-edit-summary db slug))
+                  (media-rows (fetch-media-for-page db slug)))
               (let ((body-html (markdown->html body-md)))
               (print-headers-ok)
               (print-layout-head title)
@@ -522,7 +658,7 @@
               (format t "<p><a href=\"~A/~A/edit\">Edit this page</a></p>~%"
                       base
                       (html-escape slug))
-              (format t "<p><a href=\"~A/new\">Create New Page</a></p>~%" base)
+              (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
               (format t "<p><small>updated: ~A / slug: <code>~A</code></small></p>~%"
                       (html-escape updated-at)
                       (html-escape slug))
@@ -533,6 +669,33 @@
               (format t "<article class=\"wiki-body\">~A</article>~%" body-html)
               (format t "<h2>Markdown Source</h2>~%")
               (format t "<pre>~A</pre>~%" (html-escape body-md))
+              (if (null media-rows)
+                  nil
+                  (progn
+                    (format t "<h2>Attached Media</h2>~%")
+                    (dolist (m media-rows)
+                      (let ((media-type (first m))
+                            (media-title (second m))
+                            (media-url (third m))
+                            (media-mime (fourth m)))
+                        (format t "<div style=\"margin:0 0 1rem 0\">~%")
+                        (if (string= media-title "")
+                            nil
+                            (format t "<p><strong>~A</strong></p>~%" (html-escape media-title)))
+                        (if (string= media-type "image")
+                            (format t "<img src=\"~A\" alt=\"~A\" style=\"max-width:100%;height:auto;border:1px solid #ddd;border-radius:6px\">~%"
+                                    (html-escape media-url)
+                                    (html-escape media-title))
+                            (if (string= media-type "video")
+                                (format t "<video controls style=\"max-width:100%\" src=\"~A\"></video>~%"
+                                        (html-escape media-url))
+                                (format t "<audio controls src=\"~A\"></audio>~%"
+                                        (html-escape media-url))))
+                        (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
+                                (html-escape media-url)
+                                (html-escape media-url)
+                                (html-escape media-mime))
+                        (format t "</div>~%")))))
               (print-layout-foot)))))))
 
 (defun save-page (db slug)
@@ -609,6 +772,134 @@
                         (render-see-other (string-append (app-base) "/" slug)))
                       (render-bad-request "slug already exists"))))))))
 
+(defun render-media-index (db)
+  (let ((rows (fetch-media-list db))
+        (base (app-base)))
+    (print-headers-ok)
+    (print-layout-head "Media Library")
+    (format t "<h1>Media Library</h1>~%")
+    (format t "<p><a href=\"~A/media/new\">Add Media</a></p>~%" base)
+    (if (null rows)
+        (format t "<p>メディアがありません。</p>~%")
+        (dolist (row rows)
+          (let ((media-id (first row))
+                (media-type (second row))
+                (media-title (third row))
+                (media-url (fourth row))
+                (media-mime (fifth row))
+                (page-slug (sixth row)))
+            (format t "<section style=\"margin:0 0 1.5rem 0;padding:1rem;border:1px solid #ddd;border-radius:8px\">~%")
+            (format t "<p><strong>#~A</strong> [~A]</p>~%" (html-escape media-id) (html-escape media-type))
+            (if (string= media-title "")
+                nil
+                (format t "<p>~A</p>~%" (html-escape media-title)))
+            (if (string= media-type "image")
+                (format t "<img src=\"~A\" alt=\"~A\" style=\"max-width:100%;height:auto;border:1px solid #ddd;border-radius:6px\">~%"
+                        (html-escape media-url)
+                        (html-escape media-title))
+                (if (string= media-type "video")
+                    (format t "<video controls style=\"max-width:100%\" src=\"~A\"></video>~%"
+                            (html-escape media-url))
+                    (format t "<audio controls src=\"~A\"></audio>~%"
+                            (html-escape media-url))))
+            (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
+                    (html-escape media-url)
+                    (html-escape media-url)
+                    (html-escape media-mime))
+            (if (string= page-slug "")
+                nil
+                (format t "<p><small>page: <a href=\"~A/~A\">~A</a></small></p>~%"
+                        base
+                        (html-escape page-slug)
+                        (html-escape page-slug)))
+            (format t "</section>~%"))))
+    (print-layout-foot)))
+
+(defun render-media-new ()
+  (let ((base (app-base)))
+    (print-headers-ok)
+    (print-layout-head "Add Media")
+    (format t "<h1>Add Media</h1>~%")
+    (format t "<p>サーバー上のファイルをストレージへコピーし、メタ情報をDBに保存します。</p>~%")
+    (format t "<form method=\"post\" action=\"~A/media/new\">~%" base)
+    (format t "  <p><label>Source Path (server local)<br><input type=\"text\" name=\"source_path\" value=\"\" style=\"width:100%\" placeholder=\"/path/to/file.png\"></label></p>~%")
+    (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
+    (format t "  <p><label>Page Slug (optional)<br><input type=\"text\" name=\"page_slug\" value=\"\" style=\"width:100%\" placeholder=\"home\"></label></p>~%")
+    (format t "  <p><label>Media Type<br><select name=\"media_type\"><option value=\"\">auto</option><option value=\"image\">image</option><option value=\"video\">video</option><option value=\"audio\">audio</option></select></label></p>~%")
+    (format t "  <p><label>MIME Type (optional)<br><input type=\"text\" name=\"mime_type\" value=\"\" style=\"width:100%\" placeholder=\"image/png\"></label></p>~%")
+    (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"add media\" style=\"width:100%\"></label></p>~%")
+    (format t "  <p><button type=\"submit\">Add Media</button></p>~%")
+    (format t "</form>~%")
+    (print-layout-foot)))
+
+(defun create-media (db)
+  (let ((content-type (env-or-empty "CONTENT_TYPE")))
+    (if (not (starts-with content-type "application/x-www-form-urlencoded"))
+        (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
+        (let* ((raw-body (read-request-body))
+               (source-path (parse-form-field raw-body "source_path"))
+               (title (parse-form-field raw-body "title"))
+               (page-slug (parse-form-field raw-body "page_slug"))
+               (media-type-input (parse-form-field raw-body "media_type"))
+               (mime-type-input (parse-form-field raw-body "mime_type"))
+               (edit-summary (parse-form-field raw-body "edit_summary")))
+          (if (blank-text-p source-path)
+              (render-bad-request "source_path must not be blank")
+              (if (null (probe-file source-path))
+                  (render-bad-request "source file not found")
+                  (let* ((base-name (basename source-path))
+                         (safe-name (sanitize-filename base-name))
+                         (media-type (if (blank-text-p media-type-input)
+                                         (infer-media-type base-name)
+                                         media-type-input))
+                         (mime-type (if (blank-text-p mime-type-input)
+                                        (infer-mime-type base-name media-type)
+                                        mime-type-input))
+                         (stored-name (string-append
+                                       (format nil "~A" (get-universal-time))
+                                       "-"
+                                       (format nil "~A" *markdown-temp-counter*)
+                                       "-"
+                                       safe-name))
+                         (storage-path (string-append (media-root-dir) "/" stored-name))
+                         (public-url (string-append (media-public-base) "/" stored-name))
+                         (page-id-sql
+                          (if (blank-text-p page-slug)
+                              "NULL"
+                              (if (null (fetch-page db page-slug))
+                                  ""
+                                  (string-append "(select id from pages where slug='" (sql-escape page-slug) "' limit 1)")))))
+                    (if (string= page-id-sql "")
+                        (render-bad-request "page_slug not found")
+                        (if (not (valid-media-type-p media-type))
+                            (render-bad-request "media_type must be image/video/audio")
+                            (progn
+                              (ensure-media-dir)
+                              (let ((copy-status (system (string-append "cp " (shell-quote source-path) " " (shell-quote storage-path)))))
+                                (if (= copy-status 0)
+                                    (let ((sql (string-append
+                                                "insert into media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) values ("
+                                                page-id-sql ", '"
+                                                (sql-escape media-type) "', '"
+                                                (sql-escape title) "', '"
+                                                (sql-escape base-name) "', '"
+                                                (sql-escape stored-name) "', '"
+                                                (sql-escape mime-type) "', '"
+                                                (sql-escape storage-path) "', '"
+                                                (sql-escape public-url) "', 'web')")))
+                                      (postgres-exec db sql)
+                                      (if (blank-text-p edit-summary)
+                                          nil
+                                          (postgres-exec
+                                           db
+                                           (string-append
+                                            "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+                                            "select p.id, coalesce((select max(r.rev_no) from page_revisions r where r.page_id=p.id),0)+1, p.title, p.body_md, 'web', '"
+                                            (sql-escape edit-summary)
+                                            "' from pages p where p.slug='" (sql-escape page-slug) "'")))
+                                      (render-see-other (string-append (app-base) "/media")))
+                                    (render-bad-request "file copy failed")))))))))))))
+
 (defun render-new ()
   (let ((base (app-base)))
     (print-headers-ok)
@@ -662,13 +953,21 @@
                         (if (string= method "POST")
                             (create-page db)
                             (render-new))
-                        (render-view db (first segments)))
+                        (if (string= (first segments) "media")
+                            (render-media-index db)
+                            (render-view db (first segments))))
                 (if (= n 2)
-                    (if (string= (second segments) "edit")
-                        (if (string= method "POST")
-                            (save-page db (first segments))
-                            (render-edit db (first segments)))
-                        (render-not-found))
+                    (if (string= (first segments) "media")
+                        (if (string= (second segments) "new")
+                            (if (string= method "POST")
+                                (create-media db)
+                                (render-media-new))
+                            (render-not-found))
+                        (if (string= (second segments) "edit")
+                            (if (string= method "POST")
+                                (save-page db (first segments))
+                                (render-edit db (first segments)))
+                            (render-not-found)))
                     (render-not-found)))))
     (postgres-close db)))
 

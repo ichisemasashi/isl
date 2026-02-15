@@ -16,6 +16,8 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/{slug}` : ページ表示（DBの Markdown を HTML 変換して表示）
 - `/wiki/{slug}/edit` : 編集画面（POSTで保存可能）
 - `/wiki/new` : 新規ページ作成（POSTで保存可能）
+- `/wiki/media` : メディア一覧（画像/動画/音声）
+- `/wiki/media/new` : メディア追加（POSTで保存）
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
 
@@ -42,6 +44,7 @@ Wiki システムを段階的に構築するための実装です。
 `db/001_init.sql` で次を作成します。
 - `pages`: 各ページの現在値（`slug`, `title`, `body_md`）
 - `page_revisions`: 編集履歴（世代番号 `rev_no` つき）
+- `media_assets`（`db/002_media_assets.sql`）: メタ情報（実ファイルはストレージ保存）
 
 設計方針:
 - 読み取りは `pages` から単純に取得
@@ -53,6 +56,7 @@ Wiki システムを段階的に構築するための実装です。
 ```sh
 createdb isl_wiki
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_init.sql
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/002_media_assets.sql
 ```
 
 接続文字列は環境変数 `ISL_WIKI_DB_URL` で指定できます。
@@ -62,11 +66,12 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_
 
 ```sh
 export ISL_WIKI_DB_URL='postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki'
+export ISL_WIKI_MEDIA_BASE_URL='/wiki/files'
 ```
 
 ## Apache 設定
 
-`conf/httpd-wiki.conf` の `ScriptAliasMatch` を include し、`mod_cgi` を有効化してください。
+`conf/httpd-wiki.conf` の `ScriptAliasMatch` / `Alias /wiki/files/` を include し、`mod_cgi` を有効化してください。
 
 ```apache
 Include "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/conf/httpd-wiki.conf"
@@ -79,6 +84,8 @@ http://localhost:8080/wiki
 http://localhost:8080/wiki/home
 http://localhost:8080/wiki/home/edit
 http://localhost:8080/wiki/new
+http://localhost:8080/wiki/media
+http://localhost:8080/wiki/media/new
 ```
 
 保存（POST）確認例:
@@ -89,4 +96,17 @@ curl -i -X POST "http://localhost:8080/wiki/home/edit" \
   --data-urlencode "title=Home" \
   --data-urlencode "body_md=# Updated from curl" \
   --data-urlencode "edit_summary=curl test"
+```
+
+メディア追加（サーバー上のファイルを登録）例:
+
+```sh
+curl -i -X POST "http://localhost:8080/wiki/media/new" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "source_path=/tmp/sample.png" \
+  --data-urlencode "title=Sample Image" \
+  --data-urlencode "page_slug=home" \
+  --data-urlencode "media_type=image" \
+  --data-urlencode "mime_type=image/png" \
+  --data-urlencode "edit_summary=add image"
 ```
