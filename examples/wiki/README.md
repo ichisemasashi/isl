@@ -4,10 +4,17 @@
 Wiki システムを段階的に構築するための実装です。
 
 ## ファイル構成
-- `app/wiki.lsp`: Webアプリ本体（現状は固定HTML）
+- `app/wiki.lsp`: Webアプリ本体（MVP 3画面）
 - `cgi-bin/wiki.cgi`: Apache から呼ばれる CGI エントリ
 - `conf/httpd-wiki.conf`: httpd に include する設定例
 - `db/001_init.sql`: PostgreSQL 初期スキーマ
+
+## MVP 3画面
+- `/wiki` : ページ一覧
+- `/wiki/{slug}` : ページ表示
+- `/wiki/{slug}/edit` : 編集画面（表示のみ。保存未実装）
+
+`wiki.lsp` は `PATH_INFO` でルーティングします。
 
 ## PostgreSQL スキーマ（MVP）
 
@@ -27,20 +34,27 @@ createdb isl_wiki
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_init.sql
 ```
 
-接続文字列の例（後続の `postgres-open` 用）:
+接続文字列は環境変数 `ISL_WIKI_DB_URL` で指定できます。
+未指定時は `postgresql://127.0.0.1:5432/isl_wiki` を使います。
 
-```text
-postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki
+例:
+
+```sh
+export ISL_WIKI_DB_URL='postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki'
 ```
 
 ## Apache 設定
 
-Homebrew Apache / macOS 標準 Apache いずれでも、CGI 設定と実行ユーザー権限を満たせば動作します。
+`conf/httpd-wiki.conf` の `ScriptAliasMatch` を include し、`mod_cgi` を有効化してください。
+
+```apache
+Include "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/conf/httpd-wiki.conf"
+```
 
 ## 現在の動作確認
 
 ```text
 http://localhost:8080/wiki
+http://localhost:8080/wiki/home
+http://localhost:8080/wiki/home/edit
 ```
-
-固定ページ `ISL Wiki (fixed page)` が表示されれば成功です。
