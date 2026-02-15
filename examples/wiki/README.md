@@ -1,36 +1,46 @@
 # wiki (Apache CGI + ISL)
 
 このディレクトリは、`Apache(httpd)` から `ISL` スクリプトを CGI で実行し、
-まずは固定ページを返す最小構成です。
+Wiki システムを段階的に構築するための実装です。
 
 ## ファイル構成
-- `app/wiki.lsp`: 固定HTMLを出力する ISL 本体
+- `app/wiki.lsp`: Webアプリ本体（現状は固定HTML）
 - `cgi-bin/wiki.cgi`: Apache から呼ばれる CGI エントリ
 - `conf/httpd-wiki.conf`: httpd に include する設定例
+- `db/001_init.sql`: PostgreSQL 初期スキーマ
 
-## 1. Apache 設定
-メインの `httpd.conf` に次を追加してください。
+## PostgreSQL スキーマ（MVP）
 
-```apache
-Include "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/conf/httpd-wiki.conf"
-```
+`db/001_init.sql` で次を作成します。
+- `pages`: 各ページの現在値（`slug`, `title`, `body_md`）
+- `page_revisions`: 編集履歴（世代番号 `rev_no` つき）
 
-`mod_cgi` が無効なら有効化してください。
+設計方針:
+- 読み取りは `pages` から単純に取得
+- 履歴は `page_revisions` に追記
+- `slug` は URL セーフ形式（英小文字・数字・ハイフン）に制限
 
-## 2. Apache 再起動
-環境に合わせて再起動します。
+適用例:
 
 ```sh
-apachectl -k restart
+createdb isl_wiki
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_init.sql
 ```
 
-## 3. アクセス
+接続文字列の例（後続の `postgres-open` 用）:
 
 ```text
-http://localhost/wiki
+postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki
+```
+
+## Apache 設定
+
+Homebrew Apache / macOS 標準 Apache いずれでも、CGI 設定と実行ユーザー権限を満たせば動作します。
+
+## 現在の動作確認
+
+```text
+http://localhost:8080/wiki
 ```
 
 固定ページ `ISL Wiki (fixed page)` が表示されれば成功です。
-
-## PostgreSQL 前提について
-現時点では DB 接続はまだ使っていません。次の段階で `postgres-open` / `postgres-query` を使って記事一覧を表示できます。
