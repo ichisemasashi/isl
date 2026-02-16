@@ -311,10 +311,10 @@
 
 (defglobal *markdown-temp-counter* 0)
 
-(defun pandoc-bin ()
-  (let ((v (getenv "ISL_WIKI_PANDOC")))
+(defun md2html-bin ()
+  (let ((v (getenv "ISL_WIKI_MD2HTML")))
     (if (null v)
-        "/opt/homebrew/bin/pandoc"
+        "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html"
         v)))
 
 (defun next-temp-base ()
@@ -622,10 +622,9 @@
          (base (next-temp-base))
          (md-path (string-append base ".md"))
          (html-path (string-append base ".html"))
-         (cmd (string-append (pandoc-bin)
-                             " --from=gfm-raw_html --to=html5"
-                             " --output " html-path
-                             " " md-path)))
+         (cmd (string-append (shell-quote (md2html-bin))
+                             " -o " (shell-quote html-path)
+                             " " (shell-quote md-path))))
     (write-file-text md-path normalized-md)
     (let ((status (system cmd)))
       (if (= status 0)
@@ -636,7 +635,7 @@
           (progn
             (safe-delete-file md-path)
             (safe-delete-file html-path)
-            (error "pandoc conversion failed" cmd status))))))
+            (error "md2html conversion failed" cmd status))))))
 
 (defun fetch-pages (db)
   (postgres-query db

@@ -36,16 +36,17 @@ Wiki システムを段階的に構築するための実装です。
 
 ## Markdown変換方式（決定）
 
-`pandoc` を外部コマンドとして利用します。
+`examples/md2html/md2html` を外部コマンドとして利用します。
 詳細は `docs/markdown-policy.md` を参照してください。
 
 要点:
-- 変換コマンド: `pandoc --from=gfm-raw_html --to=html5`
+- 変換コマンド: `examples/md2html/md2html -o <tmp>.html <tmp>.md`
 - `ISL` から `system` 経由で実行
 - 入出力は一時ファイル経由
 - Wiki内リンク記法を前処理:
   - `[[home]]` -> `/wiki/home` へのリンク
   - `[[home|Home Page]]` -> 表示名つきリンク
+ - 必要に応じて `ISL_WIKI_MD2HTML` で実行バイナリを上書き可能
 
 ## PostgreSQL スキーマ（MVP）
 
