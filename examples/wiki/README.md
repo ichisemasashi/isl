@@ -20,6 +20,9 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/media/new` : メディア追加（POSTで保存）
 - `/wiki/search?q=...` : 文書検索（title / body_md の部分一致）
   - 検索結果からページへ遷移すると、`q` の一致箇所をハイライト表示
+- `/wiki/admin` : 管理メニュー
+- `/wiki/admin/backup` : DB + メディアのバックアップ作成
+- `/wiki/admin/restore` : バックアップからリストア
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
 
@@ -73,6 +76,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/003_
 ```sh
 export ISL_WIKI_DB_URL='postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki'
 export ISL_WIKI_MEDIA_BASE_URL='/wiki/files'   # 任意。未指定時は自動で「現在のベースURL/files」
+export ISL_WIKI_BACKUP_DIR='/tmp/isl-wiki-backups'
 ```
 
 ## Apache 設定
@@ -94,6 +98,9 @@ http://localhost:8080/wiki/new
 http://localhost:8080/wiki/media
 http://localhost:8080/wiki/media/new
 http://localhost:8080/wiki/search?q=welcome
+http://localhost:8080/wiki/admin
+http://localhost:8080/wiki/admin/backup
+http://localhost:8080/wiki/admin/restore
 ```
 
 保存（POST）確認例:
