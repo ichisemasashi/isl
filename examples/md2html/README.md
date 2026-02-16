@@ -10,6 +10,17 @@
 cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 ```
 
+## テスト
+
+```sh
+/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/tests/run.sh
+```
+
+- 固定テストケース:
+  - `phase2_nested_and_multi_paragraph_list`
+  - `phase2_definition_multi_block`
+  - `phase2_combined`
+
 ## 実装済み基盤
 
 - 行Lexer: blank / heading / paragraph
