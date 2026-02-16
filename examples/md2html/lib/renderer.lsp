@@ -1,3 +1,22 @@
+(defun inline-plain-text (nodes)
+  (let ((rest nodes)
+        (out ""))
+    (while (not (null rest))
+      (let ((n (first rest)))
+        (setq out
+              (string-append
+               out
+               (cond
+                ((eq (inline-kind n) 'inline-text) (inline-text-value n))
+                ((eq (inline-kind n) 'inline-code) (inline-text-value n))
+                ((eq (inline-kind n) 'inline-emph) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-strong) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-link) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-image) (inline-plain-text (inline-children n)))
+                (t "")))))
+      (setq rest (cdr rest)))
+    out))
+
 (defun render-inline-node (n)
   (cond
    ((eq (inline-kind n) 'inline-text)
@@ -12,6 +31,9 @@
     (string-append "<a href=\"" (attr-escape (inline-link-url n)) "\">"
                    (render-inline-nodes (inline-children n))
                    "</a>"))
+   ((eq (inline-kind n) 'inline-image)
+    (string-append "<img src=\"" (attr-escape (inline-image-url n))
+                   "\" alt=\"" (attr-escape (inline-plain-text (inline-children n))) "\" />"))
    (t "")))
 
 (defun render-inline-nodes (nodes)
@@ -31,6 +53,10 @@
                      "</h" (format nil "~A" level) ">")))
    ((eq (block-kind b) 'block-paragraph)
     (string-append "<p>" (render-inline-nodes (block-inlines b)) "</p>"))
+   ((eq (block-kind b) 'block-blockquote)
+    (string-append "<blockquote>\n" (render-html-document (block-children b)) "\n</blockquote>"))
+   ((eq (block-kind b) 'block-hr)
+    "<hr />")
    (t "")))
 
 (defun render-html-document (blocks)

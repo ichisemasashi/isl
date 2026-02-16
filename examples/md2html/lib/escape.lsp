@@ -1,13 +1,85 @@
 (defun safe-text (v)
   (if (null v) "" v))
 
+(defun find-char-from (s needle start)
+  (if (>= start (length s))
+      '()
+      (let ((p (string-index needle (substring s start))))
+        (if (null p) '() (+ start p)))))
+
+(defun alpha-char-p (ch)
+  (not (null (string-index ch "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))))
+
+(defun digit-char-p (ch)
+  (not (null (string-index ch "0123456789"))))
+
+(defun alnum-char-p (ch)
+  (or (alpha-char-p ch) (digit-char-p ch)))
+
+(defun hex-char-p (ch)
+  (or (digit-char-p ch)
+      (not (null (string-index ch "abcdefABCDEF")))))
+
+(defun entity-body-valid-p (body)
+  (let ((n (length body)))
+    (if (= n 0)
+        nil
+        (if (string= (substring body 0 1) "#")
+            (if (= n 1)
+                nil
+                (if (or (string= (substring body 1 2) "x")
+                        (string= (substring body 1 2) "X"))
+                    (let ((i 2)
+                          (ok t))
+                      (if (= n 2)
+                          nil
+                          (progn
+                            (while (and ok (< i n))
+                              (if (hex-char-p (substring body i (+ i 1)))
+                                  nil
+                                  (setq ok nil))
+                              (setq i (+ i 1)))
+                            ok)))
+                    (let ((i 1)
+                          (ok t))
+                      (while (and ok (< i n))
+                        (if (digit-char-p (substring body i (+ i 1)))
+                            nil
+                            (setq ok nil))
+                        (setq i (+ i 1)))
+                      ok)))
+            (let ((i 0)
+                  (ok t))
+              (while (and ok (< i n))
+                (if (alnum-char-p (substring body i (+ i 1)))
+                    nil
+                    (setq ok nil))
+                (setq i (+ i 1)))
+              ok)))))
+
+(defun entity-at-or-nil (text i)
+  (if (or (>= i (length text))
+          (not (string= (substring text i (+ i 1)) "&")))
+      '()
+      (let ((semi (find-char-from text ";" (+ i 1))))
+        (if (null semi)
+            '()
+            (let ((body (substring text (+ i 1) semi)))
+              (if (entity-body-valid-p body)
+                  (list semi (substring text i (+ semi 1)))
+                  '()))))))
+
 (defun html-escape (s)
   (let ((text (safe-text s))
         (i 0)
         (out ""))
     (while (< i (length text))
-      (let ((ch (substring text i (+ i 1))))
+      (let ((ch (substring text i (+ i 1)))
+            (ent (entity-at-or-nil text i)))
         (cond
+         ((and (string= ch "&") (not (null ent)))
+          (setq out (string-append out (second ent)))
+          (setq i (first ent)))
          ((string= ch "&") (setq out (string-append out "&amp;")))
          ((string= ch "<") (setq out (string-append out "&lt;")))
          ((string= ch ">") (setq out (string-append out "&gt;")))
