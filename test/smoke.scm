@@ -743,6 +743,14 @@
                    (defun collect (a &rest r)
                      (cons a r))
                    (collect 1 2 3)))
+(check '(1 2 3) '(progn
+                   (defun collect-all args args)
+                   (collect-all 1 2 3)))
+(check '(2 3) '(progn
+                 (defun collect-tail (a . rest) rest)
+                 (collect-tail 1 2 3)))
+(check '(x y) '((lambda args args) 'x 'y))
+(check '(b c) '((lambda (a . rest) rest) 'a 'b 'c))
 (check 42 '(progn
              (defmacro inc2 (x)
                (list '+ x 2))

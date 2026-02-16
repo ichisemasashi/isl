@@ -249,6 +249,7 @@
 (define (parse-params params)
   (cond
    ((symbol? params)
+    ;; Variadic shorthand: (defun f args ...)
     (list '() params))
    ((list? params)
     (let loop ((xs params) (required '()))
@@ -262,6 +263,21 @@
         (loop (cdr xs) (cons (car xs) required)))
        (else
         (runtime-raise 'invalid-params "parameter must be symbol" (car xs))))))
+   ((pair? params)
+    ;; Dotted variadic form: (a b . rest)
+    (let dotted-loop ((xs params) (required '()))
+      (cond
+       ((pair? xs)
+        (let ((x (car xs)))
+          (unless (symbol? x)
+            (runtime-raise 'invalid-params "parameter must be symbol" x))
+          (when (or (eq? x '&optional) (eq? x '&rest) (eq? x '&body))
+            (runtime-raise 'invalid-params "lambda-list keywords are not allowed in dotted parameter prefix" params))
+          (dotted-loop (cdr xs) (cons x required))))
+       ((symbol? xs)
+        (list (reverse required) xs))
+       (else
+        (runtime-raise 'invalid-params "invalid dotted parameter list tail" xs)))))
    (else
     (runtime-raise 'invalid-params "invalid parameter list" params))))
 
