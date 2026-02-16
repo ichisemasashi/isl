@@ -9,6 +9,8 @@
 ;;   (block-line-block pos lines)
 ;;   (block-table pos headers aligns rows caption id classes attrs)
 ;;   (block-div pos blocks id classes attrs)
+;;   (block-math pos text)
+;;   (block-raw pos kind text)
 
 (defun make-block-heading (pos level inlines id classes attrs)
   (list 'block-heading pos level inlines id classes attrs))
@@ -39,6 +41,12 @@
 
 (defun make-block-div (pos blocks id classes attrs)
   (list 'block-div pos blocks id classes attrs))
+
+(defun make-block-math (pos text)
+  (list 'block-math pos text))
+
+(defun make-block-raw (pos kind text)
+  (list 'block-raw pos kind text))
 
 (defun block-kind (b) (first b))
 (defun block-pos (b) (second b))
@@ -81,6 +89,9 @@
 (defun block-div-id (b) (fourth b))
 (defun block-div-classes (b) (fifth b))
 (defun block-div-attrs (b) (sixth b))
+(defun block-math-text (b) (third b))
+(defun block-raw-kind (b) (third b))
+(defun block-raw-text (b) (fourth b))
 
 ;; List item:
 ;;   (list-item pos blocks task-state)
@@ -113,6 +124,8 @@
 ;;   (inline-sup pos children)
 ;;   (inline-mark pos children)
 ;;   (inline-abbr pos text title)
+;;   (inline-math pos text display)
+;;   (inline-raw pos kind text)
 
 (defun make-inline-text (pos text)
   (list 'inline-text pos text))
@@ -150,6 +163,12 @@
 (defun make-inline-abbr (pos text title)
   (list 'inline-abbr pos text title))
 
+(defun make-inline-math (pos text display)
+  (list 'inline-math pos text display))
+
+(defun make-inline-raw (pos kind text)
+  (list 'inline-raw pos kind text))
+
 (defun inline-kind (n) (first n))
 (defun inline-pos (n) (second n))
 (defun inline-text-value (n) (third n))
@@ -167,3 +186,7 @@
 (defun inline-span-attrs (n) (sixth n))
 (defun inline-abbr-text (n) (third n))
 (defun inline-abbr-title (n) (fourth n))
+(defun inline-math-text (n) (third n))
+(defun inline-math-display (n) (fourth n))
+(defun inline-raw-kind (n) (third n))
+(defun inline-raw-text (n) (fourth n))

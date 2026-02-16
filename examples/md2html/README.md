@@ -51,6 +51,12 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
   - `phase6_abbreviations_and_refs`
   - `phase6_autolink_and_escapable`
   - `phase6_spaced_reference_links`
+  - `phase7_tex_math_dollars`
+  - `phase7_tex_math_single_backslash`
+  - `phase7_tex_math_double_backslash`
+  - `phase7_raw_html`
+  - `phase7_raw_tex`
+  - `phase7_latex_macros`
 
 ## 実装済み基盤
 
@@ -187,6 +193,15 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 追加環境変数:
 - `MD2HTML_SMART=0|1` (default: `1`)
 - `MD2HTML_OLD_DASHES=0|1` (default: `0`)
+
+## 実装済み Markdown（Phase 7）
+
+- `tex_math_dollars`
+- `tex_math_single_backslash`
+- `tex_math_double_backslash`
+- `raw_html`
+- `raw_tex`
+- `latex_macros`
 
 ## ディレクトリ構成
 
