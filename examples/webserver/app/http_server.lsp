@@ -172,6 +172,10 @@
   (let ((p (string-index "?" target)))
     (if (null p) target (substring target 0 p))))
 
+(defun ws-target-query (target)
+  (let ((p (string-index "?" target)))
+    (if (null p) "" (substring target (+ p 1) (length target)))))
+
 (defun ws-send-response (conn version status headers body send-body)
   (let* ((status-line (string-append version " "
                                      (format nil "~A" status)
@@ -224,6 +228,79 @@
             (setq acc (string-append acc "\n" line)))
         (setq line (read-line s #f)))
       acc)))
+
+(defun ws-read-file-raw (path)
+  (with-open-file (s path :direction :input)
+    (let ((ch (read-char s #f))
+          (acc ""))
+      (while (not (null ch))
+        (setq acc (string-append acc (string ch)))
+        (setq ch (read-char s #f)))
+      acc)))
+
+(defun ws-write-file-raw (path text)
+  (with-open-file (s path :direction :output :if-exists :overwrite)
+    (format s "~A" text)))
+
+(defun ws-delete-file-if-exists (path)
+  (if (null (probe-file path))
+      nil
+      (delete-file path)))
+
+(defun ws-temp-file (prefix suffix)
+  (string-append "/tmp/" prefix "-"
+                 (format nil "~A" (get-universal-time))
+                 "-"
+                 (format nil "~A" (get-internal-run-time))
+                 suffix))
+
+(defun ws-split-lines (s)
+  (let ((i 0)
+        (start 0)
+        (acc '()))
+    (while (< i (length s))
+      (if (string= (substring s i (+ i 1)) "\n")
+          (progn
+            (setq acc (cons (ws-strip-cr (substring s start i)) acc))
+            (setq start (+ i 1)))
+          nil)
+      (setq i (+ i 1)))
+    (if (< start (length s))
+        (setq acc (cons (ws-strip-cr (substring s start (length s))) acc))
+        nil)
+    (ws-reverse acc)))
+
+(defun ws-cgi-split-header-body (raw)
+  (let ((p-crlf (string-index "\r\n\r\n" raw)))
+    (if (null p-crlf)
+        (let ((p-lf (string-index "\n\n" raw)))
+          (if (null p-lf)
+              (list raw "")
+              (list (substring raw 0 p-lf)
+                    (substring raw (+ p-lf 2) (length raw)))))
+        (list (substring raw 0 p-crlf)
+              (substring raw (+ p-crlf 4) (length raw))))))
+
+(defun ws-cgi-header-get (headers key)
+  (let ((k (ws-ascii-downcase key))
+        (xs headers)
+        (found '()))
+    (while (and (null found) (not (null xs)))
+      (if (string= (car (car xs)) k)
+          (setq found (second (car xs)))
+          nil)
+      (setq xs (cdr xs)))
+    found))
+
+(defun ws-cgi-parse-status (status-line)
+  (if (null status-line)
+      200
+      (let ((p (string-index " " status-line)))
+        (if (null p)
+            (let ((n (ws-parse-int status-line)))
+              (if (null n) 500 n))
+            (let ((n (ws-parse-int (substring status-line 0 p))))
+              (if (null n) 500 n))))))
 
 (defun ws-http-error-response (conn version status keep-alive body)
   (ws-send-response
@@ -284,6 +361,145 @@
                             (mime (ws-static-mime-type candidate)))
                         (list 'ok candidate mime body)))))))))
 
+(defun ws-cgi-request-path-p (path)
+  (ws-starts-with path "/cgi-bin/"))
+
+(defun ws-cgi-script-resolvable-p (cgi-bin-dir rel-path abs-script)
+  (if (or (not (ws-starts-with abs-script (string-append cgi-bin-dir "/")))
+          (ws-contains rel-path "..")
+          (ws-contains rel-path "\\")
+          (ws-contains rel-path "'"))
+      #f
+      (let ((parts (ws-split-path rel-path))
+            (cur cgi-bin-dir)
+            (ok #t))
+        (while (and ok (not (null parts)))
+          (setq cur (string-append cur "/" (car parts)))
+          (if (= (system (string-append "test -L " (ws-shell-quote cur))) 0)
+              (setq ok #f)
+              nil)
+          (setq parts (cdr parts)))
+        (if (not ok)
+            #f
+            (= (system (string-append "test -f " (ws-shell-quote abs-script)
+                                      " && test -x " (ws-shell-quote abs-script)
+                                      " && test ! -L " (ws-shell-quote abs-script)))
+               0)))))
+
+(defun ws-resolve-cgi-script (cfg target-path)
+  (if (not (ws-cgi-request-path-p target-path))
+      (list 'not-cgi)
+      (let* ((cgi-bin-dir (ws-config-get cfg 'cgi_bin_dir))
+             (prefix-len (length "/cgi-bin/"))
+             (rel-path (substring target-path prefix-len (length target-path)))
+             (abs-script (ws-normalize-path (string-append cgi-bin-dir "/" rel-path))))
+        (if (= (length rel-path) 0)
+            (list 'error 404 "not found\n")
+            (if (ws-cgi-script-resolvable-p cgi-bin-dir rel-path abs-script)
+                (list 'ok abs-script)
+                (list 'error 404 "not found\n"))))))
+
+(defun ws-parse-cgi-headers (header-text)
+  (let ((lines (ws-split-lines header-text))
+        (headers '()))
+    (while (not (null lines))
+      (let ((line (car lines)))
+        (if (string= line "")
+            nil
+            (let ((p (string-index ":" line)))
+              (if (null p)
+                  nil
+                  (let ((name (ws-ascii-downcase (ws-trim (substring line 0 p))))
+                        (value (ws-trim (substring line (+ p 1) (length line)))))
+                    (setq headers (cons (list name value) headers))))))
+        (setq lines (cdr lines))))
+    (ws-reverse headers)))
+
+(defun ws-remove-hop-by-hop-cgi-headers (headers)
+  (let ((out '())
+        (xs headers))
+    (while (not (null xs))
+      (let* ((h (car xs))
+             (k (car h)))
+        (if (or (string= k "status")
+                (string= k "content-length")
+                (string= k "connection"))
+            nil
+            (setq out (cons h out))))
+      (setq xs (cdr xs)))
+    (ws-reverse out)))
+
+(defun ws-run-cgi-script (cfg req script-path)
+  (let* ((target (ws-request-get req 'target))
+         (method (ws-request-get req 'method))
+         (version (ws-request-get req 'version))
+         (headers (ws-request-get req 'headers))
+         (body (ws-request-get req 'body))
+         (query (ws-target-query target))
+         (content-type (ws-header-get headers "content-type"))
+         (stdin-path (ws-temp-file "webserver-cgi-in" ".tmp"))
+         (stdout-path (ws-temp-file "webserver-cgi-out" ".tmp"))
+         (cmd (string-append
+               (ws-shell-quote script-path)
+               " < " (ws-shell-quote stdin-path)
+               " > " (ws-shell-quote stdout-path))))
+    (ws-write-file-raw stdin-path body)
+    (setenv "REQUEST_METHOD" method)
+    (setenv "QUERY_STRING" query)
+    (setenv "CONTENT_LENGTH" (format nil "~A" (length body)))
+    (setenv "CONTENT_TYPE" (if (null content-type) "" content-type))
+    (setenv "SCRIPT_NAME" (ws-target-path-only target))
+    (setenv "SERVER_PROTOCOL" version)
+    (setenv "SERVER_PORT" (format nil "~A" (ws-config-get cfg 'listen_port)))
+    (setenv "GATEWAY_INTERFACE" "CGI/1.1")
+    (let ((status (system cmd)))
+      (if (not (= status 0))
+          (progn
+            (ws-delete-file-if-exists stdin-path)
+            (ws-delete-file-if-exists stdout-path)
+            (list 'error 500 "cgi execution failed\n"))
+          (let* ((raw (ws-read-file-text stdout-path))
+                 (parts (ws-cgi-split-header-body raw))
+                 (hdr-text (car parts))
+                 (resp-body (second parts))
+                 (resp-headers (ws-parse-cgi-headers hdr-text))
+                 (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
+            (ws-delete-file-if-exists stdin-path)
+            (ws-delete-file-if-exists stdout-path)
+            (list 'ok resp-status resp-headers resp-body))))))
+
+(defun ws-handle-cgi-request (conn cfg req)
+  (let* ((method (ws-request-get req 'method))
+         (version (ws-request-get req 'version))
+         (keep-alive (ws-request-get req 'keep-alive))
+         (path (ws-target-path-only (ws-request-get req 'target)))
+         (resolved (ws-resolve-cgi-script cfg path)))
+    (if (eq (car resolved) 'ok)
+        (let ((run (ws-run-cgi-script cfg req (second resolved))))
+          (if (eq (car run) 'ok)
+              (let* ((status (second run))
+                     (raw-headers (third run))
+                     (body (fourth run))
+                     (send-body (not (string= method "HEAD")))
+                     (filtered (ws-remove-hop-by-hop-cgi-headers raw-headers))
+                     (content-type (ws-cgi-header-get filtered "content-type"))
+                     (headers (append
+                               (if (null content-type)
+                                   (list (list "Content-Type" "text/plain; charset=UTF-8"))
+                                   '())
+                               filtered
+                               (list
+                                (list "Content-Length" (format nil "~A" (length body)))
+                                (list "Connection" (if keep-alive "keep-alive" "close"))))))
+                (ws-send-response conn version status headers body send-body)
+                keep-alive)
+              (progn
+                (ws-http-error-response conn version 500 keep-alive "cgi execution failed\n")
+                keep-alive)))
+        (progn
+          (ws-http-error-response conn version (second resolved) keep-alive (third resolved))
+          keep-alive))))
+
 (defun ws-handle-static-request (conn cfg req)
   (let* ((method (ws-request-get req 'method))
          (target (ws-request-get req 'target))
@@ -330,26 +546,34 @@
     keep-alive))
 
 (defun ws-handle-http-request (conn cfg req)
-  (let ((method (ws-request-get req 'method))
-        (version (ws-request-get req 'version))
-        (keep-alive (ws-request-get req 'keep-alive)))
-    (if (or (string= method "GET") (string= method "HEAD"))
-        (ws-handle-static-request conn cfg req)
-        (if (string= method "POST")
-            (ws-handle-post-request conn req)
-            (progn
-              (ws-send-response
-               conn
-               version
-               405
-               (list
-                (list "Content-Type" "text/plain; charset=UTF-8")
-                (list "Content-Length" "19")
-                (list "Connection" (if keep-alive "keep-alive" "close"))
-                (list "Allow" "GET, HEAD, POST"))
-               "method not allowed\n"
-               #t)
-              keep-alive)))))
+  (let* ((method (ws-request-get req 'method))
+         (version (ws-request-get req 'version))
+         (keep-alive (ws-request-get req 'keep-alive))
+         (path (ws-target-path-only (ws-request-get req 'target)))
+         (cgi-enabled (ws-config-get cfg 'cgi_enabled)))
+    (if (or (string= method "GET") (string= method "HEAD") (string= method "POST"))
+        (if (ws-cgi-request-path-p path)
+            (if cgi-enabled
+                (ws-handle-cgi-request conn cfg req)
+                (progn
+                  (ws-http-error-response conn version 404 keep-alive "not found\n")
+                  keep-alive))
+            (if (or (string= method "GET") (string= method "HEAD"))
+                (ws-handle-static-request conn cfg req)
+                (ws-handle-post-request conn req)))
+        (progn
+          (ws-send-response
+           conn
+           version
+           405
+           (list
+            (list "Content-Type" "text/plain; charset=UTF-8")
+            (list "Content-Length" "19")
+            (list "Connection" (if keep-alive "keep-alive" "close"))
+            (list "Allow" "GET, HEAD, POST"))
+           "method not allowed\n"
+           #t)
+          keep-alive))))
 
 (defun ws-handle-connection (cfg conn)
   (let ((alive #t))
