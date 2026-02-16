@@ -64,6 +64,13 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
   - 例: `- [ ]` / `- [x]`
 - `lists_without_preceding_blankline`
   - 段落直後に空行なしでリスト開始してもリストとして解釈
+- ネストしたリスト
+  - 親 list item 内でインデントされた子リストを解釈
+- 複数段落の list item
+  - list item 内の空行区切り段落を保持
+- definition の複数ブロック
+  - 1つの `: definition` に対して複数段落/リストを保持
+  - 同一 term に複数の `: definition` を許可
 
 ## ディレクトリ構成
 

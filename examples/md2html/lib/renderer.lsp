@@ -64,8 +64,17 @@
    (t "")))
 
 (defun render-list-item (item)
-  (let ((task (list-item-task-state item))
-        (body (render-inline-nodes (list-item-inlines item))))
+  (let* ((task (list-item-task-state item))
+         (blocks (list-item-blocks item))
+         (single-inline-body
+          (if (and (= (length blocks) 1)
+                   (eq (block-kind (first blocks)) 'block-paragraph))
+              (render-inline-nodes (block-inlines (first blocks)))
+              '()))
+         (body
+          (if (null single-inline-body)
+              (render-html-document blocks)
+              single-inline-body)))
     (if (eq task 'none)
         (string-append "<li>" body "</li>")
         (if (eq task 'checked)
@@ -111,7 +120,17 @@
   (let ((rest defs)
         (out ""))
     (while (not (null rest))
-      (let ((part (string-append "<dd>" (render-inline-nodes (first rest)) "</dd>")))
+      (let* ((blocks (first rest))
+             (single-inline-body
+              (if (and (= (length blocks) 1)
+                       (eq (block-kind (first blocks)) 'block-paragraph))
+                  (render-inline-nodes (block-inlines (first blocks)))
+                  '()))
+             (body
+              (if (null single-inline-body)
+                  (render-html-document blocks)
+                  single-inline-body))
+             (part (string-append "<dd>" body "</dd>")))
         (setq out (if (= (length out) 0) part (string-append out "\n" part))))
       (setq rest (cdr rest)))
     out))

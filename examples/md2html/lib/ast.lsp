@@ -39,17 +39,17 @@
 (defun block-deflist-items (b) (third b))
 
 ;; List item:
-;;   (list-item pos inlines task-state)
+;;   (list-item pos blocks task-state)
 ;; task-state: 'none | 'unchecked | 'checked
-(defun make-list-item (pos inlines task-state)
-  (list 'list-item pos inlines task-state))
+(defun make-list-item (pos blocks task-state)
+  (list 'list-item pos blocks task-state))
 (defun list-item-pos (i) (second i))
-(defun list-item-inlines (i) (third i))
+(defun list-item-blocks (i) (third i))
 (defun list-item-task-state (i) (fourth i))
 
 ;; Definition list item:
 ;;   (def-item pos term-inlines defs)
-;; defs: list of inline node lists
+;; defs: list of block lists
 (defun make-def-item (pos term-inlines defs)
   (list 'def-item pos term-inlines defs))
 (defun def-item-pos (i) (second i))
