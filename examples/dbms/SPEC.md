@@ -1,123 +1,123 @@
-# DBMS Fixed Specification (MVP)
+# DBMS 固定仕様
 
-## 1. Scope
-This document fixes the specification for an ISL implementation of a small relational DBMS under `examples/dbms`.
-It defines two profiles:
-- `MVP Core` (minimum SQL engine)
-- `Wiki Compatibility v1` (replacement target for `examples/wiki` PostgreSQL usage)
+## 1. スコープ
+本ドキュメントは、`examples/dbms` 配下に実装する ISL 製の小規模リレーショナル DBMS の仕様を固定します。
+本仕様は以下の 2 プロファイルを定義します。
+- `MVP Core`（最小SQLエンジン）
+- `Wiki Compatibility v1`（`examples/wiki` の PostgreSQL 利用を代替するための互換プロファイル）
 
-`MVP Core` included SQL statements:
+`MVP Core` に含める SQL 文:
 - `CREATE TABLE`
 - `INSERT`
 - `SELECT`
 - `UPDATE`
 - `DELETE`
 
-Out of scope in `MVP Core`:
+`MVP Core` での対象外:
 - `ALTER TABLE`, `DROP TABLE`
-- `JOIN`, subquery, aggregation (`COUNT`, `SUM`, ...)
-- transaction control (`BEGIN`, `COMMIT`, `ROLLBACK`)
-- concurrent writer support
+- `JOIN`、サブクエリ、集約（`COUNT`, `SUM`, ...）
+- トランザクション制御（`BEGIN`, `COMMIT`, `ROLLBACK`）
+- 複数ライタの同時実行サポート
 
-## 2. Language and Runtime Policy
-- Implementation language is **ISL only** for DBMS code under `examples/dbms`.
-- External DB (SQLite/Postgres/MySQL) must not be used for DBMS core logic.
-- Existing ISL features are sufficient for MVP:
-  - file IO (`with-open-file`, `read`, `format`)
-  - string processing (`string-index`, `substring`, `string-append`)
-  - in-memory structures (list/vector/hash table)
+## 2. 言語・ランタイム方針
+- `examples/dbms` 配下の DBMS コードは **ISL のみ** で実装する。
+- DBMS コアロジックに外部 DB（SQLite/Postgres/MySQL）を使わない。
+- 既存 ISL 機能で MVP 実装は可能:
+  - ファイルI/O（`with-open-file`, `read`, `format`）
+  - 文字列処理（`string-index`, `substring`, `string-append`）
+  - メモリ構造（list/vector/hash table）
 
-### 2.1 Capability Verdict
-For both `MVP Core` and `Wiki Compatibility v1`, no interpreter/compiler extension is required at spec time.
-Implementation uses existing ISL facilities (parser/executor in Lisp code, file persistence, time API).
+### 2.1 実装可能性判定
+`MVP Core` と `Wiki Compatibility v1` の両方について、仕様策定時点では interpreter/compiler 拡張は不要と判断します。
+実装は既存 ISL 機能（Lispコードによるパーサ/実行器、ファイル永続化、時刻 API）を使用します。
 
-### 2.2 Extension Rule
-If implementation later proves impossible only with current ISL features, extend both:
-- interpreter path (`./bin/isl` runtime)
-- compiler/runtime path (`./bin/islc-run` runtime)
+### 2.2 拡張ルール
+実装時に、既存 ISL 機能だけでは実現不可能と判明した場合は、以下を **両方** 拡張すること。
+- interpreter 経路（`./bin/isl`）
+- compiler/runtime 経路（`./bin/islc-run`）
 
-Any such extension must include:
-- same external behavior in both paths
-- conformance tests for each new primitive
-- this spec update with exact semantic definition
+拡張時の必須条件:
+- 両経路で外部挙動が同一であること
+- 追加プリミティブごとの conformance テストを追加すること
+- 本仕様へ厳密な意味定義を追記すること
 
-## 3. Directory/Module Contract
-Target structure:
-- `examples/dbms/app/main.lsp` : CLI entry
-- `examples/dbms/app/sql_lexer.lsp` : tokenizer
-- `examples/dbms/app/sql_parser.lsp` : parser -> AST
-- `examples/dbms/app/engine.lsp` : statement execution
-- `examples/dbms/app/catalog.lsp` : schema metadata
-- `examples/dbms/app/storage.lsp` : file persistence
-- `examples/dbms/tests/` : unit/integration tests
-- `examples/dbms/storage/` : persisted data files
+## 3. ディレクトリ/モジュール契約
+目標構成:
+- `examples/dbms/app/main.lsp` : CLI エントリポイント
+- `examples/dbms/app/sql_lexer.lsp` : トークナイザ
+- `examples/dbms/app/sql_parser.lsp` : パーサ（AST生成）
+- `examples/dbms/app/engine.lsp` : 文実行器
+- `examples/dbms/app/catalog.lsp` : スキーマメタデータ管理
+- `examples/dbms/app/storage.lsp` : 永続化層
+- `examples/dbms/tests/` : 単体/結合テスト
+- `examples/dbms/storage/` : 永続データ
 
-## 4. Data Model
+## 4. データモデル
 
-### 4.1 Database
-- Single database per storage root.
-- Database name is fixed to `default` in MVP.
+### 4.1 データベース
+- ストレージルートごとに単一データベース。
+- MVP ではデータベース名を `default` 固定とする。
 
-### 4.2 Table
-Each table consists of:
-- table name
-- ordered columns
-- rows (unordered physically; logical order defined by query)
+### 4.2 テーブル
+テーブルは次で構成される:
+- テーブル名
+- 順序付きカラム定義
+- 行集合（物理順は不定、論理順はクエリで決定）
 
-### 4.3 Column Types
-MVP supports 3 types only:
+### 4.3 カラム型
+MVP でサポートする型は 3 種のみ:
 - `INT`
 - `TEXT`
 - `BOOL`
 
-No implicit cast except:
-- literal `TRUE/FALSE` -> `BOOL`
-- integer literal -> `INT`
-- quoted literal `'...'` -> `TEXT`
+暗黙キャストは次のみ許可:
+- `TRUE/FALSE` リテラル -> `BOOL`
+- 整数リテラル -> `INT`
+- クォート文字列 `'...'` -> `TEXT`
 
-### 4.4 Constraints
-MVP constraints:
-- `PRIMARY KEY` (single column only)
+### 4.4 制約
+MVP の制約:
+- `PRIMARY KEY`（単一カラムのみ）
 - `NOT NULL`
 
-Constraint behavior:
-- `PRIMARY KEY` implies `NOT NULL`
-- duplicate primary key on `INSERT`/`UPDATE` is error
+制約の挙動:
+- `PRIMARY KEY` は `NOT NULL` を内包する
+- `INSERT`/`UPDATE` で主キー重複はエラー
 
-## 5. SQL Grammar (MVP)
-Case-insensitive keywords. Identifiers are case-sensitive.
+## 5. SQL 文法（MVP）
+キーワードは大文字小文字を区別しない。識別子は大文字小文字を区別する。
 
 ### 5.1 CREATE TABLE
-Form:
+形式:
 `CREATE TABLE <table> (<col-def> [, <col-def> ...]);`
 
 `<col-def>`:
 `<col-name> <type> [PRIMARY KEY] [NOT NULL]`
 
-Restrictions:
-- exactly zero or one `PRIMARY KEY` column allowed
-- duplicate column names are error
+制約:
+- `PRIMARY KEY` は 0 個または 1 個のみ
+- カラム名重複はエラー
 
 ### 5.2 INSERT
-Form A:
+形式A:
 `INSERT INTO <table> VALUES (<expr> [, <expr> ...]);`
 
-Form B:
+形式B:
 `INSERT INTO <table> (<col> [, <col> ...]) VALUES (<expr> [, <expr> ...]);`
 
-Restrictions:
-- exactly one row per statement in MVP
-- column/value count mismatch is error
+制約:
+- MVP では 1 文につき 1 行のみ
+- カラム数と値数の不一致はエラー
 
 ### 5.3 SELECT
-Form:
+形式:
 `SELECT <select-list> FROM <table> [WHERE <predicate>] [ORDER BY <col> [ASC|DESC]];`
 
 `<select-list>`:
 - `*`
 - `<col> [, <col> ...]`
 
-`<predicate>` (MVP):
+`<predicate>`（MVP）:
 - `<col> = <expr>`
 - `<col> != <expr>`
 - `<col> < <expr>`
@@ -125,50 +125,50 @@ Form:
 - `<col> > <expr>`
 - `<col> >= <expr>`
 
-Logical operators (`AND`, `OR`) are out of scope for MVP.
+論理演算子（`AND`, `OR`）は MVP では対象外。
 
 ### 5.4 UPDATE
-Form:
+形式:
 `UPDATE <table> SET <col>=<expr> [, <col>=<expr> ...] [WHERE <predicate>];`
 
-- no `WHERE` means all rows
-- constraints validated after assignment per target row
+- `WHERE` 省略時は全行対象
+- 制約検証は対象行への代入後に行う
 
 ### 5.5 DELETE
-Form:
+形式:
 `DELETE FROM <table> [WHERE <predicate>];`
 
-- no `WHERE` means all rows
+- `WHERE` 省略時は全行削除
 
-## 6. Expression and Comparison Semantics
-Supported literals:
-- `INT`: decimal integer (`-? [0-9]+`)
-- `TEXT`: single-quoted string (no escape support in MVP)
+## 6. 式と比較の意味論
+サポートするリテラル:
+- `INT`: 10進整数（`-? [0-9]+`）
+- `TEXT`: 単一引用符文字列（MVP ではエスケープ非対応）
 - `BOOL`: `TRUE` / `FALSE`
 - `NULL`: `NULL`
 
-Comparison rules:
-- type mismatch in comparison is error
-- comparison with `NULL` always false in MVP
-- `=` and `!=` on same-typed values only
+比較規則:
+- 型不一致比較はエラー
+- `NULL` を含む比較は MVP では常に偽
+- `=` と `!=` は同一型同士のみ
 
-## 7. Result Contract
+## 7. 結果契約
 
-### 7.1 SELECT output
-Engine returns:
-- ordered column list
-- row list (`list` of row vectors/lists)
+### 7.1 SELECT の返却
+エンジンは以下を返す:
+- 順序付きカラム一覧
+- 行リスト（行を表す vector/list の list）
 
-CLI prints tabular text (human readable); tests validate structured value.
+CLI は人間可読の表形式で表示し、テストは構造化値で検証する。
 
-### 7.2 Mutating statements
-`INSERT/UPDATE/DELETE` returns affected row count as integer.
-`CREATE TABLE` returns symbol `ok`.
+### 7.2 更新系文の返却
+`INSERT/UPDATE/DELETE` は影響行数（整数）を返す。
+`CREATE TABLE` はシンボル `ok` を返す。
 
-## 8. Error Contract
-All SQL execution errors must be signaled with stable error code + message.
+## 8. エラー契約
+SQL 実行エラーは、安定したエラーコード + メッセージで通知すること。
 
-Minimum error codes:
+最小エラーコード:
 - `dbms/parse-error`
 - `dbms/table-not-found`
 - `dbms/column-not-found`
@@ -179,74 +179,74 @@ Minimum error codes:
 - `dbms/primary-key-violation`
 - `dbms/arity-mismatch`
 
-## 9. Persistence Contract
+## 9. 永続化契約
 
-### 9.1 Files
-Under `examples/dbms/storage/`:
-- `catalog.lspdata` : table schemas
-- `table_<name>.lspdata` : row data
+### 9.1 ファイル
+`examples/dbms/storage/` 配下:
+- `catalog.lspdata` : テーブルスキーマ
+- `table_<name>.lspdata` : 行データ
 
-### 9.2 Encoding
-- Use ISL-readable s-expression data so `read` can load directly.
+### 9.2 エンコーディング
+- `read` で直接ロード可能な ISL の S式データ形式を使う。
 
-### 9.3 Durability
-For each write operation:
-1. write full content to temporary file
-2. atomically replace target file
+### 9.3 耐久性
+各書き込み操作で以下を行う:
+1. 一時ファイルへ全内容を書き込む
+2. 目標ファイルへ原子的に置換する
 
-If atomic rename is unavailable in pure ISL on current platform, define fallback with explicit warning and test.
+現行プラットフォームで pure ISL による原子的 rename が使えない場合は、警告付きのフォールバックとテストを定義する。
 
-## 10. Ordering and Determinism
-- Without `ORDER BY`, row order is insertion order.
-- With `ORDER BY`, stable sort on target column.
-- Equal keys keep previous relative order.
+## 10. 順序と決定性
+- `ORDER BY` なしでは挿入順を返す。
+- `ORDER BY` ありでは対象カラムで安定ソートする。
+- 同値キーの相対順は維持する。
 
-## 11. Test Acceptance Criteria (for this fixed spec)
-At minimum, tests must include:
-- each statement success path
-- each error code at least one case
-- persistence reload test (`CREATE/INSERT` then process restart equivalent)
-- primary key uniqueness on `INSERT` and `UPDATE`
-- `WHERE` comparisons for INT/TEXT/BOOL
+## 11. テスト受け入れ基準（本固定仕様）
+最低限、以下を含める:
+- 各 SQL 文の成功ケース
+- 各エラーコードのケースを少なくとも1つ
+- 永続化再読込テスト（`CREATE/INSERT` 後に再起動相当）
+- `INSERT` と `UPDATE` での主キー一意性検証
+- `INT/TEXT/BOOL` に対する `WHERE` 比較
 
-Pass criteria:
-- all tests under `examples/dbms/tests` pass via `./bin/isl ...`
-- no behavior contradicts this specification
+合格条件:
+- `examples/dbms/tests` 配下テストが `./bin/isl ...` で全通
+- 本仕様と矛盾する挙動がない
 
-## 12. Non-Goals / Deferred (`MVP Core`)
-Deferred in `MVP Core`:
-- multi-table query
-- transaction/lock
-- index other than primary-key hash assist
-- SQL escaping and full lexer compliance
+## 12. 非目標 / 後続対応（`MVP Core`）
+`MVP Core` では後続対応とする項目:
+- 複数テーブルクエリ
+- トランザクション/ロック
+- 主キー補助以外のインデックス
+- SQL エスケープの完全対応と完全準拠レキサ
 
-## 13. Gap Check Against `examples/wiki` (PostgreSQL)
-Current `MVP Core` is **insufficient** as a drop-in replacement for wiki DB usage.
+## 13. `examples/wiki`（PostgreSQL）との差分確認
+現行 `MVP Core` は、wiki の DB 利用をそのまま置き換えるには **不十分**。
 
-Missing capabilities observed from wiki schema and queries:
-- multi-table query (`JOIN`)
-- subquery (`SELECT ...`, `NOT EXISTS`, scalar subquery in select-list)
-- multi-key sort (`ORDER BY a DESC, b ASC`)
-- row limit (`LIMIT 1`)
-- logical predicates (`OR`)
-- function-like expressions (`LOWER`, `POSITION`, `COALESCE`, `MAX`, `TO_CHAR`)
-- CTE (`WITH ...`)
+wiki のスキーマ・クエリから確認できた不足機能:
+- 複数テーブルクエリ（`JOIN`）
+- サブクエリ（`SELECT ...`, `NOT EXISTS`, select-list 内のスカラサブクエリ）
+- 複合キーソート（`ORDER BY a DESC, b ASC`）
+- 行数制限（`LIMIT 1`）
+- 論理述語（`OR`）
+- 関数的式（`LOWER`, `POSITION`, `COALESCE`, `MAX`, `TO_CHAR`）
+- CTE（`WITH ...`）
 - `INSERT ... SELECT`
 - `UPDATE ... FROM ... RETURNING`
-- richer DDL/constraints (`IF NOT EXISTS`, `UNIQUE`, composite unique, `CHECK`, `FOREIGN KEY ... ON DELETE ...`)
-- migration-related syntax (`ALTER TABLE ... DROP/ADD CONSTRAINT`)
-- conflict handling (`ON CONFLICT ... DO NOTHING`)
-- wiki schema types (`BIGINT`, `INTEGER`, `TIMESTAMPTZ`, auto-increment id)
+- DDL/制約の拡張（`IF NOT EXISTS`, `UNIQUE`, 複合一意, `CHECK`, `FOREIGN KEY ... ON DELETE ...`）
+- マイグレーション構文（`ALTER TABLE ... DROP/ADD CONSTRAINT`）
+- 衝突時制御（`ON CONFLICT ... DO NOTHING`）
+- wiki スキーマ型（`BIGINT`, `INTEGER`, `TIMESTAMPTZ`, 自動採番 id）
 
-Therefore, this spec adds `Wiki Compatibility v1` below.
+このため、以下の `Wiki Compatibility v1` を本仕様に追加する。
 
-## 14. Wiki Compatibility v1 (Required Additions)
-This profile is required to replace PostgreSQL for `examples/wiki` data paths.
+## 14. Wiki Compatibility v1（必須追加仕様）
+`examples/wiki` の DB 経路を置換するために必須。
 
-### 14.1 SQL Statements
-Required statement support:
+### 14.1 SQL 文
+必須サポート:
 - `CREATE TABLE [IF NOT EXISTS]`
-- `CREATE INDEX [IF NOT EXISTS]` (execution may be no-op, but must parse and succeed)
+- `CREATE INDEX [IF NOT EXISTS]`（実行は no-op 可。ただし parse と成功応答は必須）
 - `ALTER TABLE <table> DROP CONSTRAINT IF EXISTS <name>`
 - `ALTER TABLE <table> ADD CONSTRAINT <name> CHECK (...)`
 - `INSERT INTO ... VALUES ...`
@@ -257,80 +257,82 @@ Required statement support:
 - `DELETE FROM ... [WHERE ...]`
 - `WITH <name> AS (<subquery>) [, ...] <final-statement>`
 
-### 14.2 Query Features
-Required in `SELECT/UPDATE/DELETE`:
+### 14.2 クエリ機能
+`SELECT/UPDATE/DELETE` で必須:
 - `INNER JOIN ... ON ...`
-- `WHERE` with `AND` and `OR`
-- `ORDER BY` multiple keys with `ASC|DESC`
+- `WHERE` での `AND` と `OR`
+- 複数キー `ORDER BY`（`ASC|DESC`）
 - `LIMIT <int>`
-- scalar subquery in expression position
+- 式位置でのスカラサブクエリ
 - `EXISTS` / `NOT EXISTS`
 
-### 14.3 Expressions and Built-ins
-Required expression operators:
-- comparison: `= != < <= > >=`
-- boolean: `AND OR NOT`
-- null checks: `IS NULL`, `IS NOT NULL`
+### 14.3 式・組み込み
+必須演算子:
+- 比較: `= != < <= > >=`
+- 論理: `AND OR NOT`
+- null 判定: `IS NULL`, `IS NOT NULL`
 
-Required built-in SQL functions (exact names, case-insensitive):
+必須 SQL 関数（関数名は大文字小文字非依存）:
 - `LOWER(text) -> text`
-- `POSITION(substr IN text) -> int` (1-based, 0 when not found)
+- `POSITION(substr IN text) -> int`（1始まり。未検出は 0）
 - `COALESCE(a, b[, ...])`
-- `MAX(expr)` (aggregate; group-free usage required)
-- `TO_CHAR(timestamp, format)` with minimum format `'YYYY-MM-DD HH24:MI:SS'`
+- `MAX(expr)`（集約。非 GROUP 利用を必須）
+- `TO_CHAR(timestamp, format)`（最低限 `'YYYY-MM-DD HH24:MI:SS'` をサポート）
 
-### 14.4 Types (Wiki profile)
-Required logical types:
+### 14.4 型（Wikiプロファイル）
+必須論理型:
 - `BIGINT`
 - `INTEGER`
 - `TEXT`
 - `BOOL`
 - `TIMESTAMPTZ`
 
-Type alias policy:
-- `BIGSERIAL` accepted in DDL as `BIGINT` + auto-increment default.
+型エイリアス方針:
+- DDL の `BIGSERIAL` は `BIGINT` + 自動採番デフォルトとして扱う。
 
-### 14.5 DDL Constraints
-Required constraints:
-- `PRIMARY KEY` (single-column in this profile)
+### 14.5 DDL 制約
+必須制約:
+- `PRIMARY KEY`（本プロファイルでは単一カラム）
 - `NOT NULL`
-- `UNIQUE` (single and composite)
+- `UNIQUE`（単一/複合）
 - `CHECK (<predicate>)`
 - `FOREIGN KEY (<col>) REFERENCES <table>(<col>) ON DELETE CASCADE|SET NULL`
 
-Constraint enforcement timing:
-- on each mutating statement before persistence commit.
+制約検証タイミング:
+- 各更新系文の永続化コミット前に検証する。
 
-### 14.6 Timestamp/Auto-Update Semantics
-To replace wiki trigger usage without requiring procedural SQL:
-- `TIMESTAMPTZ DEFAULT now()` must be supported.
-- For table `pages`, when row is updated and column `updated_at` exists, engine must auto-set it to current timestamp if statement does not explicitly assign it.
+### 14.6 タイムスタンプ自動更新
+手続きSQLトリガを必須にしないため、次を仕様化する:
+- `TIMESTAMPTZ DEFAULT now()` をサポートする。
+- `pages` テーブル更新時、`updated_at` カラムが存在し、かつ文中で明示代入されない場合は、現在時刻を自動設定する。
 
-### 14.7 Transactions for Migration Scripts
-`BEGIN` and `COMMIT` must parse and execute.
-For v1 single-process engine, transaction behavior may be implemented as:
-- immediate mode with best-effort atomicity per statement, and
-- `BEGIN/COMMIT` treated as explicit batch boundary (no concurrent isolation guarantee).
+### 14.7 マイグレーション用トランザクション
+`BEGIN` と `COMMIT` を parse/実行可能にする。
+単一プロセス v1 エンジンでは以下実装を許容:
+- 文単位のベストエフォート原子性（immediate mode）
+- `BEGIN/COMMIT` は明示バッチ境界として扱う（同時実行分離は保証しない）
 
-### 14.8 Compatibility/Rewrite Boundary
-Allowed: small SQL rewrites in wiki app to avoid PostgreSQL-only procedural features.
-Not allowed:
-- behavior regression in wiki routes using page list/search/edit/new/media.
-- schema-level integrity weakening (slug uniqueness, revision uniqueness, media filename uniqueness, FK delete behavior).
+### 14.8 互換・リライト境界
+許容:
+- PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト
 
-### 14.9 Wiki Admin Backup/Restore Compatibility
-Wiki currently invokes PostgreSQL tools (`pg_dump`, `psql`) in admin routes.
-For DBMS replacement, provide equivalent workflow:
-- dump current DB state to a single file (s-expression or SQL-like format)
-- restore from that dump file
-- deterministic round-trip for wiki tables (`pages`, `page_revisions`, `media_assets`)
+不許容:
+- page list/search/edit/new/media ルートの挙動劣化
+- スキーマ整合性の弱化（slug 一意性、revision 一意性、media filename 一意性、FK の delete 挙動）
 
-Implementation note:
-- This may be exposed as DBMS-native utility/API and wiki app may switch from `pg_dump/psql` to that utility.
+### 14.9 Wiki 管理画面のバックアップ/リストア互換
+現行 wiki 管理ルートは PostgreSQL ツール（`pg_dump`, `psql`）を呼び出す。
+DBMS 置換時は等価ワークフローを提供する:
+- DB 状態を単一ファイルへダンプ（S式または SQL 互換形式）
+- そのダンプファイルからリストア
+- wiki テーブル（`pages`, `page_revisions`, `media_assets`）で決定的ラウンドトリップを保証
 
-## 15. Updated Non-Goals
-Still deferred after `Wiki Compatibility v1`:
-- full PostgreSQL compatibility
-- user-defined SQL functions/procedural language
-- general trigger engine
-- advanced planner/cost-based optimization
+実装メモ:
+- DBMS ネイティブ utility/API として提供し、wiki 側が `pg_dump/psql` から切替可能であること。
+
+## 15. 更新後の非目標
+`Wiki Compatibility v1` 後も後続対応とする:
+- PostgreSQL の完全互換
+- ユーザー定義 SQL 関数/手続き言語
+- 汎用トリガエンジン
+- 高度なプランナ/コストベース最適化
