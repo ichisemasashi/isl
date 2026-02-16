@@ -2,6 +2,22 @@
   (let ((v (getenv name)))
     (if (null v) "" v)))
 
+(defun last-index-of-char-local (s ch)
+  (let ((i (- (length s) 1))
+        (found '()))
+    (while (and (null found) (>= i 0))
+      (if (string= (substring s i (+ i 1)) ch)
+          (setq found i)
+          nil)
+      (setq i (- i 1)))
+    found))
+
+(defun path-dirname (p)
+  (let ((idx (last-index-of-char-local p "/")))
+    (if (or (null idx) (= idx 0))
+        ""
+        (substring p 0 idx))))
+
 (defun read-file-text (path)
   (with-open-file (s path :direction :input)
     (let ((line (read-line s #f))
@@ -51,7 +67,9 @@
         (input-path (env-or-empty "MD2HTML_INPUT_PATH"))
         (source ""))
     (if (string= mode "file")
-        (setq source (read-file-text input-path))
+        (progn
+          (setq source (read-file-text input-path))
+          (setenv "MD2HTML_SOURCE_DIR" (path-dirname input-path)))
         (if (string= mode "stdin")
             (setq source (read-stdin-text))
             (md-fail "E_USAGE" "input mode must be file or stdin" (md-pos 1 1 0) mode)))

@@ -2,6 +2,45 @@
   (let ((v (getenv name)))
     (if (null v) default v)))
 
+(defun rebase-relative-enabled-p ()
+  (string= (env-or-default "MD2HTML_REBASE_RELATIVE" "0") "1"))
+
+(defun starts-with-any (s prefixes)
+  (let ((r prefixes)
+        (ok nil))
+    (while (and (not ok) (not (null r)))
+      (if (starts-with s (first r))
+          (setq ok t)
+          nil)
+      (setq r (cdr r)))
+    ok))
+
+(defun trim-slash-both (s)
+  (let ((t s))
+    (while (and (> (length t) 0) (string= (substring t 0 1) "/"))
+      (setq t (substring t 1 (length t))))
+    (while (and (> (length t) 0) (string= (substring t (- (length t) 1) (length t)) "/"))
+      (setq t (substring t 0 (- (length t) 1))))
+    t))
+
+(defun relative-url-p (u)
+  (and (> (length u) 0)
+       (not (starts-with-any u '("http://" "https://" "mailto:" "data:" "/" "#" "file://")))))
+
+(defun rebase-url (u)
+  (if (or (not (rebase-relative-enabled-p))
+          (not (relative-url-p u)))
+      u
+      (let* ((prefix0 (env-or-default "MD2HTML_REBASE_PREFIX" ""))
+             (prefix (if (= (length prefix0) 0)
+                         (env-or-default "MD2HTML_SOURCE_DIR" "")
+                         prefix0))
+             (base (trim-slash-both prefix))
+             (tail (trim-slash-both u)))
+        (if (= (length base) 0)
+            u
+            (string-append "/" base "/" tail)))))
+
 (defun line-break-mode ()
   (let ((m (env-or-default "MD2HTML_LINE_BREAK_MODE" "normal")))
     (if (or (string= m "normal")
@@ -145,13 +184,13 @@
    ((eq (inline-kind n) 'inline-strong)
     (string-append "<strong>" (render-inline-nodes (inline-children n)) "</strong>"))
    ((eq (inline-kind n) 'inline-link)
-    (string-append "<a href=\"" (attr-escape (inline-link-url n)) "\""
+    (string-append "<a href=\"" (attr-escape (rebase-url (inline-link-url n))) "\""
                    (render-attr-bundle (inline-link-id n) (inline-link-classes n) (inline-link-attrs n))
                    ">"
                    (render-inline-nodes (inline-children n))
                    "</a>"))
    ((eq (inline-kind n) 'inline-image)
-    (string-append "<img src=\"" (attr-escape (inline-image-url n))
+    (string-append "<img src=\"" (attr-escape (rebase-url (inline-image-url n)))
                    "\" alt=\"" (attr-escape (inline-plain-text (inline-children n))) "\" />"))
    ((eq (inline-kind n) 'inline-span)
     (string-append "<span"
