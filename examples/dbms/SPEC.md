@@ -1,16 +1,19 @@
 # DBMS Fixed Specification (MVP)
 
 ## 1. Scope
-This document fixes the MVP specification for an ISL implementation of a small relational DBMS under `examples/dbms`.
+This document fixes the specification for an ISL implementation of a small relational DBMS under `examples/dbms`.
+It defines two profiles:
+- `MVP Core` (minimum SQL engine)
+- `Wiki Compatibility v1` (replacement target for `examples/wiki` PostgreSQL usage)
 
-Included SQL statements:
+`MVP Core` included SQL statements:
 - `CREATE TABLE`
 - `INSERT`
 - `SELECT`
 - `UPDATE`
 - `DELETE`
 
-Out of scope in MVP:
+Out of scope in `MVP Core`:
 - `ALTER TABLE`, `DROP TABLE`
 - `JOIN`, subquery, aggregation (`COUNT`, `SUM`, ...)
 - transaction control (`BEGIN`, `COMMIT`, `ROLLBACK`)
@@ -25,7 +28,8 @@ Out of scope in MVP:
   - in-memory structures (list/vector/hash table)
 
 ### 2.1 Capability Verdict
-For MVP (`CREATE/INSERT/SELECT/UPDATE/DELETE`), no interpreter/compiler extension is required.
+For both `MVP Core` and `Wiki Compatibility v1`, no interpreter/compiler extension is required at spec time.
+Implementation uses existing ISL facilities (parser/executor in Lisp code, file persistence, time API).
 
 ### 2.2 Extension Rule
 If implementation later proves impossible only with current ISL features, extend both:
@@ -209,10 +213,124 @@ Pass criteria:
 - all tests under `examples/dbms/tests` pass via `./bin/isl ...`
 - no behavior contradicts this specification
 
-## 12. Non-Goals / Deferred
-Deferred to next phase:
+## 12. Non-Goals / Deferred (`MVP Core`)
+Deferred in `MVP Core`:
 - multi-table query
 - transaction/lock
 - index other than primary-key hash assist
 - SQL escaping and full lexer compliance
 
+## 13. Gap Check Against `examples/wiki` (PostgreSQL)
+Current `MVP Core` is **insufficient** as a drop-in replacement for wiki DB usage.
+
+Missing capabilities observed from wiki schema and queries:
+- multi-table query (`JOIN`)
+- subquery (`SELECT ...`, `NOT EXISTS`, scalar subquery in select-list)
+- multi-key sort (`ORDER BY a DESC, b ASC`)
+- row limit (`LIMIT 1`)
+- logical predicates (`OR`)
+- function-like expressions (`LOWER`, `POSITION`, `COALESCE`, `MAX`, `TO_CHAR`)
+- CTE (`WITH ...`)
+- `INSERT ... SELECT`
+- `UPDATE ... FROM ... RETURNING`
+- richer DDL/constraints (`IF NOT EXISTS`, `UNIQUE`, composite unique, `CHECK`, `FOREIGN KEY ... ON DELETE ...`)
+- migration-related syntax (`ALTER TABLE ... DROP/ADD CONSTRAINT`)
+- conflict handling (`ON CONFLICT ... DO NOTHING`)
+- wiki schema types (`BIGINT`, `INTEGER`, `TIMESTAMPTZ`, auto-increment id)
+
+Therefore, this spec adds `Wiki Compatibility v1` below.
+
+## 14. Wiki Compatibility v1 (Required Additions)
+This profile is required to replace PostgreSQL for `examples/wiki` data paths.
+
+### 14.1 SQL Statements
+Required statement support:
+- `CREATE TABLE [IF NOT EXISTS]`
+- `CREATE INDEX [IF NOT EXISTS]` (execution may be no-op, but must parse and succeed)
+- `ALTER TABLE <table> DROP CONSTRAINT IF EXISTS <name>`
+- `ALTER TABLE <table> ADD CONSTRAINT <name> CHECK (...)`
+- `INSERT INTO ... VALUES ...`
+- `INSERT INTO ... SELECT ...`
+- `INSERT ... ON CONFLICT (<col>) DO NOTHING`
+- `SELECT ... FROM ...`
+- `UPDATE ... SET ... [FROM ...] [WHERE ...] [RETURNING ...]`
+- `DELETE FROM ... [WHERE ...]`
+- `WITH <name> AS (<subquery>) [, ...] <final-statement>`
+
+### 14.2 Query Features
+Required in `SELECT/UPDATE/DELETE`:
+- `INNER JOIN ... ON ...`
+- `WHERE` with `AND` and `OR`
+- `ORDER BY` multiple keys with `ASC|DESC`
+- `LIMIT <int>`
+- scalar subquery in expression position
+- `EXISTS` / `NOT EXISTS`
+
+### 14.3 Expressions and Built-ins
+Required expression operators:
+- comparison: `= != < <= > >=`
+- boolean: `AND OR NOT`
+- null checks: `IS NULL`, `IS NOT NULL`
+
+Required built-in SQL functions (exact names, case-insensitive):
+- `LOWER(text) -> text`
+- `POSITION(substr IN text) -> int` (1-based, 0 when not found)
+- `COALESCE(a, b[, ...])`
+- `MAX(expr)` (aggregate; group-free usage required)
+- `TO_CHAR(timestamp, format)` with minimum format `'YYYY-MM-DD HH24:MI:SS'`
+
+### 14.4 Types (Wiki profile)
+Required logical types:
+- `BIGINT`
+- `INTEGER`
+- `TEXT`
+- `BOOL`
+- `TIMESTAMPTZ`
+
+Type alias policy:
+- `BIGSERIAL` accepted in DDL as `BIGINT` + auto-increment default.
+
+### 14.5 DDL Constraints
+Required constraints:
+- `PRIMARY KEY` (single-column in this profile)
+- `NOT NULL`
+- `UNIQUE` (single and composite)
+- `CHECK (<predicate>)`
+- `FOREIGN KEY (<col>) REFERENCES <table>(<col>) ON DELETE CASCADE|SET NULL`
+
+Constraint enforcement timing:
+- on each mutating statement before persistence commit.
+
+### 14.6 Timestamp/Auto-Update Semantics
+To replace wiki trigger usage without requiring procedural SQL:
+- `TIMESTAMPTZ DEFAULT now()` must be supported.
+- For table `pages`, when row is updated and column `updated_at` exists, engine must auto-set it to current timestamp if statement does not explicitly assign it.
+
+### 14.7 Transactions for Migration Scripts
+`BEGIN` and `COMMIT` must parse and execute.
+For v1 single-process engine, transaction behavior may be implemented as:
+- immediate mode with best-effort atomicity per statement, and
+- `BEGIN/COMMIT` treated as explicit batch boundary (no concurrent isolation guarantee).
+
+### 14.8 Compatibility/Rewrite Boundary
+Allowed: small SQL rewrites in wiki app to avoid PostgreSQL-only procedural features.
+Not allowed:
+- behavior regression in wiki routes using page list/search/edit/new/media.
+- schema-level integrity weakening (slug uniqueness, revision uniqueness, media filename uniqueness, FK delete behavior).
+
+### 14.9 Wiki Admin Backup/Restore Compatibility
+Wiki currently invokes PostgreSQL tools (`pg_dump`, `psql`) in admin routes.
+For DBMS replacement, provide equivalent workflow:
+- dump current DB state to a single file (s-expression or SQL-like format)
+- restore from that dump file
+- deterministic round-trip for wiki tables (`pages`, `page_revisions`, `media_assets`)
+
+Implementation note:
+- This may be exposed as DBMS-native utility/API and wiki app may switch from `pg_dump/psql` to that utility.
+
+## 15. Updated Non-Goals
+Still deferred after `Wiki Compatibility v1`:
+- full PostgreSQL compatibility
+- user-defined SQL functions/procedural language
+- general trigger engine
+- advanced planner/cost-based optimization
