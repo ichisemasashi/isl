@@ -27,6 +27,12 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
   - `phase3_hard_line_breaks_mode`
   - `phase3_ignore_line_breaks_mode`
   - `phase3_east_asian_line_breaks_mode`
+  - `phase4_pipe_tables`
+  - `phase4_simple_tables`
+  - `phase4_multiline_tables`
+  - `phase4_grid_tables`
+  - `phase4_table_captions`
+  - `phase4_table_attributes`
 
 ## 実装済み基盤
 
@@ -107,6 +113,15 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - `east_asian_line_breaks`
   - `MD2HTML_LINE_BREAK_MODE=east-asian`
 - `space_in_atx_header`
+
+## 実装済み Markdown（Phase 4）
+
+- `simple_tables`
+- `multiline_tables`
+- `grid_tables`
+- `pipe_tables`
+- `table_captions`
+- `table_attributes`
 
 ## ディレクトリ構成
 

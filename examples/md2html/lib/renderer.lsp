@@ -127,6 +127,8 @@
     (render-code-block b))
    ((eq (block-kind b) 'block-line-block)
     (render-line-block b))
+   ((eq (block-kind b) 'block-table)
+    (render-table-block b))
    ((eq (block-kind b) 'block-list)
     (render-list-block b))
    ((eq (block-kind b) 'block-deflist)
@@ -196,6 +198,80 @@
         (setq out (if (= (length out) 0) part (string-append out "\n" part))))
       (setq rest (cdr rest)))
     (string-append "<div class=\"line-block\">\n" out "\n</div>")))
+
+(defun table-align-attr (a)
+  (if (null a)
+      ""
+      (string-append " style=\"text-align:" (attr-escape a) ";\"")))
+
+(defun table-open-attrs (b)
+  (let ((parts '()))
+    (if (not (null (block-table-id b)))
+        (setq parts (append parts (list (string-append "id=\"" (attr-escape (block-table-id b)) "\""))))
+        nil)
+    (if (not (null (block-table-classes b)))
+        (setq parts (append parts (list (string-append "class=\"" (attr-escape (join-with-space (block-table-classes b))) "\""))))
+        nil)
+    (let ((rest (block-table-attrs b)))
+      (while (not (null rest))
+        (let ((kv (first rest)))
+          (setq parts
+                (append parts
+                        (list (string-append (attr-escape (first kv))
+                                             "=\""
+                                             (attr-escape (second kv))
+                                             "\"")))))
+        (setq rest (cdr rest))))
+    (if (null parts) "" (string-append " " (join-with-space parts)))))
+
+(defun render-table-head-row (headers aligns)
+  (let ((hs headers)
+        (as aligns)
+        (out ""))
+    (while (not (null hs))
+      (let ((cell (string-append "<th" (table-align-attr (if (null as) '() (first as))) ">"
+                                 (render-inline-nodes (parse-inline (first hs) (md-pos 1 1 0)))
+                                 "</th>")))
+        (setq out (if (= (length out) 0) cell (string-append out cell))))
+      (setq hs (cdr hs))
+      (if (null as) nil (setq as (cdr as))))
+    (string-append "<tr>" out "</tr>")))
+
+(defun render-table-body-rows (rows aligns)
+  (let ((rs rows)
+        (out ""))
+    (while (not (null rs))
+      (let ((cells (first rs))
+            (as aligns)
+            (row-out ""))
+        (while (not (null cells))
+          (let ((cell-html (string-append "<td" (table-align-attr (if (null as) '() (first as))) ">"
+                                          (render-inline-nodes (parse-inline (first cells) (md-pos 1 1 0)))
+                                          "</td>")))
+            (setq row-out (if (= (length row-out) 0) cell-html (string-append row-out cell-html))))
+          (setq cells (cdr cells))
+          (if (null as) nil (setq as (cdr as))))
+        (setq out
+              (if (= (length out) 0)
+                  (string-append "<tr>" row-out "</tr>")
+                  (string-append out "\n<tr>" row-out "</tr>"))))
+      (setq rs (cdr rs)))
+    out))
+
+(defun render-table-block (b)
+  (let ((open (string-append "<table" (table-open-attrs b) ">"))
+        (caption (block-table-caption b))
+        (headers (block-table-headers b))
+        (aligns (block-table-aligns b))
+        (rows (block-table-rows b)))
+    (string-append
+     open
+     (if (null caption) "" (string-append "\n<caption>" (render-inline-nodes (parse-inline caption (md-pos 1 1 0))) "</caption>"))
+     "\n<thead>\n"
+     (render-table-head-row headers aligns)
+     "\n</thead>\n<tbody>\n"
+     (render-table-body-rows rows aligns)
+     "\n</tbody>\n</table>")))
 
 (defun render-list-item (item)
   (let* ((task (list-item-task-state item))
