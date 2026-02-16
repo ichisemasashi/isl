@@ -1,6 +1,7 @@
 ;; dbms/app/main.lsp
 ;; DBMS CLIエントリポイントの雛形。
 
+(load "./examples/dbms/app/repr.lsp")
 (load "./examples/dbms/app/profile.lsp")
 (load "./examples/dbms/app/engine.lsp")
 
@@ -22,7 +23,7 @@
   (let* ((catalog (dbms-engine-init))
          (sql-text (dbms-read-stdin-text))
          (result (if (string= sql-text "")
-                     (list 'error 'dbms/no-input)
+                     (dbms-make-result-error 'dbms/no-input "stdin is empty" '())
                      (dbms-exec-sql catalog sql-text))))
     (format t "~A~%" result)))
 

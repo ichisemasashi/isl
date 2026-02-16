@@ -44,6 +44,7 @@
 ## 3. ディレクトリ/モジュール契約
 目標構成:
 - `examples/dbms/app/main.lsp` : CLI エントリポイント
+- `examples/dbms/app/repr.lsp` : 共通データ表現（AST/スキーマ/行/結果/エラー）
 - `examples/dbms/app/sql_lexer.lsp` : トークナイザ
 - `examples/dbms/app/sql_parser.lsp` : パーサ（AST生成）
 - `examples/dbms/app/engine.lsp` : 文実行器
@@ -364,3 +365,38 @@ DBMS 置換時は等価ワークフローを提供する:
 ### 16.4 ISL機能拡張の扱い
 実装中に ISL だけでは不可能な機能が見つかった場合は 2.2 の拡張ルールに従う。
 拡張が必要になった時点で、本節に対象機能と適用マイルストーン（`M1` か `M2`）を追記すること。
+
+## 17. 共通データ表現（内部表現の固定）
+`examples/dbms/app/repr.lsp` を単一の定義元とし、以下の内部表現を固定する。
+
+### 17.1 AST
+- ルート: `(dbms-ast <statements> <meta>)`
+- 文: `(dbms-stmt <kind> <payload>)`
+
+### 17.2 テーブル定義
+- カラム定義: `(dbms-column <name> <type> <attrs>)`
+- テーブル定義: `(dbms-table-def <name> <columns> <constraints> <options>)`
+- カタログ: `(dbms-catalog <repr-version> <table-pairs>)`
+  - `<table-pairs>` は `(<table-name> <table-def>)` のリスト
+
+### 17.3 行データ
+- 行: `(dbms-row <row-id> <values>)`
+  - `<values>` は `(<column-name> <value>)` のリスト
+- テーブル状態: `(dbms-table-state <table-name> <rows> <next-row-id>)`
+
+### 17.4 実行結果
+- 汎用結果: `(dbms-result <kind> <payload>)`
+- `SELECT` 結果: `(dbms-result rows (<columns> <rows>))`
+- 更新件数結果: `(dbms-result count <n>)`
+- 正常結果: `(dbms-result ok <payload>)`
+- エラー結果: `(dbms-result error <dbms-error>)`
+
+### 17.5 エラー
+- エラー本体: `(dbms-error <code> <message> <detail>)`
+- `code` は 8章で定義した `dbms/*` を利用し、実装上の補助コード（例: `dbms/not-implemented`, `dbms/no-input`, `dbms/invalid-representation`）の追加を許可する。
+
+### 17.6 層間契約
+- `sql_parser.lsp` は AST か `dbms-error` を返す。
+- `catalog.lsp` と `storage.lsp` は 17.2, 17.3 の形式を返す。
+- `engine.lsp` は常に `dbms-result` を返す。
+- `main.lsp` は `dbms-result` をそのまま出力し、CLI整形は後続ステップで追加する。
