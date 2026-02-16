@@ -1,5 +1,5 @@
 ;; Block AST
-;;   (block-heading pos level inlines)
+;;   (block-heading pos level inlines id classes attrs)
 ;;   (block-paragraph pos inlines)
 ;;   (block-blockquote pos blocks)
 ;;   (block-hr pos)
@@ -8,9 +8,10 @@
 ;;   (block-code pos text id classes attrs)
 ;;   (block-line-block pos lines)
 ;;   (block-table pos headers aligns rows caption id classes attrs)
+;;   (block-div pos blocks id classes attrs)
 
-(defun make-block-heading (pos level inlines)
-  (list 'block-heading pos level inlines))
+(defun make-block-heading (pos level inlines id classes attrs)
+  (list 'block-heading pos level inlines id classes attrs))
 
 (defun make-block-paragraph (pos inlines)
   (list 'block-paragraph pos inlines))
@@ -36,6 +37,9 @@
 (defun make-block-table (pos headers aligns rows caption id classes attrs)
   (list 'block-table pos headers aligns rows caption id classes attrs))
 
+(defun make-block-div (pos blocks id classes attrs)
+  (list 'block-div pos blocks id classes attrs))
+
 (defun block-kind (b) (first b))
 (defun block-pos (b) (second b))
 (defun block-heading-level (b) (third b))
@@ -43,6 +47,18 @@
   (if (eq (block-kind b) 'block-heading)
       (fourth b)
       (third b)))
+(defun block-heading-id (b)
+  (if (and (eq (block-kind b) 'block-heading) (> (length b) 4))
+      (fifth b)
+      '()))
+(defun block-heading-classes (b)
+  (if (and (eq (block-kind b) 'block-heading) (> (length b) 5))
+      (sixth b)
+      '()))
+(defun block-heading-attrs (b)
+  (if (and (eq (block-kind b) 'block-heading) (> (length b) 6))
+      (seventh b)
+      '()))
 (defun block-children (b) (third b))
 (defun block-list-kind (b) (third b))
 (defun block-list-type (b) (fourth b))
@@ -62,6 +78,9 @@
 (defun block-table-classes (b) (eighth b))
 (defun block-table-attrs (b)
   (first (cdr (cdr (cdr (cdr (cdr (cdr (cdr (cdr b))))))))))
+(defun block-div-id (b) (fourth b))
+(defun block-div-classes (b) (fifth b))
+(defun block-div-attrs (b) (sixth b))
 
 ;; List item:
 ;;   (list-item pos blocks task-state)
@@ -83,17 +102,18 @@
 
 ;; Inline AST
 ;;   (inline-text pos text)
-;;   (inline-code pos text)
+;;   (inline-code pos text id classes attrs)
 ;;   (inline-emph pos children)
 ;;   (inline-strong pos children)
-;;   (inline-link pos children url)
+;;   (inline-link pos children url id classes attrs)
 ;;   (inline-image pos alt-children url)
+;;   (inline-span pos children id classes attrs)
 
 (defun make-inline-text (pos text)
   (list 'inline-text pos text))
 
-(defun make-inline-code (pos text)
-  (list 'inline-code pos text))
+(defun make-inline-code (pos text id classes attrs)
+  (list 'inline-code pos text id classes attrs))
 
 (defun make-inline-emph (pos children)
   (list 'inline-emph pos children))
@@ -101,11 +121,14 @@
 (defun make-inline-strong (pos children)
   (list 'inline-strong pos children))
 
-(defun make-inline-link (pos children url)
-  (list 'inline-link pos children url))
+(defun make-inline-link (pos children url id classes attrs)
+  (list 'inline-link pos children url id classes attrs))
 
 (defun make-inline-image (pos children url)
   (list 'inline-image pos children url))
+
+(defun make-inline-span (pos children id classes attrs)
+  (list 'inline-span pos children id classes attrs))
 
 (defun inline-kind (n) (first n))
 (defun inline-pos (n) (second n))
@@ -113,3 +136,12 @@
 (defun inline-children (n) (third n))
 (defun inline-link-url (n) (fourth n))
 (defun inline-image-url (n) (fourth n))
+(defun inline-code-id (n) (if (> (length n) 3) (fourth n) '()))
+(defun inline-code-classes (n) (if (> (length n) 4) (fifth n) '()))
+(defun inline-code-attrs (n) (if (> (length n) 5) (sixth n) '()))
+(defun inline-link-id (n) (if (> (length n) 4) (fifth n) '()))
+(defun inline-link-classes (n) (if (> (length n) 5) (sixth n) '()))
+(defun inline-link-attrs (n) (if (> (length n) 6) (seventh n) '()))
+(defun inline-span-id (n) (fourth n))
+(defun inline-span-classes (n) (fifth n))
+(defun inline-span-attrs (n) (sixth n))

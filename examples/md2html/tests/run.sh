@@ -21,9 +21,13 @@ for case_path in "$CASES_DIR"/*.md; do
 
   actual=$(mktemp)
   if [ -f "$env_file" ]; then
-    # shellcheck disable=SC1090
-    . "$env_file"
-    env MD2HTML_LINE_BREAK_MODE="${MD2HTML_LINE_BREAK_MODE:-}" "$MD2HTML" "$case_path" > "$actual"
+    (
+      set -a
+      # shellcheck disable=SC1090
+      . "$env_file"
+      set +a
+      "$MD2HTML" "$case_path" > "$actual"
+    )
   else
     "$MD2HTML" "$case_path" > "$actual"
   fi

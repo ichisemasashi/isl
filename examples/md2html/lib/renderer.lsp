@@ -79,6 +79,7 @@
                 ((eq (inline-kind n) 'inline-strong) (inline-plain-text (inline-children n)))
                 ((eq (inline-kind n) 'inline-link) (inline-plain-text (inline-children n)))
                 ((eq (inline-kind n) 'inline-image) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-span) (inline-plain-text (inline-children n)))
                 (t "")))))
       (setq rest (cdr rest)))
     out))
@@ -88,18 +89,30 @@
    ((eq (inline-kind n) 'inline-text)
     (render-inline-text-value (inline-text-value n)))
    ((eq (inline-kind n) 'inline-code)
-    (string-append "<code>" (html-escape (inline-text-value n)) "</code>"))
+    (string-append "<code"
+                   (render-attr-bundle (inline-code-id n) (inline-code-classes n) (inline-code-attrs n))
+                   ">"
+                   (html-escape (inline-text-value n))
+                   "</code>"))
    ((eq (inline-kind n) 'inline-emph)
     (string-append "<em>" (render-inline-nodes (inline-children n)) "</em>"))
    ((eq (inline-kind n) 'inline-strong)
     (string-append "<strong>" (render-inline-nodes (inline-children n)) "</strong>"))
    ((eq (inline-kind n) 'inline-link)
-    (string-append "<a href=\"" (attr-escape (inline-link-url n)) "\">"
+    (string-append "<a href=\"" (attr-escape (inline-link-url n)) "\""
+                   (render-attr-bundle (inline-link-id n) (inline-link-classes n) (inline-link-attrs n))
+                   ">"
                    (render-inline-nodes (inline-children n))
                    "</a>"))
    ((eq (inline-kind n) 'inline-image)
     (string-append "<img src=\"" (attr-escape (inline-image-url n))
                    "\" alt=\"" (attr-escape (inline-plain-text (inline-children n))) "\" />"))
+   ((eq (inline-kind n) 'inline-span)
+    (string-append "<span"
+                   (render-attr-bundle (inline-span-id n) (inline-span-classes n) (inline-span-attrs n))
+                   ">"
+                   (render-inline-nodes (inline-children n))
+                   "</span>"))
    (t "")))
 
 (defun render-inline-nodes (nodes)
@@ -114,7 +127,9 @@
   (cond
    ((eq (block-kind b) 'block-heading)
     (let ((level (block-heading-level b)))
-      (string-append "<h" (format nil "~A" level) ">"
+      (string-append "<h" (format nil "~A" level)
+                     (render-attr-bundle (block-heading-id b) (block-heading-classes b) (block-heading-attrs b))
+                     ">"
                      (render-inline-nodes (block-inlines b))
                      "</h" (format nil "~A" level) ">")))
    ((eq (block-kind b) 'block-paragraph)
@@ -129,6 +144,8 @@
     (render-line-block b))
    ((eq (block-kind b) 'block-table)
     (render-table-block b))
+   ((eq (block-kind b) 'block-div)
+    (render-div-block b))
    ((eq (block-kind b) 'block-list)
     (render-list-block b))
    ((eq (block-kind b) 'block-deflist)
@@ -146,15 +163,15 @@
       (setq rest (cdr rest)))
     out))
 
-(defun render-code-attrs (b)
+(defun render-attr-bundle (id classes attrs)
   (let ((parts '()))
-    (if (not (null (block-code-id b)))
-        (setq parts (append parts (list (string-append "id=\"" (attr-escape (block-code-id b)) "\""))))
+    (if (not (null id))
+        (setq parts (append parts (list (string-append "id=\"" (attr-escape id) "\""))))
         nil)
-    (if (not (null (block-code-classes b)))
-        (setq parts (append parts (list (string-append "class=\"" (attr-escape (join-with-space (block-code-classes b))) "\""))))
+    (if (not (null classes))
+        (setq parts (append parts (list (string-append "class=\"" (attr-escape (join-with-space classes)) "\""))))
         nil)
-    (let ((rest (block-code-attrs b)))
+    (let ((rest attrs))
       (while (not (null rest))
         (let ((kv (first rest)))
           (setq parts
@@ -165,6 +182,9 @@
                                              "\"")))))
         (setq rest (cdr rest))))
     (if (null parts) "" (string-append " " (join-with-space parts)))))
+
+(defun render-code-attrs (b)
+  (render-attr-bundle (block-code-id b) (block-code-classes b) (block-code-attrs b)))
 
 (defun render-code-block (b)
   (string-append "<pre><code" (render-code-attrs b) ">"
@@ -205,24 +225,7 @@
       (string-append " style=\"text-align:" (attr-escape a) ";\"")))
 
 (defun table-open-attrs (b)
-  (let ((parts '()))
-    (if (not (null (block-table-id b)))
-        (setq parts (append parts (list (string-append "id=\"" (attr-escape (block-table-id b)) "\""))))
-        nil)
-    (if (not (null (block-table-classes b)))
-        (setq parts (append parts (list (string-append "class=\"" (attr-escape (join-with-space (block-table-classes b))) "\""))))
-        nil)
-    (let ((rest (block-table-attrs b)))
-      (while (not (null rest))
-        (let ((kv (first rest)))
-          (setq parts
-                (append parts
-                        (list (string-append (attr-escape (first kv))
-                                             "=\""
-                                             (attr-escape (second kv))
-                                             "\"")))))
-        (setq rest (cdr rest))))
-    (if (null parts) "" (string-append " " (join-with-space parts)))))
+  (render-attr-bundle (block-table-id b) (block-table-classes b) (block-table-attrs b)))
 
 (defun render-table-head-row (headers aligns)
   (let ((hs headers)
@@ -272,6 +275,13 @@
      "\n</thead>\n<tbody>\n"
      (render-table-body-rows rows aligns)
      "\n</tbody>\n</table>")))
+
+(defun render-div-block (b)
+  (string-append "<div"
+                 (render-attr-bundle (block-div-id b) (block-div-classes b) (block-div-attrs b))
+                 ">\n"
+                 (render-html-document (block-children b))
+                 "\n</div>"))
 
 (defun render-list-item (item)
   (let* ((task (list-item-task-state item))

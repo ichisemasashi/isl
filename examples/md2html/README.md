@@ -33,6 +33,18 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
   - `phase4_grid_tables`
   - `phase4_table_captions`
   - `phase4_table_attributes`
+  - `phase5_auto_identifiers`
+  - `phase5_ascii_identifiers`
+  - `phase5_gfm_auto_identifiers`
+  - `phase5_mmd_header_identifiers`
+  - `phase5_implicit_header_references`
+  - `phase5_header_attributes`
+  - `phase5_link_attributes`
+  - `phase5_inline_code_attributes`
+  - `phase5_bracketed_spans_and_native_spans`
+  - `phase5_fenced_and_native_divs`
+  - `phase5_mmd_link_attributes`
+  - `phase5_markdown_in_html_blocks`
 
 ## 実装済み基盤
 
@@ -122,6 +134,31 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - `pipe_tables`
 - `table_captions`
 - `table_attributes`
+
+## 実装済み Markdown（Phase 5）
+
+- `auto_identifiers`
+- `ascii_identifiers`
+- `gfm_auto_identifiers`
+- `mmd_header_identifiers`
+- `implicit_header_references`
+- `header_attributes`
+- `link_attributes`
+- `inline_code_attributes`
+- `bracketed_spans`
+- `native_spans`
+- `native_divs`
+- `fenced_divs`
+- `raw_attribute`
+- `markdown_attribute`
+- `mmd_link_attributes`
+- `markdown_in_html_blocks`
+
+識別子スタイルは `MD2HTML_IDENTIFIER_STYLE` で切り替え:
+- `auto` (default)
+- `ascii`
+- `gfm`
+- `mmd`
 
 ## ディレクトリ構成
 
