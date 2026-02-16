@@ -31,14 +31,14 @@
          (tmp-bad-port (string-append root "/tests/tmp-bad-port.lsp"))
          (tmp-missing-key (string-append root "/tests/tmp-missing-key.lsp")))
     (let ((cfg (ws-validate-config-file cfg-ok)))
-      (assert-true "valid config listen_port=8080" (= (ws-config-get cfg 'listen_port) 8080))
+      (assert-true "valid config listen_port=18080" (= (ws-config-get cfg 'listen_port) 18080))
       (assert-true "document_root is absolute path"
                    (ws-starts-with (ws-config-get cfg 'document_root) "/")))
 
     (write-config-text
      tmp-bad-port
      "(webserver-config
-  (listen_port 9090)
+  (listen_port 70000)
   (document_root \"./examples/webserver/runtime/docroot\")
   (tls_cert_file \"./examples/webserver/runtime/tls/server.crt\")
   (tls_key_file \"./examples/webserver/runtime/tls/server.key\")
@@ -46,13 +46,13 @@
   (cgi_bin_dir \"./examples/webserver/runtime/cgi-bin\")
   (max_connections 100))")
     (assert-error
-     "listen_port != 8080 must fail"
+     "listen_port out of range must fail"
      (lambda () (ws-validate-config-file tmp-bad-port)))
 
     (write-config-text
      tmp-missing-key
      "(webserver-config
-  (listen_port 8080)
+  (listen_port 18080)
   (document_root \"./examples/webserver/runtime/docroot\")
   (tls_cert_file \"./examples/webserver/runtime/tls/server.crt\")
   (tls_key_file \"./examples/webserver/runtime/tls/server.key\")

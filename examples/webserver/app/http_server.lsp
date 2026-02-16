@@ -171,12 +171,12 @@
     (if (null p) target (substring target 0 p))))
 
 (defun ws-send-response (conn version status headers body send-body)
-  (let ((status-line (string-append version " "
-                                    (format nil "~A" status)
-                                    " "
-                                    (ws-reason status)
-                                    "\r\n"))
-        (out status-line))
+  (let* ((status-line (string-append version " "
+                                     (format nil "~A" status)
+                                     " "
+                                     (ws-reason status)
+                                     "\r\n"))
+         (out status-line))
     (while (not (null headers))
       (let ((h (car headers)))
         (setq out (string-append out (car h) ": " (second h) "\r\n")))

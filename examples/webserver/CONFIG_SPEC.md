@@ -10,7 +10,7 @@
 - 構造:
   ```lisp
   (webserver-config
-    (listen_port 8080)
+    (listen_port 18080)
     (document_root "./examples/webserver/runtime/docroot")
     (tls_cert_file "./examples/webserver/runtime/tls/server.crt")
     (tls_key_file "./examples/webserver/runtime/tls/server.key")
@@ -25,7 +25,7 @@
 
 - `listen_port`
   - 型: 整数
-  - 制約: `8080` 固定（それ以外は起動失敗）
+  - 制約: `1..65535` の範囲
 - `document_root`
   - 型: パス
   - 制約: 既存ディレクトリであること
