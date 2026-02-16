@@ -4,6 +4,7 @@
   (use srfi-1)
   (use gauche.process)
   (use gauche.net)
+  (use gauche.threads)
   (use rfc.tls)
   (use rfc.http)
   (export make-initial-env eval-islisp apply-islisp repl read-all))
@@ -25,6 +26,14 @@
 (define gauche-connection-input-port connection-input-port)
 (define gauche-connection-output-port connection-output-port)
 (define gauche-connection-close connection-close)
+(define gauche-make-thread make-thread)
+(define gauche-thread-start! thread-start!)
+(define gauche-thread-join! thread-join!)
+(define gauche-thread? thread?)
+(define gauche-make-mutex make-mutex)
+(define gauche-mutex-lock! mutex-lock!)
+(define gauche-mutex-unlock! mutex-unlock!)
+(define gauche-mutex? mutex?)
 
 (define (truthy? v)
   (and (not (eq? v #f))
@@ -3630,6 +3639,42 @@
       (guard (e (else #t))
         (gauche-connection-close (tls-connection-raw conn)))
       #t))
+  (def 'thread-spawn
+    (lambda (fn . args)
+      (unless (or (primitive? fn) (closure? fn))
+        (error "thread-spawn needs callable function as first argument" fn))
+      (let ((th (gauche-make-thread
+                 (lambda ()
+                   (guard (e (else e))
+                     (apply-islisp fn args))))))
+        (gauche-thread-start! th)
+        th)))
+  (def 'thread-p
+    (lambda (obj)
+      (gauche-thread? obj)))
+  (def 'thread-join
+    (lambda (th)
+      (unless (gauche-thread? th)
+        (error "thread-join needs thread object" th))
+      (gauche-thread-join! th)))
+  (def 'mutex-open
+    (lambda ()
+      (gauche-make-mutex)))
+  (def 'mutex-p
+    (lambda (obj)
+      (gauche-mutex? obj)))
+  (def 'mutex-lock
+    (lambda (m)
+      (unless (gauche-mutex? m)
+        (error "mutex-lock needs mutex object" m))
+      (gauche-mutex-lock! m)
+      #t))
+  (def 'mutex-unlock
+    (lambda (m)
+      (unless (gauche-mutex? m)
+        (error "mutex-unlock needs mutex object" m))
+      (gauche-mutex-unlock! m)
+      #t))
   (def 'udp-open
     (lambda ()
       (make-udp-socket (make-socket PF_INET SOCK_DGRAM 0))))
@@ -4040,6 +4085,7 @@
     tls-listen tls-listener-p tls-accept tls-listener-close
     tls-connection-p tls-send tls-send-line tls-receive-line tls-receive-char
     tls-send-byte tls-receive-byte tls-flush tls-close
+    thread-spawn thread-p thread-join mutex-open mutex-p mutex-lock mutex-unlock
     udp-open udp-socket-p udp-bind udp-connect udp-send udp-receive udp-sendto udp-receive-from udp-close
     http-get http-head http-post
     ffi-call load-foreign-library current-foreign-library))

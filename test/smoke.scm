@@ -148,6 +148,18 @@
 (check-error '(tcp-flush 1))
 (check-error '(tcp-close 1))
 (check-error '(tcp-listener-close 1))
+(check #f '(thread-p 1))
+(check #f '(mutex-p 1))
+(check #t '(progn
+             (defglobal mtx1 (mutex-open))
+             (mutex-p mtx1)))
+(check #t '(progn
+             (mutex-lock mtx1)
+             (mutex-unlock mtx1)))
+(check #t '(progn
+             (defglobal th1 (thread-spawn (lambda () 7)))
+             (thread-p th1)))
+(check 7 '(thread-join th1))
 (check #f '(udp-socket-p 1))
 (check #t '(progn (defglobal us1 (udp-open)) (udp-socket-p us1)))
 (check #t '(udp-close us1))

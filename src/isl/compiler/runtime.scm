@@ -1,6 +1,7 @@
 (define-module isl.compiler.runtime
   (use isl.core)
   (use gauche.net)
+  (use gauche.threads)
   (use rfc.tls)
   (use srfi-1)
   (export make-runtime-state
@@ -26,6 +27,14 @@
 (define gauche-connection-input-port connection-input-port)
 (define gauche-connection-output-port connection-output-port)
 (define gauche-connection-close connection-close)
+(define gauche-make-thread make-thread)
+(define gauche-thread-start! thread-start!)
+(define gauche-thread-join! thread-join!)
+(define gauche-thread? thread?)
+(define gauche-make-mutex make-mutex)
+(define gauche-mutex-lock! mutex-lock!)
+(define gauche-mutex-unlock! mutex-unlock!)
+(define gauche-mutex? mutex?)
 
 ;; Runtime error object shared by frontend/backend paths.
 (define (make-runtime-error code message details)
@@ -1188,6 +1197,62 @@
           (close-output-port (runtime-tls-connection-output conn)))
         (guard (e (else #f))
           (gauche-connection-close (runtime-tls-connection-raw conn)))
+        (host->runtime-value #t))))
+  (def 'thread-spawn
+    (lambda (args state)
+      (unless (>= (length args) 1)
+        (runtime-raise 'arity "thread-spawn expects function and optional args" args))
+      (let ((fn (car args))
+            (fn-args (cdr args)))
+        (host->runtime-value
+         (let ((th (gauche-make-thread
+                    (lambda ()
+                      (guard (e (else e))
+                        (runtime-apply fn fn-args state))))))
+           (gauche-thread-start! th)
+           th)))))
+  (def 'thread-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "thread-p expects 1 argument" args))
+      (host->runtime-value
+       (if (gauche-thread? (runtime-value->host (car args))) #t #f))))
+  (def 'thread-join
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "thread-join expects thread" args))
+      (let ((th (runtime-value->host (car args))))
+        (unless (gauche-thread? th)
+          (runtime-raise 'type-error "thread-join expects thread object" (car args)))
+        (host->runtime-value (gauche-thread-join! th)))))
+  (def 'mutex-open
+    (lambda (args state)
+      (unless (= (length args) 0)
+        (runtime-raise 'arity "mutex-open expects no arguments" args))
+      (host->runtime-value (gauche-make-mutex))))
+  (def 'mutex-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "mutex-p expects 1 argument" args))
+      (host->runtime-value
+       (if (gauche-mutex? (runtime-value->host (car args))) #t #f))))
+  (def 'mutex-lock
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "mutex-lock expects mutex" args))
+      (let ((m (runtime-value->host (car args))))
+        (unless (gauche-mutex? m)
+          (runtime-raise 'type-error "mutex-lock expects mutex object" (car args)))
+        (gauche-mutex-lock! m)
+        (host->runtime-value #t))))
+  (def 'mutex-unlock
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "mutex-unlock expects mutex" args))
+      (let ((m (runtime-value->host (car args))))
+        (unless (gauche-mutex? m)
+          (runtime-raise 'type-error "mutex-unlock expects mutex object" (car args)))
+        (gauche-mutex-unlock! m)
         (host->runtime-value #t))))
   )
 

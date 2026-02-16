@@ -166,7 +166,8 @@
           (if (= status 403) "Forbidden"
               (if (= status 404) "Not Found"
                   (if (= status 405) "Method Not Allowed"
-                      "Internal Server Error"))))))
+                      (if (= status 503) "Service Unavailable"
+                          "Internal Server Error")))))))
 
 (defun ws-target-path-only (target)
   (let ((p (string-index "?" target)))
@@ -313,6 +314,17 @@
     (list "Connection" (if keep-alive "keep-alive" "close")))
    body
    #t))
+
+(defun ws-with-mutex (m thunk)
+  (mutex-lock m)
+  (let ((result (catch 'ws-mutex-error
+                  (handler-case
+                    (funcall thunk)
+                    (error (e)
+                      (mutex-unlock m)
+                      (throw 'ws-mutex-error e))))))
+    (mutex-unlock m)
+    result))
 
 (defun ws-static-public-path (target-path)
   (if (or (string= target-path "/")
@@ -631,30 +643,79 @@
       (tls-listener-close listener)
       (tcp-listener-close listener)))
 
+(defun ws-handle-over-capacity (conn)
+  (handler-case
+    (ws-send-response
+     conn
+     "HTTP/1.1"
+     503
+     (list
+      (list "Content-Type" "text/plain; charset=UTF-8")
+      (list "Content-Length" "20")
+      (list "Connection" "close"))
+     "service unavailable\n"
+     #t)
+    (error (e) #f))
+  (handler-case
+    (ws-conn-close conn)
+    (error (e) #f)))
+
+(defun ws-spawn-connection-worker (cfg conn active-mutex active-box)
+  (thread-spawn
+   (lambda ()
+     (handler-case
+       (ws-handle-connection cfg conn)
+       (error (e)
+         (ws-log (format nil "connection error: ~A" e))))
+     (handler-case
+       (ws-conn-close conn)
+       (error (e) #f))
+     (ws-with-mutex
+      active-mutex
+      (lambda ()
+        (setf (car active-box) (- (car active-box) 1))
+        (if (< (car active-box) 0)
+            (setf (car active-box) 0)
+            nil))))))
+
 (defun ws-start-server (cfg tls-mode)
   (let* ((port (ws-config-get cfg 'listen_port))
          (cert-file (ws-config-get cfg 'tls_cert_file))
          (key-file (ws-config-get cfg 'tls_key_file))
+         (max-connections (ws-config-get cfg 'max_connections))
          (max-accepts-env (getenv "WEBSERVER_MAX_ACCEPTS"))
          (max-accepts (if (null max-accepts-env) 0 (ws-parse-int max-accepts-env)))
+         (active-mutex (mutex-open))
+         (active-box (list 0))
          (listener (ws-make-listener tls-mode port cert-file key-file))
-         (accepted 0))
+         (accepted 0)
+         (workers '()))
     (ws-log (format nil "~A server listening on port ~A"
                     (if tls-mode "https" "http")
                     port))
     (while (or (null max-accepts) (= max-accepts 0) (< accepted max-accepts))
       (let ((conn (ws-accept-connection listener tls-mode)))
         (setq accepted (+ accepted 1))
-        (handler-case
-          (ws-handle-connection cfg conn)
-          (error (e)
-            (ws-log (format nil "connection error: ~A" e))))
-        (handler-case
-          (ws-conn-close conn)
-          (error (e) #f))))
+        (let ((allow nil))
+          (ws-with-mutex
+           active-mutex
+           (lambda ()
+             (if (< (car active-box) max-connections)
+                 (progn
+                   (setf (car active-box) (+ (car active-box) 1))
+                   (setq allow #t))
+                 (setq allow nil))))
+          (if allow
+              (setq workers (cons (ws-spawn-connection-worker cfg conn active-mutex active-box) workers))
+              (ws-handle-over-capacity conn)))))
     (handler-case
       (ws-close-listener listener tls-mode)
       (error (e) #f))
+    (while (not (null workers))
+      (handler-case
+        (thread-join (car workers))
+        (error (e) #f))
+      (setq workers (cdr workers)))
     (ws-log (format nil "~A server stopped"
                     (if tls-mode "https" "http")))))
 
