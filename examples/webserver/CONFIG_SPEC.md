@@ -4,10 +4,20 @@
 
 ## 1. 形式
 
-- 形式: `key=value` の行ベース設定
+- 形式: Lisp S式（1つの設定フォーム）
 - 文字コード: UTF-8
-- コメント: 行頭 `#`、または行内 `#` 以降をコメントとして扱う
-- 空行: 無視する
+- 先頭フォームは必ず `webserver-config` とする
+- 構造:
+  ```lisp
+  (webserver-config
+    (listen_port 8080)
+    (document_root "./examples/webserver/runtime/docroot")
+    (tls_cert_file "./examples/webserver/runtime/tls/server.crt")
+    (tls_key_file "./examples/webserver/runtime/tls/server.key")
+    (cgi_enabled #t)
+    (cgi_bin_dir "./examples/webserver/runtime/cgi-bin")
+    (max_connections 100))
+  ```
 
 ## 2. 必須キー
 
@@ -27,7 +37,7 @@
   - 制約: 既存の読み取り可能ファイルであること
 - `cgi_enabled`
   - 型: 真偽値
-  - 許可値: `true` / `false`
+  - 許可値: `#t` / `#f`
 - `cgi_bin_dir`
   - 型: パス
   - 制約: 既存ディレクトリであること
@@ -54,5 +64,12 @@
 
 ## 5. 実装エントリ
 
-- 実行ファイル: `examples/webserver/webserver`
-- 検証のみ実行: `--check-config`
+- 実行ファイル: `examples/webserver/app/main.lsp`
+- 実行方法:
+  ```sh
+  WEBSERVER_ROOT=/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver \
+  WEBSERVER_CONFIG=/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver/conf/webserver.conf.lsp \
+  WEBSERVER_CHECK_CONFIG=1 \
+  /Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl \
+  /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver/app/main.lsp
+  ```
