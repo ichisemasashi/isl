@@ -9,6 +9,18 @@
   (let ((v (getenv name)))
     (if (null v) fallback v)))
 
+(defun ws-ascii-downcase (s)
+  (let ((i 0)
+        (out ""))
+    (while (< i (length s))
+      (let* ((ch (substring s i (+ i 1)))
+             (p (string-index ch "ABCDEFGHIJKLMNOPQRSTUVWXYZ")))
+        (if (null p)
+            (setq out (string-append out ch))
+            (setq out (string-append out (substring "abcdefghijklmnopqrstuvwxyz" p (+ p 1))))))
+      (setq i (+ i 1)))
+    out))
+
 (defun ws-starts-with (s prefix)
   (let ((n (length prefix)))
     (and (>= (length s) n)
@@ -21,6 +33,64 @@
   (if (ws-contains-char-p s "'")
       (ws-die (string-append "single quote is not supported in path: " s))
       (string-append "'" s "'")))
+
+(defun ws-read-file-text (path)
+  (with-open-file (s path :direction :input)
+    (let ((line (read-line s #f))
+          (acc "")
+          (first t))
+      (while (not (null line))
+        (if first
+            (progn
+              (setq acc line)
+              (setq first nil))
+            (setq acc (string-append acc "\n" line)))
+        (setq line (read-line s #f)))
+      acc)))
+
+(defun ws-temp-file-path (prefix)
+  (string-append "/tmp/" prefix "-"
+                 (format nil "~A" (get-universal-time))
+                 "-"
+                 (format nil "~A" (get-internal-run-time))
+                 ".tmp"))
+
+(defun ws-command-available-p (cmd)
+  (= (system (string-append "sh -c 'command -v " cmd " >/dev/null 2>&1'")) 0))
+
+(defun ws-detect-os-family (uname-s)
+  (let ((u (ws-ascii-downcase uname-s)))
+    (if (ws-starts-with u "linux")
+        "linux"
+        (if (ws-starts-with u "freebsd")
+            "freebsd"
+            (if (ws-starts-with u "darwin")
+                "darwin"
+                "unknown")))))
+
+(defun ws-uname-s ()
+  (let* ((tmp (ws-temp-file-path "webserver-uname"))
+         (cmd (string-append "sh -c 'uname -s > " tmp " 2>/dev/null'")))
+    (if (= (system cmd) 0)
+        (let ((v (ws-read-file-text tmp)))
+          (delete-file tmp)
+          v)
+        (progn
+          (if (not (null (probe-file tmp))) (delete-file tmp) nil)
+          ""))))
+
+(defun ws-validate-platform ()
+  (let ((required '("sh" "test" "dirname" "basename" "uname"))
+        (os (ws-detect-os-family (ws-uname-s))))
+    (while (not (null required))
+      (if (ws-command-available-p (car required))
+          nil
+          (ws-die (format nil "required command not found: ~A" (car required))))
+      (setq required (cdr required)))
+    (if (or (string= os "linux") (string= os "freebsd"))
+        nil
+        (ws-log (format nil "warning: running on non-target os (~A), target is Linux/FreeBSD" os)))
+    os))
 
 (defun ws-last-index-of-char (s ch)
   (let ((i 0)
@@ -157,7 +227,8 @@
          (document-root (ws-normalize-path document-root-raw))
          (tls-cert-file (ws-normalize-path tls-cert-raw))
          (tls-key-file (ws-normalize-path tls-key-raw))
-         (cgi-bin-dir (ws-normalize-path cgi-bin-raw)))
+         (cgi-bin-dir (ws-normalize-path cgi-bin-raw))
+         (os-family (ws-validate-platform)))
     (if (not (ws-integer-value-p listen-port))
         (ws-die (format nil "listen_port must be integer: ~A" listen-port))
         nil)
@@ -192,7 +263,8 @@
      (list 'tls_key_file tls-key-file)
      (list 'cgi_enabled cgi-enabled)
      (list 'cgi_bin_dir cgi-bin-dir)
-     (list 'max_connections max-connections))))
+     (list 'max_connections max-connections)
+     (list 'os_family os-family))))
 
 (defun ws-read-config-form (path)
   (with-open-file (s path :direction :input)
@@ -210,6 +282,7 @@
 
 (defun ws-print-config (cfg)
   (ws-log "configuration loaded")
+  (ws-log (format nil "os_family=~A" (ws-config-get cfg 'os_family)))
   (ws-log (format nil "listen_port=~A" (ws-config-get cfg 'listen_port)))
   (ws-log (format nil "document_root=~A" (ws-config-get cfg 'document_root)))
   (ws-log (format nil "tls_cert_file=~A" (ws-config-get cfg 'tls_cert_file)))

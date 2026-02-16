@@ -54,6 +54,7 @@
 
 起動成功時は以下をログ出力する（機密情報は除外）。
 
+- `os_family`（`linux` / `freebsd` / `darwin` / `unknown`）
 - `listen_port`
 - 正規化後 `document_root`
 - 正規化後 `tls_cert_file`
