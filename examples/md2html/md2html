@@ -10,29 +10,101 @@ usage() {
 Usage:
   md2html input.md
   cat input.md | md2html
+  md2html -o output.html input.md
 EOF
 }
 
-if [ "$#" -gt 1 ]; then
-  usage
-  exit 1
-fi
+die() {
+  echo "md2html: $1" 1>&2
+  exit "${2:-1}"
+}
+
+validate_utf8_file() {
+  path="$1"
+  if ! command -v iconv >/dev/null 2>&1; then
+    die "iconv command is required for UTF-8 validation" 2
+  fi
+  if ! iconv -f UTF-8 -t UTF-8 "$path" >/dev/null 2>&1; then
+    die "invalid UTF-8 input: $path" 2
+  fi
+}
+
+validate_output_path() {
+  path="$1"
+  if [ -d "$path" ]; then
+    die "output path is a directory: $path" 2
+  fi
+  if [ -e "$path" ]; then
+    if [ ! -w "$path" ]; then
+      die "output file is not writable: $path" 2
+    fi
+    return 0
+  fi
+  dir=$(dirname "$path")
+  if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
+    die "output directory is not writable: $dir" 2
+  fi
+}
+
+input_arg=""
+output_path=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|--output)
+      shift
+      if [ "$#" -eq 0 ]; then
+        die "missing value for -o|--output" 1
+      fi
+      output_path="$1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      die "unknown option: $1" 1
+      ;;
+    *)
+      if [ -n "$input_arg" ]; then
+        die "multiple input files are not supported" 1
+      fi
+      input_arg="$1"
+      ;;
+  esac
+  shift
+done
 
 export MD2HTML_ROOT="$ROOT_DIR"
+export MD2HTML_OUTPUT_MODE="stdout"
+export MD2HTML_OUTPUT_PATH=""
 
-if [ "$#" -eq 1 ]; then
-  input="$1"
-  case "$input" in
+tmp_input=""
+cleanup() {
+  if [ -n "$tmp_input" ] && [ -f "$tmp_input" ]; then
+    rm -f "$tmp_input"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [ -n "$output_path" ]; then
+  validate_output_path "$output_path"
+  export MD2HTML_OUTPUT_MODE="file"
+  export MD2HTML_OUTPUT_PATH="$output_path"
+fi
+
+if [ -n "$input_arg" ]; then
+  input="$input_arg"
+  case "$input_arg" in
     *.md) ;;
     *)
-      echo "md2html: input file must be *.md" 1>&2
-      exit 2
+      die "input file must be *.md" 2
       ;;
   esac
   if [ ! -f "$input" ]; then
-    echo "md2html: file not found: $input" 1>&2
-    exit 2
+    die "file not found: $input" 2
   fi
+  validate_utf8_file "$input"
   export MD2HTML_INPUT_MODE="file"
   export MD2HTML_INPUT_PATH="$input"
 else
@@ -40,8 +112,17 @@ else
     usage
     exit 1
   fi
-  export MD2HTML_INPUT_MODE="stdin"
-  export MD2HTML_INPUT_PATH=""
+  tmp_input="$(mktemp /tmp/md2html-stdin.XXXXXX.md)"
+  cat > "$tmp_input"
+  validate_utf8_file "$tmp_input"
+  export MD2HTML_INPUT_MODE="file"
+  export MD2HTML_INPUT_PATH="$tmp_input"
 fi
 
-exec "$ISL_BIN" "$APP_PATH"
+set +e
+"$ISL_BIN" "$APP_PATH"
+status=$?
+set -e
+if [ "$status" -ne 0 ]; then
+  die "conversion command failed (exit $status)" "$status"
+fi

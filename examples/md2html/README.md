@@ -8,7 +8,19 @@
 ```sh
 /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html input.md
 cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
+/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html -o output.html input.md
 ```
+
+## エラー処理
+
+- 入力ファイル不存在
+  - `file not found` を表示して終了 (`exit 2`)
+- 変換コマンド失敗
+  - `conversion command failed` を表示して非0終了
+- 出力先書き込み不可 (`-o` 指定時)
+  - `output file is not writable` / `output directory is not writable` で終了 (`exit 2`)
+- 文字コード不正
+  - 入力は UTF-8 として検証し、不正時 `invalid UTF-8 input` で終了 (`exit 2`)
 
 ## テスト
 

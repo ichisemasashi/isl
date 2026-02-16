@@ -46,6 +46,10 @@
         (setq line (read-line s #f)))
       acc)))
 
+(defun write-file-text (path text)
+  (with-open-file (s path :direction :output)
+    (format s "~A~%" text)))
+
 (defun md2html-root ()
   (let ((v (getenv "MD2HTML_ROOT")))
     (if (null v)
@@ -65,6 +69,9 @@
   (load-md2html-libs)
   (let ((mode (env-or-empty "MD2HTML_INPUT_MODE"))
         (input-path (env-or-empty "MD2HTML_INPUT_PATH"))
+        (out-mode (env-or-empty "MD2HTML_OUTPUT_MODE"))
+        (out-path (env-or-empty "MD2HTML_OUTPUT_PATH"))
+        (html "")
         (source ""))
     (if (string= mode "file")
         (progn
@@ -73,6 +80,11 @@
         (if (string= mode "stdin")
             (setq source (read-stdin-text))
             (md-fail "E_USAGE" "input mode must be file or stdin" (md-pos 1 1 0) mode)))
-    (format t "~A~%" (render-html-document (parse-markdown source)))))
+    (setq html (render-html-document (parse-markdown source)))
+    (if (or (string= out-mode "") (string= out-mode "stdout"))
+        (format t "~A~%" html)
+        (if (string= out-mode "file")
+            (write-file-text out-path html)
+            (md-fail "E_USAGE" "output mode must be stdout or file" (md-pos 1 1 0) out-mode)))))
 
 (main)
