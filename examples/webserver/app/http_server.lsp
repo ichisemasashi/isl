@@ -76,7 +76,7 @@
   (let ((i 0)
         (out ""))
     (while (< i n)
-      (let ((ch (tcp-receive-char conn #f)))
+      (let ((ch (ws-conn-receive-char conn #f)))
         (if (null ch)
             (throw 'ws-bad-request "unexpected EOF while reading request body")
             (setq out (string-append out (string ch)))))
@@ -84,7 +84,7 @@
     out))
 
 (defun ws-read-request-line (conn)
-  (let ((line (tcp-receive-line conn #f)))
+  (let ((line (ws-conn-receive-line conn #f)))
     (if (null line)
         'eof
         (ws-strip-cr line))))
@@ -108,7 +108,7 @@
   (let ((headers '())
         (done nil))
     (while (not done)
-      (let ((raw (tcp-receive-line conn #f)))
+      (let ((raw (ws-conn-receive-line conn #f)))
         (if (null raw)
             (throw 'ws-bad-request "unexpected EOF in headers")
             (let ((line (ws-strip-cr raw)))
@@ -185,7 +185,7 @@
     (if send-body
         (setq out (string-append out body))
         nil)
-    (tcp-send conn out)))
+    (ws-conn-send conn out)))
 
 (defun ws-handle-known-method (conn req)
   (let* ((method (ws-request-get req 'method))
@@ -249,24 +249,70 @@
                    #t)
                   (setq alive #f))))))))
 
-(defun ws-start-http-server (cfg)
+(defun ws-conn-send (conn text)
+  (if (tls-connection-p conn)
+      (tls-send conn text)
+      (tcp-send conn text)))
+
+(defun ws-conn-receive-line (conn eof-error-p)
+  (if (tls-connection-p conn)
+      (tls-receive-line conn eof-error-p)
+      (tcp-receive-line conn eof-error-p)))
+
+(defun ws-conn-receive-char (conn eof-error-p)
+  (if (tls-connection-p conn)
+      (tls-receive-char conn eof-error-p)
+      (tcp-receive-char conn eof-error-p)))
+
+(defun ws-conn-close (conn)
+  (if (tls-connection-p conn)
+      (tls-close conn)
+      (tcp-close conn)))
+
+(defun ws-make-listener (tls-mode port cert-file key-file)
+  (if tls-mode
+      (tls-listen port cert-file key-file)
+      (tcp-listen port)))
+
+(defun ws-accept-connection (listener tls-mode)
+  (if tls-mode
+      (tls-accept listener)
+      (tcp-accept listener)))
+
+(defun ws-close-listener (listener tls-mode)
+  (if tls-mode
+      (tls-listener-close listener)
+      (tcp-listener-close listener)))
+
+(defun ws-start-server (cfg tls-mode)
   (let* ((port (ws-config-get cfg 'listen_port))
+         (cert-file (ws-config-get cfg 'tls_cert_file))
+         (key-file (ws-config-get cfg 'tls_key_file))
          (max-accepts-env (getenv "WEBSERVER_MAX_ACCEPTS"))
          (max-accepts (if (null max-accepts-env) 0 (ws-parse-int max-accepts-env)))
-         (listener (tcp-listen port))
+         (listener (ws-make-listener tls-mode port cert-file key-file))
          (accepted 0))
-    (ws-log (format nil "http server listening on port ~A" port))
+    (ws-log (format nil "~A server listening on port ~A"
+                    (if tls-mode "https" "http")
+                    port))
     (while (or (null max-accepts) (= max-accepts 0) (< accepted max-accepts))
-      (let ((conn (tcp-accept listener)))
+      (let ((conn (ws-accept-connection listener tls-mode)))
         (setq accepted (+ accepted 1))
         (handler-case
           (ws-handle-connection conn)
           (error (e)
             (ws-log (format nil "connection error: ~A" e))))
         (handler-case
-          (tcp-close conn)
+          (ws-conn-close conn)
           (error (e) #f))))
     (handler-case
-      (tcp-listener-close listener)
+      (ws-close-listener listener tls-mode)
       (error (e) #f))
-    (ws-log "http server stopped")))
+    (ws-log (format nil "~A server stopped"
+                    (if tls-mode "https" "http")))))
+
+(defun ws-start-http-server (cfg)
+  (ws-start-server cfg #f))
+
+(defun ws-start-https-server (cfg)
+  (ws-start-server cfg #t))

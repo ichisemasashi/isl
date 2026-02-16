@@ -65,10 +65,14 @@
 ## 5. 実装エントリ
 
 - 実行ファイル: `examples/webserver/app/main.lsp`
+- 通信モード:
+  - `WEBSERVER_TRANSPORT=http` (既定)
+  - `WEBSERVER_TRANSPORT=https` (TLS終端)
 - 実行方法:
   ```sh
   WEBSERVER_ROOT=/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver \
   WEBSERVER_CONFIG=/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver/conf/webserver.conf.lsp \
+  WEBSERVER_TRANSPORT=https \
   WEBSERVER_CHECK_CONFIG=1 \
   /Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl \
   /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver/app/main.lsp

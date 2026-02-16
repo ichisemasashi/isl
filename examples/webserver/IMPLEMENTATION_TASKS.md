@@ -1,6 +1,6 @@
 # webserver 実装タスク分解 (v1.0)
 
-対象要件: `examples/webserver/REQUIREMENTS.md` (v1.1)
+対象要件: `examples/webserver/REQUIREMENTS.md` (v1.2)
 
 ## 0. 前提と完了定義
 
@@ -37,7 +37,7 @@
 ### T3. HTTPS 対応（TLS終端）
 
 - 実装内容:
-  - HTTPS リスナー（8080 上で TLS）を実装する
+  - 設定ファイルの `listen_port` 上で TLS 終端する HTTPS リスナーを実装する
   - `tls_cert_file`/`tls_key_file` を読み込み、ハンドシェイクを実施する
   - 証明書ロード失敗時の安全な起動失敗を実装する
 - 受け入れ条件:

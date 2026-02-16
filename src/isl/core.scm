@@ -4,6 +4,7 @@
   (use srfi-1)
   (use gauche.process)
   (use gauche.net)
+  (use rfc.tls)
   (use rfc.http)
   (export make-initial-env eval-islisp apply-islisp repl read-all))
 
@@ -13,6 +14,17 @@
 (define gauche-http-post http-post)
 (define gauche-http-head http-head)
 (define gauche-http-string-receiver http-string-receiver)
+;; Keep references to Gauche TLS procedures before we define ISL primitives
+;; with similar names.
+(define gauche-make-tls make-tls)
+(define gauche-tls-bind tls-bind)
+(define gauche-tls-accept tls-accept)
+(define gauche-tls-close tls-close)
+(define gauche-tls-load-certificate tls-load-certificate)
+(define gauche-tls-load-private-key tls-load-private-key)
+(define gauche-connection-input-port connection-input-port)
+(define gauche-connection-output-port connection-output-port)
+(define gauche-connection-close connection-close)
 
 (define (truthy? v)
   (and (not (eq? v #f))
@@ -236,6 +248,34 @@
        (eq? (vector-ref obj 0) 'tcp-listener)))
 
 (define (tcp-listener-socket listener)
+  (vector-ref listener 1))
+
+(define (make-tls-connection tls in out)
+  (vector 'tls-connection tls in out))
+
+(define (tls-connection? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 4)
+       (eq? (vector-ref obj 0) 'tls-connection)))
+
+(define (tls-connection-raw conn)
+  (vector-ref conn 1))
+
+(define (tls-connection-input conn)
+  (vector-ref conn 2))
+
+(define (tls-connection-output conn)
+  (vector-ref conn 3))
+
+(define (make-tls-listener tls)
+  (vector 'tls-listener tls))
+
+(define (tls-listener? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 2)
+       (eq? (vector-ref obj 0) 'tls-listener)))
+
+(define (tls-listener-raw listener)
   (vector-ref listener 1))
 
 (define (make-udp-socket socket)
@@ -3461,6 +3501,135 @@
       (guard (e (else #t))
         (socket-close (tcp-connection-socket conn)))
       #t))
+  (def 'tls-listen
+    (lambda args
+      (unless (or (= (length args) 3) (= (length args) 4))
+        (error "tls-listen takes port cert-file key-file [key-password]" args))
+      (let ((port (car args))
+            (cert-file (cadr args))
+            (key-file (caddr args))
+            (key-password (if (= (length args) 4) (list-ref args 3) "")))
+        (unless (and (integer? port) (>= port 1) (<= port 65535))
+          (error "tls-listen port must be integer in 1..65535" port))
+        (unless (string? cert-file)
+          (error "tls-listen cert-file must be a string" cert-file))
+        (unless (string? key-file)
+          (error "tls-listen key-file must be a string" key-file))
+        (unless (string? key-password)
+          (error "tls-listen key-password must be a string" key-password))
+        (let ((tls (gauche-make-tls)))
+          (gauche-tls-load-certificate tls cert-file)
+          (gauche-tls-load-private-key tls key-file key-password)
+          (gauche-tls-bind tls "0.0.0.0" port 'tcp)
+          (make-tls-listener tls)))))
+  (def 'tls-listener-p
+    (lambda (obj)
+      (tls-listener? obj)))
+  (def 'tls-accept
+    (lambda (listener)
+      (unless (tls-listener? listener)
+        (error "tls-accept needs tls listener object" listener))
+      (let ((conn (gauche-tls-accept (tls-listener-raw listener))))
+        (make-tls-connection conn
+                             (gauche-connection-input-port conn)
+                             (gauche-connection-output-port conn)))))
+  (def 'tls-listener-close
+    (lambda (listener)
+      (unless (tls-listener? listener)
+        (error "tls-listener-close needs tls listener object" listener))
+      (guard (e (else #t))
+        (gauche-tls-close (tls-listener-raw listener)))
+      #t))
+  (def 'tls-connection-p
+    (lambda (obj)
+      (tls-connection? obj)))
+  (def 'tls-send
+    (lambda (conn text)
+      (unless (tls-connection? conn)
+        (error "tls-send needs tls connection object" conn))
+      (unless (string? text)
+        (error "tls-send text must be a string" text))
+      (display text (tls-connection-output conn))
+      (flush (tls-connection-output conn))
+      #t))
+  (def 'tls-send-line
+    (lambda (conn text)
+      (unless (tls-connection? conn)
+        (error "tls-send-line needs tls connection object" conn))
+      (unless (string? text)
+        (error "tls-send-line text must be a string" text))
+      (display text (tls-connection-output conn))
+      (newline (tls-connection-output conn))
+      (flush (tls-connection-output conn))
+      #t))
+  (def 'tls-receive-line
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "tls-receive-line takes connection and optional eof-error-p" args))
+      (let ((conn (car args))
+            (eof-error-p (if (= (length args) 2) (cadr args) #t)))
+        (unless (tls-connection? conn)
+          (error "tls-receive-line needs tls connection object" conn))
+        (let ((line (read-line (tls-connection-input conn))))
+          (if (eof-object? line)
+              (if (truthy? eof-error-p)
+                  (error "tls-receive-line reached EOF")
+                  '())
+              line)))))
+  (def 'tls-receive-char
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "tls-receive-char takes connection and optional eof-error-p" args))
+      (let ((conn (car args))
+            (eof-error-p (if (= (length args) 2) (cadr args) #t)))
+        (unless (tls-connection? conn)
+          (error "tls-receive-char needs tls connection object" conn))
+        (let ((ch (read-char (tls-connection-input conn))))
+          (if (eof-object? ch)
+              (if (truthy? eof-error-p)
+                  (error "tls-receive-char reached EOF")
+                  '())
+              ch)))))
+  (def 'tls-send-byte
+    (lambda (conn byte)
+      (unless (tls-connection? conn)
+        (error "tls-send-byte needs tls connection object" conn))
+      (unless (and (integer? byte) (>= byte 0) (<= byte 255))
+        (error "tls-send-byte value must be integer in 0..255" byte))
+      (write-byte byte (tls-connection-output conn))
+      (flush (tls-connection-output conn))
+      #t))
+  (def 'tls-receive-byte
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "tls-receive-byte takes connection and optional eof-error-p" args))
+      (let ((conn (car args))
+            (eof-error-p (if (= (length args) 2) (cadr args) #t)))
+        (unless (tls-connection? conn)
+          (error "tls-receive-byte needs tls connection object" conn))
+        (let ((b (read-byte (tls-connection-input conn))))
+          (if (eof-object? b)
+              (if (truthy? eof-error-p)
+                  (error "tls-receive-byte reached EOF")
+                  '())
+              b)))))
+  (def 'tls-flush
+    (lambda (conn)
+      (unless (tls-connection? conn)
+        (error "tls-flush needs tls connection object" conn))
+      (flush (tls-connection-output conn))
+      #t))
+  (def 'tls-close
+    (lambda (conn)
+      (unless (tls-connection? conn)
+        (error "tls-close needs tls connection object" conn))
+      (guard (e (else #t))
+        (close-input-port (tls-connection-input conn)))
+      (guard (e (else #t))
+        (close-output-port (tls-connection-output conn)))
+      (guard (e (else #t))
+        (gauche-connection-close (tls-connection-raw conn)))
+      #t))
   (def 'udp-open
     (lambda ()
       (make-udp-socket (make-socket PF_INET SOCK_DGRAM 0))))
@@ -3868,6 +4037,9 @@
     tcp-connect tcp-listen tcp-listener-p tcp-accept tcp-listener-close
     tcp-connection-p tcp-send tcp-send-line tcp-receive-line tcp-receive-char
     tcp-send-byte tcp-receive-byte tcp-flush tcp-close
+    tls-listen tls-listener-p tls-accept tls-listener-close
+    tls-connection-p tls-send tls-send-line tls-receive-line tls-receive-char
+    tls-send-byte tls-receive-byte tls-flush tls-close
     udp-open udp-socket-p udp-bind udp-connect udp-send udp-receive udp-sendto udp-receive-from udp-close
     http-get http-head http-post
     ffi-call load-foreign-library current-foreign-library))
