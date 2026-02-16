@@ -16,8 +16,9 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/{slug}` : ページ表示（DBの Markdown を HTML 変換して表示）
 - `/wiki/{slug}/edit` : 編集画面（POSTで保存可能）
 - `/wiki/new` : 新規ページ作成（POSTで保存可能）
-- `/wiki/media` : メディア一覧（画像/動画/音声）
+- `/wiki/media` : メディア一覧（任意ファイル。画像/動画/音声は埋め込み表示）
 - `/wiki/media/new` : メディア追加（POSTで保存）
+- `/wiki/search?q=...` : 文書検索（title / body_md の部分一致）
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
 
@@ -57,6 +58,7 @@ Wiki システムを段階的に構築するための実装です。
 createdb isl_wiki
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_init.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/002_media_assets.sql
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/003_media_assets_allow_file_type.sql
 ```
 
 接続文字列は環境変数 `ISL_WIKI_DB_URL` で指定できます。
@@ -87,6 +89,7 @@ http://localhost:8080/wiki/home/edit
 http://localhost:8080/wiki/new
 http://localhost:8080/wiki/media
 http://localhost:8080/wiki/media/new
+http://localhost:8080/wiki/search?q=welcome
 ```
 
 保存（POST）確認例:
@@ -104,10 +107,10 @@ curl -i -X POST "http://localhost:8080/wiki/home/edit" \
 ```sh
 curl -i -X POST "http://localhost:8080/wiki/media/new" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "source_path=/tmp/sample.png" \
-  --data-urlencode "title=Sample Image" \
+  --data-urlencode "source_path=/tmp/sample.pdf" \
+  --data-urlencode "title=Sample PDF" \
   --data-urlencode "page_slug=home" \
-  --data-urlencode "media_type=image" \
-  --data-urlencode "mime_type=image/png" \
-  --data-urlencode "edit_summary=add image"
+  --data-urlencode "media_type=file" \
+  --data-urlencode "mime_type=application/pdf" \
+  --data-urlencode "edit_summary=add file"
 ```

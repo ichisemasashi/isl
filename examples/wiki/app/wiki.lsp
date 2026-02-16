@@ -130,7 +130,8 @@
 
 (defun reserved-slug-p (slug)
   (or (string= slug "new")
-      (string= slug "media")))
+      (string= slug "media")
+      (string= slug "search")))
 
 (defun media-root-dir ()
   (let ((v (getenv "ISL_WIKI_MEDIA_DIR")))
@@ -215,7 +216,8 @@
 (defun valid-media-type-p (media-type)
   (or (string= media-type "image")
       (string= media-type "video")
-      (string= media-type "audio")))
+      (string= media-type "audio")
+      (string= media-type "file")))
 
 (defun infer-media-type (filename)
   (let ((ext (file-ext-lower filename)))
@@ -225,7 +227,7 @@
             "video"
             (if (or (string= ext "mp3") (string= ext "wav") (string= ext "ogg") (string= ext "m4a") (string= ext "flac"))
                 "audio"
-                "image")))))
+                "file")))))
 
 (defun infer-mime-type (filename media-type)
   (let ((ext (file-ext-lower filename)))
@@ -244,12 +246,51 @@
      ((string= ext "ogg") "audio/ogg")
      ((string= ext "m4a") "audio/mp4")
      ((string= ext "flac") "audio/flac")
+     ((string= ext "pdf") "application/pdf")
+     ((string= ext "zip") "application/zip")
+     ((string= ext "gz") "application/gzip")
+     ((string= ext "tgz") "application/gzip")
+     ((string= ext "tar") "application/x-tar")
+     ((string= ext "7z") "application/x-7z-compressed")
+     ((string= ext "txt") "text/plain")
+     ((string= ext "md") "text/markdown")
+     ((string= ext "csv") "text/csv")
+     ((string= ext "json") "application/json")
      (t
-      (if (string= media-type "video")
+     (if (string= media-type "video")
           "video/mp4"
           (if (string= media-type "audio")
               "audio/mpeg"
-              "image/png"))))))
+              (if (string= media-type "image")
+                  "image/png"
+                  "application/octet-stream")))))))
+
+(defun media-display-type (media-type mime-type)
+  (cond
+   ((string= media-type "image") "image")
+   ((string= media-type "video") "video")
+   ((string= media-type "audio") "audio")
+   ((starts-with mime-type "image/") "image")
+   ((starts-with mime-type "video/") "video")
+   ((starts-with mime-type "audio/") "audio")
+   (t "file")))
+
+(defun render-media-embed (media-url media-title media-type media-mime)
+  (let ((dtype (media-display-type media-type media-mime)))
+    (cond
+     ((string= dtype "image")
+      (format t "<img src=\"~A\" alt=\"~A\" style=\"max-width:100%;height:auto;border:1px solid #ddd;border-radius:6px\">~%"
+              (html-escape media-url)
+              (html-escape media-title)))
+     ((string= dtype "video")
+      (format t "<video controls style=\"max-width:100%\" src=\"~A\"></video>~%"
+              (html-escape media-url)))
+     ((string= dtype "audio")
+      (format t "<audio controls src=\"~A\"></audio>~%"
+              (html-escape media-url)))
+     (t
+      (format t "<p><a href=\"~A\" download>Download file</a></p>~%"
+              (html-escape media-url))))))
 
 (defun db-url ()
   (let ((v (getenv "ISL_WIKI_DB_URL")))
@@ -461,6 +502,9 @@
         (setq rest (cdr rest)))
       value)))
 
+(defun query-param (name)
+  (parse-form-field (env-or-empty "QUERY_STRING") name))
+
 (defun blank-text-p (s)
   (let ((text (safe-text s))
         (i 0)
@@ -495,6 +539,16 @@
 (defun fetch-pages (db)
   (postgres-query db
     "select slug, title, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') from pages order by slug"))
+
+(defun fetch-pages-by-query (db q)
+  (postgres-query
+   db
+   (string-append
+    "select slug, title, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') "
+    "from pages "
+    "where position(lower('" (sql-escape q) "') in lower(title)) > 0 "
+    "   or position(lower('" (sql-escape q) "') in lower(body_md)) > 0 "
+    "order by updated_at desc, slug")))
 
 (defun fetch-page (db slug)
   (let* ((sql (string-append
@@ -584,7 +638,11 @@
   (format t "</head>~%")
   (format t "<body><main>~%")
   (format t "<p><a href=\"~A\">Wiki Index</a> | <a href=\"~A/new\">New Page</a> | <a href=\"~A/media\">Media</a></p>~%"
-          (app-base) (app-base) (app-base)))
+          (app-base) (app-base) (app-base))
+  (format t "<form method=\"get\" action=\"~A/search\" style=\"margin:0 0 1rem 0\">~%" (app-base))
+  (format t "<input type=\"text\" name=\"q\" value=\"\" placeholder=\"Search wiki text\" style=\"width:70%;max-width:28rem\">~%")
+  (format t "<button type=\"submit\">Search</button>~%")
+  (format t "</form>~%"))
 
 (defun print-layout-foot ()
   (format t "</main></body>~%</html>~%"))
@@ -651,6 +709,32 @@
           (format t "</ul>~%")))
     (print-layout-foot)))
 
+(defun render-search (db)
+  (let ((q (query-param "q"))
+        (base (app-base)))
+    (print-headers-ok)
+    (print-layout-head "Search")
+    (format t "<h1>Search</h1>~%")
+    (if (blank-text-p q)
+        (format t "<p>検索文字列を入力してください。</p>~%")
+        (let ((rows (fetch-pages-by-query db q)))
+          (format t "<p>query: <code>~A</code></p>~%" (html-escape q))
+          (if (null rows)
+              (format t "<p>一致するページはありません。</p>~%")
+              (progn
+                (format t "<ul>~%")
+                (dolist (row rows)
+                  (let ((slug (first row))
+                        (title (second row))
+                        (updated-at (third row)))
+                    (format t "<li><a href=\"~A/~A\">~A</a> <small>(~A)</small></li>~%"
+                            base
+                            (html-escape slug)
+                            (html-escape title)
+                            (html-escape updated-at))))
+                (format t "</ul>~%")))))
+    (print-layout-foot)))
+
 (defun render-view (db slug)
   (if (not (slug-safe-p slug))
       (render-not-found)
@@ -695,15 +779,7 @@
                         (if (string= media-title "")
                             nil
                             (format t "<p><strong>~A</strong></p>~%" (html-escape media-title)))
-                        (if (string= media-type "image")
-                            (format t "<img src=\"~A\" alt=\"~A\" style=\"max-width:100%;height:auto;border:1px solid #ddd;border-radius:6px\">~%"
-                                    (html-escape media-url)
-                                    (html-escape media-title))
-                            (if (string= media-type "video")
-                                (format t "<video controls style=\"max-width:100%\" src=\"~A\"></video>~%"
-                                        (html-escape media-url))
-                                (format t "<audio controls src=\"~A\"></audio>~%"
-                                        (html-escape media-url))))
+                        (render-media-embed media-url media-title media-type media-mime)
                         (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
                                 (html-escape media-url)
                                 (html-escape media-url)
@@ -807,15 +883,7 @@
             (if (string= media-title "")
                 nil
                 (format t "<p>~A</p>~%" (html-escape media-title)))
-            (if (string= media-type "image")
-                (format t "<img src=\"~A\" alt=\"~A\" style=\"max-width:100%;height:auto;border:1px solid #ddd;border-radius:6px\">~%"
-                        (html-escape media-url)
-                        (html-escape media-title))
-                (if (string= media-type "video")
-                    (format t "<video controls style=\"max-width:100%\" src=\"~A\"></video>~%"
-                            (html-escape media-url))
-                    (format t "<audio controls src=\"~A\"></audio>~%"
-                            (html-escape media-url))))
+            (render-media-embed media-url media-title media-type media-mime)
             (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
                     (html-escape media-url)
                     (html-escape media-url)
@@ -853,8 +921,8 @@
     (format t "  <p><label>Source Path (server local)<br><input type=\"text\" name=\"source_path\" value=\"\" style=\"width:100%\" placeholder=\"/path/to/file.png\"></label></p>~%")
     (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
     (format t "  <p><label>Page Slug (optional)<br><input type=\"text\" name=\"page_slug\" value=\"\" style=\"width:100%\" placeholder=\"home\"></label></p>~%")
-    (format t "  <p><label>Media Type<br><select name=\"media_type\"><option value=\"\">auto</option><option value=\"image\">image</option><option value=\"video\">video</option><option value=\"audio\">audio</option></select></label></p>~%")
-    (format t "  <p><label>MIME Type (optional)<br><input type=\"text\" name=\"mime_type\" value=\"\" style=\"width:100%\" placeholder=\"image/png\"></label></p>~%")
+    (format t "  <p><label>Media Type<br><select name=\"media_type\"><option value=\"\">auto</option><option value=\"image\">image</option><option value=\"video\">video</option><option value=\"audio\">audio</option><option value=\"file\">file</option></select></label></p>~%")
+    (format t "  <p><label>MIME Type (optional)<br><input type=\"text\" name=\"mime_type\" value=\"\" style=\"width:100%\" placeholder=\"application/pdf\"></label></p>~%")
     (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"add media\" style=\"width:100%\"></label></p>~%")
     (format t "  <p><button type=\"submit\">Add Media</button></p>~%")
     (format t "</form>~%")
@@ -900,7 +968,7 @@
                     (if (string= page-id-sql "")
                         (render-bad-request "page_slug not found")
                         (if (not (valid-media-type-p media-type))
-                            (render-bad-request "media_type must be image/video/audio")
+                            (render-bad-request "media_type must be image/video/audio/file")
                             (progn
                               (ensure-media-dir)
                               (let ((copy-status (system (string-append "cp " (shell-quote source-path) " " (shell-quote storage-path)))))
@@ -985,7 +1053,9 @@
                             (render-new))
                         (if (string= (first segments) "media")
                             (render-media-index db)
-                            (render-view db (first segments))))
+                            (if (string= (first segments) "search")
+                                (render-search db)
+                                (render-view db (first segments)))))
                 (if (= n 2)
                     (if (string= (first segments) "media")
                         (if (string= (second segments) "new")

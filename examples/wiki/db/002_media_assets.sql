@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS media_assets (
   public_url TEXT NOT NULL,
   created_by TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT media_assets_type_chk CHECK (media_type IN ('image', 'video', 'audio')),
+  CONSTRAINT media_assets_type_chk CHECK (media_type IN ('image', 'video', 'audio', 'file')),
   CONSTRAINT media_assets_filename_not_blank_chk CHECK (btrim(stored_filename) <> ''),
   CONSTRAINT media_assets_public_url_not_blank_chk CHECK (btrim(public_url) <> '')
 );
