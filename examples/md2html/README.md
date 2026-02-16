@@ -1,7 +1,7 @@
-# md2html (Phase 1)
+# md2html (Phase 2)
 
 `md2html` は Markdown を HTML に変換して標準出力へ出すツールです。  
-この時点では **フェーズ1 Core Markdown（拡張なし）** まで実装しています。
+この時点では **フェーズ2 リスト系** まで実装しています。
 
 ## 使い方
 
@@ -17,12 +17,17 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - Block AST:
   - `block-heading`
   - `block-paragraph`
+  - `block-blockquote`
+  - `block-hr`
+  - `block-list`
+  - `block-deflist`
 - Inline AST:
   - `inline-text`
   - `inline-code`
   - `inline-emph`
   - `inline-strong`
   - `inline-link`
+  - `inline-image`
 - HTML renderer
 - 位置情報:
   - `line`, `col`, `offset`
@@ -42,6 +47,23 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - 引用 (`>`)
 - 水平線 (`---`, `***`, `___`)
 - HTMLエンティティ保持（例: `&amp;`, `&#169;`）
+
+## 実装済み Markdown（List 拡張）
+
+- `startnum`
+  - 例: `3. item` -> `<ol start="3">`
+- `fancy_lists`
+  - 例: `a)`, `A)`, `i)`, `I)` の順序付きリスト
+- `example_lists`
+  - 例: `(@) item`
+- `definition_lists`
+  - 例:
+    - `Term`
+    - `: definition`
+- `task_lists`
+  - 例: `- [ ]` / `- [x]`
+- `lists_without_preceding_blankline`
+  - 段落直後に空行なしでリスト開始してもリストとして解釈
 
 ## ディレクトリ構成
 

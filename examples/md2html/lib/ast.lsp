@@ -3,6 +3,8 @@
 ;;   (block-paragraph pos inlines)
 ;;   (block-blockquote pos blocks)
 ;;   (block-hr pos)
+;;   (block-list pos list-kind list-type start items)
+;;   (block-deflist pos items)
 
 (defun make-block-heading (pos level inlines)
   (list 'block-heading pos level inlines))
@@ -16,6 +18,12 @@
 (defun make-block-hr (pos)
   (list 'block-hr pos))
 
+(defun make-block-list (pos list-kind list-type start items)
+  (list 'block-list pos list-kind list-type start items))
+
+(defun make-block-deflist (pos items)
+  (list 'block-deflist pos items))
+
 (defun block-kind (b) (first b))
 (defun block-pos (b) (second b))
 (defun block-heading-level (b) (third b))
@@ -24,6 +32,29 @@
       (fourth b)
       (third b)))
 (defun block-children (b) (third b))
+(defun block-list-kind (b) (third b))
+(defun block-list-type (b) (fourth b))
+(defun block-list-start (b) (fifth b))
+(defun block-list-items (b) (sixth b))
+(defun block-deflist-items (b) (third b))
+
+;; List item:
+;;   (list-item pos inlines task-state)
+;; task-state: 'none | 'unchecked | 'checked
+(defun make-list-item (pos inlines task-state)
+  (list 'list-item pos inlines task-state))
+(defun list-item-pos (i) (second i))
+(defun list-item-inlines (i) (third i))
+(defun list-item-task-state (i) (fourth i))
+
+;; Definition list item:
+;;   (def-item pos term-inlines defs)
+;; defs: list of inline node lists
+(defun make-def-item (pos term-inlines defs)
+  (list 'def-item pos term-inlines defs))
+(defun def-item-pos (i) (second i))
+(defun def-item-term (i) (third i))
+(defun def-item-defs (i) (fourth i))
 
 ;; Inline AST
 ;;   (inline-text pos text)
