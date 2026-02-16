@@ -115,15 +115,6 @@
                   (list 'headers headers)
                   (list 'body body)))))))
 
-(defun ws-read-response-from-conn (conn)
-  (ws-read-response-from-conn* conn #f))
-
-(defun ws-read-response-from-conn-no-body (conn)
-  (ws-read-response-from-conn* conn #t))
-
-(defun ws-resp-get (resp key)
-  (ws-config-get resp key))
-
 (defun ws-request-once* (port req skip-body)
   (let ((conn (tcp-connect "127.0.0.1" port)))
     (tcp-send conn req)
@@ -137,12 +128,37 @@
 (defun ws-request-once-no-body (port req)
   (ws-request-once* port req #t))
 
+(defun ws-resp-get (resp key)
+  (ws-config-get resp key))
+
+(defun ws-status-code (resp)
+  (let* ((line (ws-resp-get resp 'status-line))
+         (a (ws-split-once line " ")))
+    (if (null a)
+        0
+        (let ((b (ws-split-once (second a) " ")))
+          (if (null b)
+              0
+              (ws-parse-int (car b)))))))
+
 (defun run-tests ()
   (let* ((root (ws-test-root))
-         (tmp-port 18081)
-         (cfg (string-append root "/tests/tmp-t2-webserver.conf.lsp"))
-         (log "/tmp/webserver-t2-integration.log")
-         (pid "/tmp/webserver-t2-integration.pid"))
+         (tmp-port 18084)
+         (cfg (string-append root "/tests/tmp-t4-webserver.conf.lsp"))
+         (log "/tmp/webserver-t4-integration.log")
+         (pid "/tmp/webserver-t4-integration.pid")
+         (docroot (string-append root "/runtime/docroot"))
+         (private-dir (string-append docroot "/private"))
+         (private-file (string-append private-dir "/secret.txt"))
+         (public-leak (string-append docroot "/public/leak.txt")))
+    (assert-true "prepare private dir"
+                 (= (system (string-append "mkdir -p " (ws-shell-quote-local private-dir))) 0))
+    (ws-write-file-text private-file "top-secret")
+    (system (string-append "rm -f " (ws-shell-quote-local public-leak)))
+    (assert-true "create symlink to private"
+                 (= (system (string-append "ln -s " (ws-shell-quote-local private-file)
+                                           " " (ws-shell-quote-local public-leak))) 0))
+
     (ws-write-file-text
      cfg
      (string-append
@@ -155,62 +171,55 @@
       "  (cgi_bin_dir \"./examples/webserver/runtime/cgi-bin\")\n"
       "  (max_connections 100))"))
 
-    (ws-start-server root cfg 6 log pid)
+    (ws-start-server root cfg 8 log pid)
 
-    (let ((r-get (ws-request-once
+    (let* ((r-ok (ws-request-once
                   tmp-port
                   "GET /public/index.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
-          (r-head (ws-request-once-no-body
-                   tmp-port
-                   "HEAD /public/index.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
-          (r-post (ws-request-once
-                   tmp-port
-                  "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"))
-          (r-http10 (ws-request-once
-                     tmp-port
-                     "GET /public/index.html HTTP/1.0\r\nHost: localhost\r\n\r\n"))
-          (r-bad (ws-request-once
-                  tmp-port
-                  "BADREQUEST\r\n\r\n")))
-      (assert-true "GET status 200"
-                   (ws-contains (ws-resp-get r-get 'status-line) "200 OK"))
+           (r-head (ws-request-once-no-body
+                    tmp-port
+                    "HEAD /public/index.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+           (r-private (ws-request-once
+                       tmp-port
+                       "GET /private/secret.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+           (r-traversal (ws-request-once
+                         tmp-port
+                         "GET /public/../private/secret.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+           (r-symlink (ws-request-once
+                       tmp-port
+                       "GET /public/leak.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+           (head-headers (ws-resp-get r-head 'headers))
+           (get-headers (ws-resp-get r-ok 'headers))
+           (code-private (ws-status-code r-private))
+           (code-traversal (ws-status-code r-traversal))
+           (code-symlink (ws-status-code r-symlink)))
+      (assert-true "public index status 200"
+                   (= (ws-status-code r-ok) 200))
+      (assert-true "public index body content"
+                   (ws-contains (ws-resp-get r-ok 'body) "<!doctype html>"))
       (assert-true "HEAD status 200"
-                   (ws-contains (ws-resp-get r-head 'status-line) "200 OK"))
+                   (= (ws-status-code r-head) 200))
       (assert-true "HEAD body empty"
                    (= (length (ws-resp-get r-head 'body)) 0))
-      (assert-true "POST status 200"
-                   (ws-contains (ws-resp-get r-post 'status-line) "200 OK"))
-      (assert-true "POST body includes bytes"
-                   (ws-contains (ws-resp-get r-post 'body) "bytes=5"))
-      (assert-true "HTTP/1.0 status 200"
-                   (ws-contains (ws-resp-get r-http10 'status-line) "HTTP/1.0 200"))
-      (assert-true "Bad request status 400"
-                   (ws-contains (ws-resp-get r-bad 'status-line) "400 Bad Request")))
-
-    (let ((conn (tcp-connect "127.0.0.1" tmp-port)))
-      (tcp-send conn "GET /public/index.html HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
-      (let ((r1 (ws-read-response-from-conn conn)))
-        (assert-true "Keep-alive first response 200"
-                     (ws-contains (ws-resp-get r1 'status-line) "200 OK"))
-        (assert-true "Keep-alive first connection header"
-                     (string= (ws-header-get (ws-resp-get r1 'headers) "connection") "keep-alive")))
-      (tcp-send conn "GET /public/index.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-      (let ((r2 (ws-read-response-from-conn conn)))
-        (assert-true "Keep-alive second response 200"
-                     (ws-contains (ws-resp-get r2 'status-line) "200 OK"))
-        (assert-true "Keep-alive second connection header"
-                     (string= (ws-header-get (ws-resp-get r2 'headers) "connection") "close")))
-      (tcp-close conn))
+      (assert-true "HEAD and GET content-type are same"
+                   (string= (ws-header-get head-headers "content-type")
+                            (ws-header-get get-headers "content-type")))
+      (assert-true "HEAD and GET content-length are same"
+                   (string= (ws-header-get head-headers "content-length")
+                            (ws-header-get get-headers "content-length")))
+      (assert-true "private path is denied"
+                   (or (= code-private 403) (= code-private 404)))
+      (assert-true ".. traversal is denied"
+                   (or (= code-traversal 403) (= code-traversal 404)))
+      (assert-true "symlink escape is denied"
+                   (or (= code-symlink 403) (= code-symlink 404))))
 
     (assert-true "sleep for graceful stop" (= (system "sh -c 'sleep 1'") 0))
-    (let ((server-log (ws-read-file-text log)))
-      (assert-true "server log contains listening"
-                   (ws-contains server-log "http server listening on port 18081"))
-      (assert-true "server log contains stopped"
-                   (ws-contains server-log "http server stopped")))
-
+    (ws-stop-server-if-running pid)
+    (system (string-append "rm -f " (ws-shell-quote-local public-leak)))
+    (delete-file private-file)
     (delete-file cfg)
     (delete-file pid)
-    (format t "t2-http-integration: ok~%")))
+    (format t "t4-static-integration: ok~%")))
 
 (run-tests)

@@ -163,8 +163,10 @@
 (defun ws-reason (status)
   (if (= status 200) "OK"
       (if (= status 400) "Bad Request"
-          (if (= status 405) "Method Not Allowed"
-              "Internal Server Error"))))
+          (if (= status 403) "Forbidden"
+              (if (= status 404) "Not Found"
+                  (if (= status 405) "Method Not Allowed"
+                      "Internal Server Error"))))))
 
 (defun ws-target-path-only (target)
   (let ((p (string-index "?" target)))
@@ -187,7 +189,128 @@
         nil)
     (ws-conn-send conn out)))
 
-(defun ws-handle-known-method (conn req)
+(defun ws-contains (hay needle)
+  (not (null (string-index needle hay))))
+
+(defun ws-ends-with (s suffix)
+  (let ((n (length s))
+        (m (length suffix)))
+    (and (>= n m)
+         (string= (substring s (- n m) n) suffix))))
+
+(defun ws-static-mime-type (path)
+  (let ((p (ws-ascii-downcase path)))
+    (if (ws-ends-with p ".html") "text/html; charset=UTF-8"
+        (if (ws-ends-with p ".htm") "text/html; charset=UTF-8"
+            (if (ws-ends-with p ".css") "text/css; charset=UTF-8"
+                (if (ws-ends-with p ".js") "application/javascript; charset=UTF-8"
+                    (if (ws-ends-with p ".json") "application/json; charset=UTF-8"
+                        (if (ws-ends-with p ".txt") "text/plain; charset=UTF-8"
+                            (if (ws-ends-with p ".png") "image/png"
+                                (if (ws-ends-with p ".jpg") "image/jpeg"
+                                    (if (ws-ends-with p ".jpeg") "image/jpeg"
+                                        "application/octet-stream")))))))))))
+
+(defun ws-read-file-text (path)
+  (with-open-file (s path :direction :input)
+    (let ((line (read-line s #f))
+          (acc "")
+          (first t))
+      (while (not (null line))
+        (if first
+            (progn
+              (setq acc line)
+              (setq first nil))
+            (setq acc (string-append acc "\n" line)))
+        (setq line (read-line s #f)))
+      acc)))
+
+(defun ws-http-error-response (conn version status keep-alive body)
+  (ws-send-response
+   conn
+   version
+   status
+   (list
+    (list "Content-Type" "text/plain; charset=UTF-8")
+    (list "Content-Length" (format nil "~A" (length body)))
+    (list "Connection" (if keep-alive "keep-alive" "close")))
+   body
+   #t))
+
+(defun ws-static-public-path (target-path)
+  (if (or (string= target-path "/")
+          (string= target-path "/public")
+          (string= target-path "/public/"))
+      "/public/index.html"
+      target-path))
+
+(defun ws-static-file-within-public-p (public-root file-path)
+  (if (not (ws-file-readable-p file-path))
+      #f
+      (let ((cmd (string-append "test -L " (ws-shell-quote file-path))))
+        (if (= (system cmd) 0)
+            #f
+            (let ((rel (substring file-path (+ (length public-root) 1) (length file-path)))
+                  (parts '())
+                  (cur public-root)
+                  (ok #t))
+              (setq parts (ws-split-path rel))
+              (while (and ok (not (null parts)))
+                (setq cur (string-append cur "/" (car parts)))
+                (if (= (system (string-append "test -L " (ws-shell-quote cur))) 0)
+                    (setq ok #f)
+                    nil)
+                (setq parts (cdr parts)))
+              ok)))))
+
+(defun ws-resolve-static-file (cfg target-path)
+  (let* ((public-root (ws-normalize-path
+                       (string-append (ws-config-get cfg 'document_root) "/public")))
+         (mapped (ws-static-public-path target-path)))
+    (if (or (not (ws-starts-with mapped "/"))
+            (ws-contains mapped "..")
+            (ws-contains mapped "\\"))
+        (list 'error 403 "forbidden\n")
+        (if (not (or (string= mapped "/public")
+                     (ws-starts-with mapped "/public/")))
+            (list 'error 403 "forbidden\n")
+            (let* ((candidate (ws-normalize-path
+                               (string-append (ws-config-get cfg 'document_root) mapped))))
+              (if (not (ws-starts-with candidate (string-append public-root "/")))
+                  (list 'error 403 "forbidden\n")
+                  (if (not (ws-static-file-within-public-p public-root candidate))
+                      (list 'error 404 "not found\n")
+                      (let ((body (ws-read-file-text candidate))
+                            (mime (ws-static-mime-type candidate)))
+                        (list 'ok candidate mime body)))))))))
+
+(defun ws-handle-static-request (conn cfg req)
+  (let* ((method (ws-request-get req 'method))
+         (target (ws-request-get req 'target))
+         (version (ws-request-get req 'version))
+         (keep-alive (ws-request-get req 'keep-alive))
+         (path (ws-target-path-only target))
+         (resolved (ws-resolve-static-file cfg path)))
+    (if (eq (car resolved) 'ok)
+        (let* ((mime (third resolved))
+               (body (fourth resolved))
+               (send-body (not (string= method "HEAD"))))
+          (ws-send-response
+           conn
+           version
+           200
+           (list
+            (list "Content-Type" mime)
+            (list "Content-Length" (format nil "~A" (length body)))
+            (list "Connection" (if keep-alive "keep-alive" "close")))
+           body
+           send-body)
+          keep-alive)
+        (progn
+          (ws-http-error-response conn version (second resolved) keep-alive (third resolved))
+          keep-alive))))
+
+(defun ws-handle-post-request (conn req)
   (let* ((method (ws-request-get req 'method))
          (target (ws-request-get req 'target))
          (version (ws-request-get req 'version))
@@ -206,36 +329,36 @@
     (ws-send-response conn version 200 base-headers content send-body)
     keep-alive))
 
-(defun ws-handle-http-request (conn req)
+(defun ws-handle-http-request (conn cfg req)
   (let ((method (ws-request-get req 'method))
         (version (ws-request-get req 'version))
         (keep-alive (ws-request-get req 'keep-alive)))
-    (if (or (string= method "GET")
-            (string= method "HEAD")
-            (string= method "POST"))
-        (ws-handle-known-method conn req)
-        (progn
-          (ws-send-response
-           conn
-           version
-           405
-           (list
-            (list "Content-Type" "text/plain; charset=UTF-8")
-            (list "Content-Length" "19")
-            (list "Connection" (if keep-alive "keep-alive" "close"))
-            (list "Allow" "GET, HEAD, POST"))
-           "method not allowed\n"
-           #t)
-          keep-alive))))
+    (if (or (string= method "GET") (string= method "HEAD"))
+        (ws-handle-static-request conn cfg req)
+        (if (string= method "POST")
+            (ws-handle-post-request conn req)
+            (progn
+              (ws-send-response
+               conn
+               version
+               405
+               (list
+                (list "Content-Type" "text/plain; charset=UTF-8")
+                (list "Content-Length" "19")
+                (list "Connection" (if keep-alive "keep-alive" "close"))
+                (list "Allow" "GET, HEAD, POST"))
+               "method not allowed\n"
+               #t)
+              keep-alive)))))
 
-(defun ws-handle-connection (conn)
+(defun ws-handle-connection (cfg conn)
   (let ((alive #t))
     (while alive
       (let ((req (ws-read-http-request conn)))
         (if (eq req 'eof)
             (setq alive #f)
             (if (and (listp req) (eq (car req) 'ok))
-                (setq alive (ws-handle-http-request conn req))
+                (setq alive (ws-handle-http-request conn cfg req))
                 (progn
                   (ws-send-response
                    conn
@@ -299,7 +422,7 @@
       (let ((conn (ws-accept-connection listener tls-mode)))
         (setq accepted (+ accepted 1))
         (handler-case
-          (ws-handle-connection conn)
+          (ws-handle-connection cfg conn)
           (error (e)
             (ws-log (format nil "connection error: ~A" e))))
         (handler-case
