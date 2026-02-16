@@ -3,13 +3,47 @@
 `md2html` は Markdown を HTML に変換して標準出力へ出すツールです。  
 この時点では **フェーズ9 互換・特殊機能** まで実装しています。
 
-## 使い方
+## インストール/実行方法
+
+前提:
+- ISL 本体がビルド済みで `/Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl` が存在すること
+- 実行権限: `/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html`
+
+初回セットアップ例:
+
+```sh
+cd /Volumes/SSD-PLU3/work/LISP/islisp/isl
+chmod +x /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
+```
+
+実行例:
 
 ```sh
 /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html input.md
 cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html -o output.html input.md
 ```
+
+## オプション一覧
+
+- `-o, --output <path>`
+  - 変換結果を標準出力ではなくファイルへ書き込みます
+- `-h, --help`
+  - 使い方を表示して終了します
+
+補足:
+- 入力は `*.md` ファイル1つ、または標準入力のみ対応
+- 複数入力ファイルは未対応
+
+## 制約事項（対応Markdown範囲）
+
+- 対応範囲:
+  - フェーズ0〜9で実装済みの機能（本 README の「実装済み Markdown」各節）
+- 仕様上の制約:
+  - Pandoc 完全互換ではありません（互換を意図した拡張のみ一部対応）
+  - 出力形式は HTML（単一テキスト）で、テンプレート/CSS 自動付与はしません
+  - 入力文字コードは UTF-8 前提（不正時はエラー終了）
+  - `stdout` リダイレクト先の書き込み不可はシェル側エラーになります
 
 ## エラー処理
 
