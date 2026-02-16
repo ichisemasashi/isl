@@ -35,6 +35,29 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - 入力は `*.md` ファイル1つ、または標準入力のみ対応
 - 複数入力ファイルは未対応
 
+## 環境変数一覧（機能別早見表）
+
+実行時に `VAR=value` を先頭に付けて指定できます。
+
+```sh
+MD2HTML_IDENTIFIER_STYLE=gfm /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html input.md
+```
+
+| 機能 | 環境変数 | 値 | 既定値 | 説明 |
+|---|---|---|---|---|
+| 見出しID生成（Phase 5） | `MD2HTML_IDENTIFIER_STYLE` | `auto` / `ascii` / `gfm` / `mmd` | `auto` | 見出しから生成される識別子の正規化方式 |
+| 改行処理（Phase 3） | `MD2HTML_LINE_BREAK_MODE` | `normal` / `hard` / `ignore` / `east-asian` | `normal` | 段落内改行の扱い |
+| スマート記法（Phase 6） | `MD2HTML_SMART` | `0` / `1` | `1` | 引用符・ダッシュ・三点リーダの置換を有効化 |
+| 旧ダッシュ挙動（Phase 6） | `MD2HTML_OLD_DASHES` | `0` / `1` | `0` | `smart` 有効時の `--` / `---` の割り当てを旧仕様に変更 |
+| WikiLinks解釈（Phase 9） | `MD2HTML_WIKILINK_ORDER` | `after` / `before` / `both` | `both` | `[[A|B]]` を `title-after-pipe` か `title-before-pipe` で解釈 |
+| 相対パス再基準化（Phase 9） | `MD2HTML_REBASE_RELATIVE` | `0` / `1` | `0` | リンク/画像の相対URLを再基準化 |
+| 相対パス再基準化（Phase 9） | `MD2HTML_REBASE_PREFIX` | 文字列パス | （空） | 再基準化先プレフィックス（未指定時は入力ファイルのディレクトリ） |
+| Literate Haskell（Phase 9） | `MD2HTML_LITERATE_HASKELL` | `0` / `1` | `0` | Bird-style (`> code`) をコードブロックとして扱う |
+| Gutenberg整形（Phase 9） | `MD2HTML_GUTENBERG` | `0` / `1` | `0` | Gutenbergの前後マーカー除去と本文整形を有効化 |
+
+注記:
+- `MD2HTML_ROOT` などの一部変数はラッパースクリプト内部用途です（通常は手動設定不要）。
+
 ## 制約事項（対応Markdown範囲）
 
 - 対応範囲:
@@ -188,12 +211,11 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - `line_blocks`
 - `escaped_line_breaks`
 - `hard_line_breaks`
-  - `MD2HTML_LINE_BREAK_MODE=hard`
 - `ignore_line_breaks`
-  - `MD2HTML_LINE_BREAK_MODE=ignore`
 - `east_asian_line_breaks`
-  - `MD2HTML_LINE_BREAK_MODE=east-asian`
 - `space_in_atx_header`
+
+設定方法は「環境変数一覧（機能別早見表）」を参照してください。
 
 ## 実装済み Markdown（Phase 4）
 
@@ -223,11 +245,7 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - `mmd_link_attributes`
 - `markdown_in_html_blocks`
 
-識別子スタイルは `MD2HTML_IDENTIFIER_STYLE` で切り替え:
-- `auto` (default)
-- `ascii`
-- `gfm`
-- `mmd`
+設定方法は「環境変数一覧（機能別早見表）」を参照してください。
 
 ## 実装済み Markdown（Phase 6）
 
@@ -247,9 +265,7 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - `shortcut_reference_links`
 - `spaced_reference_links`
 
-追加環境変数:
-- `MD2HTML_SMART=0|1` (default: `1`)
-- `MD2HTML_OLD_DASHES=0|1` (default: `0`)
+設定方法は「環境変数一覧（機能別早見表）」を参照してください。
 
 ## 実装済み Markdown（Phase 7）
 
