@@ -1,0 +1,20 @@
+(defun safe-text (v)
+  (if (null v) "" v))
+
+(defun html-escape (s)
+  (let ((text (safe-text s))
+        (i 0)
+        (out ""))
+    (while (< i (length text))
+      (let ((ch (substring text i (+ i 1))))
+        (cond
+         ((string= ch "&") (setq out (string-append out "&amp;")))
+         ((string= ch "<") (setq out (string-append out "&lt;")))
+         ((string= ch ">") (setq out (string-append out "&gt;")))
+         ((string= ch "\"") (setq out (string-append out "&quot;")))
+         (t (setq out (string-append out ch)))))
+      (setq i (+ i 1)))
+    out))
+
+(defun attr-escape (s)
+  (html-escape s))

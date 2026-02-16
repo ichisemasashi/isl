@@ -1,0 +1,60 @@
+(defun env-or-empty (name)
+  (let ((v (getenv name)))
+    (if (null v) "" v)))
+
+(defun read-file-text (path)
+  (with-open-file (s path :direction :input)
+    (let ((line (read-line s #f))
+          (acc "")
+          (first-line t))
+      (while (not (null line))
+        (if first-line
+            (progn
+              (setq acc line)
+              (setq first-line nil))
+            (setq acc (string-append acc "\n" line)))
+        (setq line (read-line s #f)))
+      acc)))
+
+(defun read-stdin-text ()
+  (with-open-file (s "/dev/stdin" :direction :input)
+    (let ((line (read-line s #f))
+          (acc "")
+          (first-line t))
+      (while (not (null line))
+        (if first-line
+            (progn
+              (setq acc line)
+              (setq first-line nil))
+            (setq acc (string-append acc "\n" line)))
+        (setq line (read-line s #f)))
+      acc)))
+
+(defun md2html-root ()
+  (let ((v (getenv "MD2HTML_ROOT")))
+    (if (null v)
+        "/Volumes/SSD-PLU3/work/LISP/islisp/isl"
+        v)))
+
+(defun load-md2html-libs ()
+  (let ((base (string-append (md2html-root) "/examples/md2html/lib")))
+    (load (string-append base "/errors.lsp"))
+    (load (string-append base "/ast.lsp"))
+    (load (string-append base "/escape.lsp"))
+    (load (string-append base "/lexer.lsp"))
+    (load (string-append base "/parser.lsp"))
+    (load (string-append base "/renderer.lsp"))))
+
+(defun main ()
+  (load-md2html-libs)
+  (let ((mode (env-or-empty "MD2HTML_INPUT_MODE"))
+        (input-path (env-or-empty "MD2HTML_INPUT_PATH"))
+        (source ""))
+    (if (string= mode "file")
+        (setq source (read-file-text input-path))
+        (if (string= mode "stdin")
+            (setq source (read-stdin-text))
+            (md-fail "E_USAGE" "input mode must be file or stdin" (md-pos 1 1 0) mode)))
+    (format t "~A~%" (render-html-document (parse-markdown source)))))
+
+(main)

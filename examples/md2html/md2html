@@ -1,0 +1,47 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR="/Volumes/SSD-PLU3/work/LISP/islisp/isl"
+ISL_BIN="$ROOT_DIR/bin/isl"
+APP_PATH="$ROOT_DIR/examples/md2html/app/main.lsp"
+
+usage() {
+  cat 1>&2 <<'EOF'
+Usage:
+  md2html input.md
+  cat input.md | md2html
+EOF
+}
+
+if [ "$#" -gt 1 ]; then
+  usage
+  exit 1
+fi
+
+export MD2HTML_ROOT="$ROOT_DIR"
+
+if [ "$#" -eq 1 ]; then
+  input="$1"
+  case "$input" in
+    *.md) ;;
+    *)
+      echo "md2html: input file must be *.md" 1>&2
+      exit 2
+      ;;
+  esac
+  if [ ! -f "$input" ]; then
+    echo "md2html: file not found: $input" 1>&2
+    exit 2
+  fi
+  export MD2HTML_INPUT_MODE="file"
+  export MD2HTML_INPUT_PATH="$input"
+else
+  if [ -t 0 ]; then
+    usage
+    exit 1
+  fi
+  export MD2HTML_INPUT_MODE="stdin"
+  export MD2HTML_INPUT_PATH=""
+fi
+
+exec "$ISL_BIN" "$APP_PATH"
