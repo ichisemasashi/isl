@@ -216,15 +216,18 @@
 
 (defun ws-reason (status)
   (if (= status 200) "OK"
+      (if (= status 206) "Partial Content"
+          (if (= status 304) "Not Modified"
       (if (= status 400) "Bad Request"
           (if (= status 403) "Forbidden"
               (if (= status 404) "Not Found"
                   (if (= status 405) "Method Not Allowed"
                       (if (= status 413) "Payload Too Large"
                           (if (= status 431) "Request Header Fields Too Large"
+                              (if (= status 416) "Range Not Satisfiable"
                               (if (= status 503) "Service Unavailable"
                                   (if (= status 504) "Gateway Timeout"
-                                      "Internal Server Error"))))))))))
+                                      "Internal Server Error")))))))))))))
 
 (defun ws-target-path-only (target)
   (let ((p (string-index "?" target)))
@@ -288,13 +291,108 @@
       acc)))
 
 (defun ws-read-file-raw (path)
-  (with-open-file (s path :direction :input)
-    (let ((ch (read-char s #f))
-          (acc ""))
-      (while (not (null ch))
-        (setq acc (string-append acc (string ch)))
-        (setq ch (read-char s #f)))
-      acc)))
+  (ws-read-file-text path))
+
+(defun ws-command-output (cmd)
+  (let ((tmp (ws-temp-file "webserver-cmd" ".tmp"))
+        (status 1)
+        (out ""))
+    (setq status (system (string-append cmd " > " (ws-shell-quote tmp) " 2>/dev/null")))
+    (if (null (probe-file tmp))
+        (setq out "")
+        (progn
+          (setq out (ws-read-file-text tmp))
+          (delete-file tmp)))
+    (list status (ws-trim out))))
+
+(defun ws-file-mtime-epoch (cfg path)
+  (let* ((os-family (ws-config-get cfg 'os_family))
+         (cmd (if (string= os-family "linux")
+                  (string-append "stat -c %Y " (ws-shell-quote path))
+                  (string-append "stat -f %m " (ws-shell-quote path))))
+         (result (ws-command-output cmd))
+         (status (car result))
+         (out (second result))
+         (n (if (= status 0) (ws-parse-int out) '())))
+    (if (null n) 0 n)))
+
+(defun ws-http-date-from-epoch (cfg epoch-sec)
+  (let* ((os-family (ws-config-get cfg 'os_family))
+         (fmt "'%a, %d %b %Y %H:%M:%S GMT'")
+         (cmd (if (string= os-family "linux")
+                  (string-append "date -u -d @" (format nil "~A" epoch-sec) " +" fmt)
+                  (string-append "date -u -r " (format nil "~A" epoch-sec) " +" fmt)))
+         (result (ws-command-output cmd)))
+    (if (= (car result) 0)
+        (second result)
+        "")))
+
+(defun ws-epoch-from-http-date (cfg http-date)
+  (let* ((os-family (ws-config-get cfg 'os_family))
+         (cmd (if (string= os-family "linux")
+                  (string-append "date -u -d " (ws-shell-quote http-date) " +%s")
+                  (string-append "date -ju -f '%a, %d %b %Y %H:%M:%S GMT' "
+                                 (ws-shell-quote http-date)
+                                 " +%s")))
+         (result (ws-command-output cmd))
+         (n (if (= (car result) 0) (ws-parse-int (second result)) '())))
+    (if (null n) '() n)))
+
+(defun ws-digits-only-p (s)
+  (let ((i 0)
+        (ok t))
+    (if (= (length s) 0)
+        nil
+        (progn
+          (while (and ok (< i (length s)))
+            (if (null (string-index (substring s i (+ i 1)) "0123456789"))
+                (setq ok nil)
+                nil)
+            (setq i (+ i 1)))
+          ok))))
+
+(defun ws-parse-range-header (range-header total-size)
+  (if (null range-header)
+      (list 'none)
+      (if (not (ws-starts-with range-header "bytes="))
+          (list 'none)
+          (let ((spec (substring range-header (length "bytes=") (length range-header))))
+            (if (ws-contains spec ",")
+                (list 'error)
+                (let ((parts (ws-split-once spec "-")))
+                  (if (null parts)
+                      (list 'error)
+                      (let ((start-s (car parts))
+                            (end-s (second parts)))
+                        (if (and (= (length start-s) 0) (= (length end-s) 0))
+                            (list 'error)
+                            (if (= total-size 0)
+                                (list 'unsat)
+                                (if (= (length start-s) 0)
+                                    (if (not (ws-digits-only-p end-s))
+                                        (list 'error)
+                                        (let* ((suffix (ws-parse-int end-s))
+                                               (take (if (> suffix total-size) total-size suffix))
+                                               (start (- total-size take))
+                                               (end (- total-size 1)))
+                                          (if (<= suffix 0)
+                                              (list 'unsat)
+                                              (list 'ok start end))))
+                                    (if (not (ws-digits-only-p start-s))
+                                        (list 'error)
+                                        (let ((start (ws-parse-int start-s)))
+                                          (if (>= start total-size)
+                                              (list 'unsat)
+                                              (if (= (length end-s) 0)
+                                                  (list 'ok start (- total-size 1))
+                                                  (if (not (ws-digits-only-p end-s))
+                                                      (list 'error)
+                                                      (let ((end (ws-parse-int end-s)))
+                                                        (if (< end start)
+                                                            (list 'error)
+                                                            (if (>= end total-size)
+                                                                (list 'ok start (- total-size 1))
+                                                                (list 'ok start end))))))))))))))))))))
 
 (defun ws-write-file-raw (path text)
   (with-open-file (s path :direction :output :if-exists :overwrite)
@@ -427,9 +525,8 @@
                   (list 'error 403 "forbidden\n")
                   (if (not (ws-static-file-within-public-p public-root candidate))
                       (list 'error 404 "not found\n")
-                      (let ((body (ws-read-file-text candidate))
-                            (mime (ws-static-mime-type candidate)))
-                        (list 'ok candidate mime body)))))))))
+                      (let ((mime (ws-static-mime-type candidate)))
+                        (list 'ok candidate mime)))))))))
 
 (defun ws-cgi-request-path-p (path)
   (ws-starts-with path "/cgi-bin/"))
@@ -587,23 +684,84 @@
          (target (ws-request-get req 'target))
          (version (ws-request-get req 'version))
          (keep-alive (ws-request-get req 'keep-alive))
+         (headers (ws-request-get req 'headers))
          (path (ws-target-path-only target))
          (resolved (ws-resolve-static-file cfg path)))
     (if (eq (car resolved) 'ok)
-        (let* ((mime (third resolved))
-               (body (fourth resolved))
+        (let* ((file-path (second resolved))
+               (mime (third resolved))
+               (full-body (ws-read-file-raw file-path))
+               (total-size (length full-body))
+               (mtime-epoch (ws-file-mtime-epoch cfg file-path))
+               (last-modified (ws-http-date-from-epoch cfg mtime-epoch))
+               (if-modified-since (ws-header-get headers "if-modified-since"))
+               (ims-epoch (if (null if-modified-since) '() (ws-epoch-from-http-date cfg if-modified-since)))
+               (not-modified (if (null ims-epoch) #f (<= mtime-epoch ims-epoch)))
                (send-body (not (string= method "HEAD"))))
-          (ws-send-response
-           conn
-           version
-           200
-           (list
-            (list "Content-Type" mime)
-            (list "Content-Length" (format nil "~A" (length body)))
-            (list "Connection" (if keep-alive "keep-alive" "close")))
-           body
-           send-body)
-          (list keep-alive 200))
+          (if not-modified
+              (progn
+                (ws-send-response
+                 conn
+                 version
+                 304
+                 (list
+                  (list "Last-Modified" last-modified)
+                  (list "Accept-Ranges" "bytes")
+                  (list "Content-Length" "0")
+                  (list "Connection" (if keep-alive "keep-alive" "close")))
+                 ""
+                 #f)
+                (list keep-alive 304))
+              (let* ((range-header (ws-header-get headers "range"))
+                     (range-result (ws-parse-range-header range-header total-size)))
+                (if (or (eq (car range-result) 'error)
+                        (eq (car range-result) 'unsat))
+                    (progn
+                      (ws-send-response
+                       conn
+                       version
+                       416
+                       (list
+                        (list "Content-Type" "text/plain; charset=UTF-8")
+                        (list "Content-Range" (format nil "bytes */~A" total-size))
+                        (list "Content-Length" "22")
+                        (list "Connection" (if keep-alive "keep-alive" "close")))
+                       "range not satisfiable\n"
+                       send-body)
+                      (list keep-alive 416))
+                    (if (eq (car range-result) 'ok)
+                        (let* ((start (second range-result))
+                               (end (third range-result))
+                               (part-body (substring full-body start (+ end 1))))
+                          (ws-send-response
+                           conn
+                           version
+                           206
+                           (list
+                            (list "Content-Type" mime)
+                            (list "Last-Modified" last-modified)
+                            (list "Accept-Ranges" "bytes")
+                            (list "Content-Range"
+                                  (format nil "bytes ~A-~A/~A" start end total-size))
+                            (list "Content-Length" (format nil "~A" (length part-body)))
+                            (list "Connection" (if keep-alive "keep-alive" "close")))
+                           part-body
+                           send-body)
+                          (list keep-alive 206))
+                        (progn
+                          (ws-send-response
+                           conn
+                           version
+                           200
+                           (list
+                            (list "Content-Type" mime)
+                            (list "Last-Modified" last-modified)
+                            (list "Accept-Ranges" "bytes")
+                            (list "Content-Length" (format nil "~A" total-size))
+                            (list "Connection" (if keep-alive "keep-alive" "close")))
+                           full-body
+                           send-body)
+                          (list keep-alive 200)))))))
         (progn
           (ws-http-error-response conn version (second resolved) keep-alive (third resolved))
           (list keep-alive (second resolved))))))

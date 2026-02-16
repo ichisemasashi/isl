@@ -94,7 +94,7 @@
           ""))))
 
 (defun ws-validate-platform ()
-  (let ((required '("sh" "test" "dirname" "basename" "uname" "sleep" "kill"))
+  (let ((required '("sh" "test" "dirname" "basename" "uname" "sleep" "kill" "date" "stat"))
         (os (ws-detect-os-family (ws-uname-s))))
     (while (not (null required))
       (if (ws-command-available-p (car required))
