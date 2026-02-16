@@ -40,6 +40,9 @@ Wiki システムを段階的に構築するための実装です。
 - 変換コマンド: `pandoc --from=gfm-raw_html --to=html5`
 - `ISL` から `system` 経由で実行
 - 入出力は一時ファイル経由
+- Wiki内リンク記法を前処理:
+  - `[[home]]` -> `/wiki/home` へのリンク
+  - `[[home|Home Page]]` -> 表示名つきリンク
 
 ## PostgreSQL スキーマ（MVP）
 
