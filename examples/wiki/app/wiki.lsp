@@ -395,6 +395,46 @@
         (list (substring s 0 p)
               (substring s (+ p 1))))))
 
+(defun url-encode-lite (s)
+  (let ((i 0)
+        (out ""))
+    (while (< i (length s))
+      (let ((ch (substring s i (+ i 1))))
+        (setq out
+              (string-append
+               out
+               (cond
+                ((string= ch " ") "%20")
+                ((string= ch "&") "%26")
+                ((string= ch "?") "%3F")
+                ((string= ch "#") "%23")
+                ((string= ch "+") "%2B")
+                ((string= ch "%") "%25")
+                ((string= ch "=") "%3D")
+                ((string= ch "\"") "%22")
+                ((string= ch "'") "%27")
+                (t ch)))))
+      (setq i (+ i 1)))
+    out))
+
+(defun js-string-escape (s)
+  (let ((i 0)
+        (out ""))
+    (while (< i (length s))
+      (let ((ch (substring s i (+ i 1))))
+        (setq out
+              (string-append
+               out
+               (cond
+                ((string= ch "\\") "\\\\")
+                ((string= ch "\"") "\\\"")
+                ((string= ch "\n") "\\n")
+                ((string= ch "\r") "\\r")
+                ((string= ch "\t") "\\t")
+                (t ch)))))
+      (setq i (+ i 1)))
+    out))
+
 (defun utf8-cont-byte-p (b)
   (and (>= b 128) (<= b 191)))
 
@@ -727,13 +767,25 @@
                   (let ((slug (first row))
                         (title (second row))
                         (updated-at (third row)))
-                    (format t "<li><a href=\"~A/~A\">~A</a> <small>(~A)</small></li>~%"
+                    (format t "<li><a href=\"~A/~A?q=~A\">~A</a> <small>(~A)</small></li>~%"
                             base
                             (html-escape slug)
+                            (html-escape (url-encode-lite q))
                             (html-escape title)
                             (html-escape updated-at))))
                 (format t "</ul>~%")))))
     (print-layout-foot)))
+
+(defun print-highlight-script (q)
+  (format t "<style>.wiki-hit{background:#ffeb3b;color:#111;padding:0 .08em;border-radius:2px}</style>~%")
+  (format t "<script>(function(){~%")
+  (format t "const q=\"~A\";~%" (js-string-escape q))
+  (format t "if(!q){return;}~%")
+  (format t "const esc=(s)=>s.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&');~%")
+  (format t "const re=new RegExp(esc(q),'gi');~%")
+  (format t "const walk=(root)=>{const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);const nodes=[];while(w.nextNode())nodes.push(w.currentNode);for(const n of nodes){if(!n.nodeValue||!re.test(n.nodeValue))continue;re.lastIndex=0;const frag=document.createDocumentFragment();let last=0;n.nodeValue.replace(re,(m,idx)=>{if(idx>last)frag.appendChild(document.createTextNode(n.nodeValue.slice(last,idx)));const mark=document.createElement('mark');mark.className='wiki-hit';mark.textContent=m;frag.appendChild(mark);last=idx+m.length;return m;});if(last<n.nodeValue.length)frag.appendChild(document.createTextNode(n.nodeValue.slice(last)));n.parentNode.replaceChild(frag,n);}};~%")
+  (format t "document.querySelectorAll('h1,.wiki-body,pre').forEach((el)=>walk(el));~%")
+  (format t "})();</script>~%"))
 
 (defun render-view (db slug)
   (if (not (slug-safe-p slug))
@@ -746,7 +798,8 @@
                   (body-md (third row))
                   (updated-at (fetch-page-updated-at db slug))
                   (latest-summary (fetch-latest-edit-summary db slug))
-                  (media-rows (fetch-media-for-page db slug)))
+                  (media-rows (fetch-media-for-page db slug))
+                  (search-q (query-param "q")))
               (let ((body-html (markdown->html body-md)))
               (print-headers-ok)
               (print-layout-head title)
@@ -765,6 +818,10 @@
               (format t "<article class=\"wiki-body\">~A</article>~%" body-html)
               (format t "<h2>Markdown Source</h2>~%")
               (format t "<pre>~A</pre>~%" (html-escape body-md))
+              (if (blank-text-p search-q)
+                  nil
+                  (format t "<p><small>search highlight: <code>~A</code></small></p>~%"
+                          (html-escape search-q)))
               (if (null media-rows)
                   nil
                   (progn
@@ -785,6 +842,9 @@
                                 (html-escape media-url)
                                 (html-escape media-mime))
                         (format t "</div>~%"))))))
+              (if (blank-text-p search-q)
+                  nil
+                  (print-highlight-script search-q))
               (print-layout-foot)))))))
 
 (defun save-page (db slug)
