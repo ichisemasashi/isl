@@ -5,6 +5,7 @@
         v)))
 
 (load (string-append (ws-root) "/app/config.lsp"))
+(load (string-append (ws-root) "/app/http_server.lsp"))
 
 (defun ws-main ()
   (let ((config-path (getenv "WEBSERVER_CONFIG"))
@@ -15,6 +16,6 @@
           (ws-print-config cfg)
           (if (and (not (null check-mode)) (string= check-mode "1"))
               (ws-log "config check passed")
-              (ws-die "runtime server is not implemented yet (T1 scope covers config spec/validation only). set WEBSERVER_CHECK_CONFIG=1"))))))
+              (ws-start-http-server cfg))))))
 
 (ws-main)
