@@ -5,6 +5,8 @@
 ;;   (block-hr pos)
 ;;   (block-list pos list-kind list-type start items)
 ;;   (block-deflist pos items)
+;;   (block-code pos text id classes attrs)
+;;   (block-line-block pos lines)
 
 (defun make-block-heading (pos level inlines)
   (list 'block-heading pos level inlines))
@@ -24,6 +26,12 @@
 (defun make-block-deflist (pos items)
   (list 'block-deflist pos items))
 
+(defun make-block-code (pos text id classes attrs)
+  (list 'block-code pos text id classes attrs))
+
+(defun make-block-line-block (pos lines)
+  (list 'block-line-block pos lines))
+
 (defun block-kind (b) (first b))
 (defun block-pos (b) (second b))
 (defun block-heading-level (b) (third b))
@@ -37,6 +45,11 @@
 (defun block-list-start (b) (fifth b))
 (defun block-list-items (b) (sixth b))
 (defun block-deflist-items (b) (third b))
+(defun block-code-text (b) (third b))
+(defun block-code-id (b) (fourth b))
+(defun block-code-classes (b) (fifth b))
+(defun block-code-attrs (b) (sixth b))
+(defun block-line-block-lines (b) (third b))
 
 ;; List item:
 ;;   (list-item pos blocks task-state)

@@ -20,6 +20,13 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
   - `phase2_nested_and_multi_paragraph_list`
   - `phase2_definition_multi_block`
   - `phase2_combined`
+  - `phase3_code_blocks`
+  - `phase3_blank_before_and_space_in_atx`
+  - `phase3_line_blocks`
+  - `phase3_escaped_and_hard_breaks`
+  - `phase3_hard_line_breaks_mode`
+  - `phase3_ignore_line_breaks_mode`
+  - `phase3_east_asian_line_breaks_mode`
 
 ## 実装済み基盤
 
@@ -82,6 +89,24 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - definition の複数ブロック
   - 1つの `: definition` に対して複数段落/リストを保持
   - 同一 term に複数の `: definition` を許可
+
+## 実装済み Markdown（Phase 3）
+
+- `backtick_code_blocks`
+- `fenced_code_blocks`
+- `fenced_code_attributes`
+- `four_space_rule`
+- `blank_before_header`
+- `blank_before_blockquote`
+- `line_blocks`
+- `escaped_line_breaks`
+- `hard_line_breaks`
+  - `MD2HTML_LINE_BREAK_MODE=hard`
+- `ignore_line_breaks`
+  - `MD2HTML_LINE_BREAK_MODE=ignore`
+- `east_asian_line_breaks`
+  - `MD2HTML_LINE_BREAK_MODE=east-asian`
+- `space_in_atx_header`
 
 ## ディレクトリ構成
 

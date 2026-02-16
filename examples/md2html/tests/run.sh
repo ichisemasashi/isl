@@ -11,6 +11,7 @@ failed=0
 for case_path in "$CASES_DIR"/*.md; do
   name=$(basename "$case_path" .md)
   expected="$EXPECTED_DIR/$name.html"
+  env_file="$CASES_DIR/$name.env"
 
   if [ ! -f "$expected" ]; then
     echo "[ERROR] expected file missing: $expected"
@@ -19,7 +20,13 @@ for case_path in "$CASES_DIR"/*.md; do
   fi
 
   actual=$(mktemp)
-  "$MD2HTML" "$case_path" > "$actual"
+  if [ -f "$env_file" ]; then
+    # shellcheck disable=SC1090
+    . "$env_file"
+    env MD2HTML_LINE_BREAK_MODE="${MD2HTML_LINE_BREAK_MODE:-}" "$MD2HTML" "$case_path" > "$actual"
+  else
+    "$MD2HTML" "$case_path" > "$actual"
+  fi
 
   if diff -u "$expected" "$actual" > /tmp/md2html_diff_$$.txt; then
     echo "[PASS] $name"
