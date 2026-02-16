@@ -3262,6 +3262,25 @@
         (if (and (integer? raw) (>= raw 0))
             (quotient raw 256)
             raw))))
+  (def 'system-timeout
+    (lambda (command timeout-sec)
+      (unless (string? command)
+        (error "system-timeout command must be a string" command))
+      (unless (and (integer? timeout-sec) (>= timeout-sec 0))
+        (error "system-timeout timeout-sec must be non-negative integer" timeout-sec))
+      (let* ((p (run-process "sh" "-c" command :output :null :error :null))
+             (waiter (gauche-make-thread (lambda () (process-wait p)))))
+        (gauche-thread-start! waiter)
+        (if (eq? (gauche-thread-join! waiter timeout-sec 'timeout) 'timeout)
+            (begin
+              (guard (e (else #f))
+                (process-kill p))
+              (if (eq? (gauche-thread-join! waiter 1 'timeout) 'timeout)
+                  (guard (e (else #f))
+                    (process-wait p))
+                  #f)
+              (list (decode-process-exit-status (process-exit-status p)) #t))
+            (list (decode-process-exit-status (process-exit-status p)) #f)))))
   (def 'sqlite-open
     (lambda (path)
       (unless (string? path)
@@ -3657,6 +3676,13 @@
       (unless (gauche-thread? th)
         (error "thread-join needs thread object" th))
       (gauche-thread-join! th)))
+  (def 'thread-join-timeout
+    (lambda (th timeout-sec)
+      (unless (gauche-thread? th)
+        (error "thread-join-timeout needs thread object" th))
+      (unless (and (integer? timeout-sec) (>= timeout-sec 0))
+        (error "thread-join-timeout timeout-sec must be non-negative integer" timeout-sec))
+      (gauche-thread-join! th timeout-sec 'timeout)))
   (def 'mutex-open
     (lambda ()
       (gauche-make-mutex)))
@@ -4075,7 +4101,7 @@
       (apply exit args))))
 
 (define *extended-primitive-symbols*
-  '(debug break getenv setenv system
+  '(debug break getenv setenv system system-timeout
     sqlite-open sqlite-db-p sqlite-close sqlite-exec sqlite-query sqlite-query-one
     postgres-open postgres-db-p postgres-close postgres-exec postgres-query postgres-query-one
     mysql-open mysql-db-p mysql-close mysql-exec mysql-query mysql-query-one
@@ -4085,7 +4111,7 @@
     tls-listen tls-listener-p tls-accept tls-listener-close
     tls-connection-p tls-send tls-send-line tls-receive-line tls-receive-char
     tls-send-byte tls-receive-byte tls-flush tls-close
-    thread-spawn thread-p thread-join mutex-open mutex-p mutex-lock mutex-unlock
+    thread-spawn thread-p thread-join thread-join-timeout mutex-open mutex-p mutex-lock mutex-unlock
     udp-open udp-socket-p udp-bind udp-connect udp-send udp-receive udp-sendto udp-receive-from udp-close
     http-get http-head http-post
     ffi-call load-foreign-library current-foreign-library))

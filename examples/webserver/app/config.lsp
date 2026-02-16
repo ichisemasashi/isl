@@ -1,8 +1,22 @@
 (defun ws-log (msg)
   (format t "webserver: ~A~%" msg))
 
+(defun ws-error-log-path ()
+  (ws-env-or "WEBSERVER_ERROR_LOG" "/tmp/webserver-error.log"))
+
+(defun ws-append-line (path line)
+  (with-open-file (s path :direction :output :if-exists :append :if-does-not-exist :create)
+    (format s "~A~%" line)))
+
+(defun ws-log-error (msg)
+  (let ((line (format nil "webserver: error: ~A" msg)))
+    (format t "~A~%" line)
+    (handler-case
+      (ws-append-line (ws-error-log-path) line)
+      (error (e) #f))))
+
 (defun ws-die (msg)
-  (format t "webserver: error: ~A~%" msg)
+  (ws-log-error msg)
   (throw 'ws-error msg))
 
 (defun ws-env-or (name fallback)
@@ -80,7 +94,7 @@
           ""))))
 
 (defun ws-validate-platform ()
-  (let ((required '("sh" "test" "dirname" "basename" "uname"))
+  (let ((required '("sh" "test" "dirname" "basename" "uname" "sleep" "kill"))
         (os (ws-detect-os-family (ws-uname-s))))
     (while (not (null required))
       (if (ws-command-available-p (car required))

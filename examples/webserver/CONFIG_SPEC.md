@@ -78,3 +78,12 @@
   /Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl \
   /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver/app/main.lsp
   ```
+
+## 6. T8 運用環境変数
+
+- `WEBSERVER_ACCESS_LOG`
+  - アクセスログ出力先（既定: `/tmp/webserver-access.log`）
+- `WEBSERVER_ERROR_LOG`
+  - エラーログ出力先（既定: `/tmp/webserver-error.log`）
+- `WEBSERVER_CGI_TIMEOUT_SEC`
+  - CGI タイムアウト秒（既定: `5`）

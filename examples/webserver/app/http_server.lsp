@@ -78,7 +78,7 @@
     (while (< i n)
       (let ((ch (ws-conn-receive-char conn #f)))
         (if (null ch)
-            (throw 'ws-bad-request "unexpected EOF while reading request body")
+            (ws-protocol-error 400 "unexpected EOF while reading request body")
             (setq out (string-append out (string ch)))))
       (setq i (+ i 1)))
     out))
@@ -87,36 +87,47 @@
   (let ((line (ws-conn-receive-line conn #f)))
     (if (null line)
         'eof
-        (ws-strip-cr line))))
+        (let ((normalized (ws-strip-cr line)))
+          (if (> (length normalized) (ws-max-request-line-bytes))
+              (ws-protocol-error 431 "request line too large")
+              normalized)))))
 
 (defun ws-parse-request-line (line)
   (let ((a (ws-split-once line " ")))
     (if (null a)
-        (throw 'ws-bad-request "invalid request-line")
+        (ws-protocol-error 400 "invalid request-line")
         (let* ((method (car a))
                (b (ws-split-once (second a) " ")))
           (if (null b)
-              (throw 'ws-bad-request "invalid request-line")
+              (ws-protocol-error 400 "invalid request-line")
               (let ((target (car b))
                     (version (second b)))
                 (if (or (string= version "HTTP/1.1")
                         (string= version "HTTP/1.0"))
                     (list method target version)
-                    (throw 'ws-bad-request "unsupported HTTP version"))))))))
+                    (ws-protocol-error 400 "unsupported HTTP version"))))))))
 
 (defun ws-read-headers (conn)
   (let ((headers '())
-        (done nil))
+        (done nil)
+        (total-bytes 0))
     (while (not done)
       (let ((raw (ws-conn-receive-line conn #f)))
         (if (null raw)
-            (throw 'ws-bad-request "unexpected EOF in headers")
+            (ws-protocol-error 400 "unexpected EOF in headers")
             (let ((line (ws-strip-cr raw)))
+              (setq total-bytes (+ total-bytes (length line) 2))
+              (if (> (length line) (ws-max-header-line-bytes))
+                  (ws-protocol-error 431 "header line too large")
+                  nil)
+              (if (> total-bytes (ws-max-header-bytes))
+                  (ws-protocol-error 431 "request headers too large")
+                  nil)
               (if (string= line "")
                   (setq done t)
                   (let ((p (string-index ":" line)))
                     (if (null p)
-                        (throw 'ws-bad-request "invalid header line")
+                        (ws-protocol-error 400 "invalid header line")
                         (let ((name (ws-ascii-downcase (ws-trim (substring line 0 p))))
                               (value (ws-trim (substring line (+ p 1) (length line)))))
                           (setq headers (cons (list name value) headers))))))))))
@@ -145,7 +156,12 @@
                  (len-header (ws-header-get headers "content-length"))
                  (content-length (if (null len-header) 0 (ws-parse-int len-header))))
             (if (null content-length)
-                (throw 'ws-bad-request "invalid Content-Length")
+                (ws-protocol-error 400 "invalid Content-Length")
+                (if (> content-length (ws-max-body-bytes))
+                    (ws-protocol-error 413 "request body too large")
+                    nil))
+            (if (> content-length (ws-max-body-bytes))
+                (ws-protocol-error 413 "request body too large")
                 (let ((body (if (> content-length 0)
                                 (ws-read-fixed-body conn content-length)
                                 "")))
@@ -160,14 +176,55 @@
 (defun ws-request-get (req key)
   (ws-config-get (cdr req) key))
 
+(defun ws-now-epoch ()
+  (format nil "~A" (get-universal-time)))
+
+(defun ws-access-log-path ()
+  (ws-env-or "WEBSERVER_ACCESS_LOG" "/tmp/webserver-access.log"))
+
+(defun ws-cgi-timeout-seconds ()
+  (let ((v (getenv "WEBSERVER_CGI_TIMEOUT_SEC")))
+    (if (null v)
+        5
+        (let ((n (ws-parse-int v)))
+          (if (or (null n) (< n 1))
+              5
+              n)))))
+
+(defun ws-max-request-line-bytes ()
+  4096)
+
+(defun ws-max-header-line-bytes ()
+  8192)
+
+(defun ws-max-header-bytes ()
+  32768)
+
+(defun ws-max-body-bytes ()
+  1048576)
+
+(defun ws-protocol-error (status message)
+  (throw 'ws-bad-request (list 'error status message)))
+
+(defun ws-access-log (method path status duration-ms)
+  (handler-case
+    (ws-append-line
+     (ws-access-log-path)
+     (format nil "~A method=~A path=~A status=~A duration_ms=~A"
+             (ws-now-epoch) method path status duration-ms))
+    (error (e) #f)))
+
 (defun ws-reason (status)
   (if (= status 200) "OK"
       (if (= status 400) "Bad Request"
           (if (= status 403) "Forbidden"
               (if (= status 404) "Not Found"
                   (if (= status 405) "Method Not Allowed"
-                      (if (= status 503) "Service Unavailable"
-                          "Internal Server Error")))))))
+                      (if (= status 413) "Payload Too Large"
+                          (if (= status 431) "Request Header Fields Too Large"
+                              (if (= status 503) "Service Unavailable"
+                                  (if (= status 504) "Gateway Timeout"
+                                      "Internal Server Error"))))))))))
 
 (defun ws-target-path-only (target)
   (let ((p (string-index "?" target)))
@@ -317,14 +374,15 @@
 
 (defun ws-with-mutex (m thunk)
   (mutex-lock m)
-  (let ((result (catch 'ws-mutex-error
-                  (handler-case
-                    (funcall thunk)
-                    (error (e)
-                      (mutex-unlock m)
-                      (throw 'ws-mutex-error e))))))
-    (mutex-unlock m)
-    result))
+  (handler-case
+    (let ((result (funcall thunk)))
+      (mutex-unlock m)
+      result)
+    (error (e)
+      (handler-case
+        (mutex-unlock m)
+        (error (e2) #f))
+      (error e))))
 
 (defun ws-static-public-path (target-path)
   (if (or (string= target-path "/")
@@ -451,6 +509,7 @@
          (content-type (ws-header-get headers "content-type"))
          (stdin-path (ws-temp-file "webserver-cgi-in" ".tmp"))
          (stdout-path (ws-temp-file "webserver-cgi-out" ".tmp"))
+         (timeout-sec (ws-cgi-timeout-seconds))
          (cmd (string-append
                (ws-shell-quote script-path)
                " < " (ws-shell-quote stdin-path)
@@ -464,21 +523,32 @@
     (setenv "SERVER_PROTOCOL" version)
     (setenv "SERVER_PORT" (format nil "~A" (ws-config-get cfg 'listen_port)))
     (setenv "GATEWAY_INTERFACE" "CGI/1.1")
-    (let ((status (system cmd)))
-      (if (not (= status 0))
+    (let* ((exec-result (system-timeout cmd timeout-sec))
+           (status (car exec-result))
+           (timedout (second exec-result)))
+      (if timedout
           (progn
+            (ws-log-error (format nil "cgi timeout method=~A script=~A timeout_sec=~A"
+                                  method script-path timeout-sec))
             (ws-delete-file-if-exists stdin-path)
             (ws-delete-file-if-exists stdout-path)
-            (list 'error 500 "cgi execution failed\n"))
-          (let* ((raw (ws-read-file-text stdout-path))
-                 (parts (ws-cgi-split-header-body raw))
-                 (hdr-text (car parts))
-                 (resp-body (second parts))
-                 (resp-headers (ws-parse-cgi-headers hdr-text))
-                 (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
-            (ws-delete-file-if-exists stdin-path)
-            (ws-delete-file-if-exists stdout-path)
-            (list 'ok resp-status resp-headers resp-body))))))
+            (list 'error 504 "cgi timeout\n"))
+          (if (not (= status 0))
+              (progn
+                (ws-log-error (format nil "cgi failed method=~A script=~A exit_status=~A"
+                                      method script-path status))
+                (ws-delete-file-if-exists stdin-path)
+                (ws-delete-file-if-exists stdout-path)
+                (list 'error 500 "cgi execution failed\n"))
+              (let* ((raw (ws-read-file-text stdout-path))
+                     (parts (ws-cgi-split-header-body raw))
+                     (hdr-text (car parts))
+                     (resp-body (second parts))
+                     (resp-headers (ws-parse-cgi-headers hdr-text))
+                     (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
+                (ws-delete-file-if-exists stdin-path)
+                (ws-delete-file-if-exists stdout-path)
+                (list 'ok resp-status resp-headers resp-body)))))))
 
 (defun ws-handle-cgi-request (conn cfg req)
   (let* ((method (ws-request-get req 'method))
@@ -504,13 +574,13 @@
                                 (list "Content-Length" (format nil "~A" (length body)))
                                 (list "Connection" (if keep-alive "keep-alive" "close"))))))
                 (ws-send-response conn version status headers body send-body)
-                keep-alive)
+                (list keep-alive status))
               (progn
-                (ws-http-error-response conn version 500 keep-alive "cgi execution failed\n")
-                keep-alive)))
+                (ws-http-error-response conn version (second run) keep-alive (third run))
+                (list keep-alive (second run)))))
         (progn
           (ws-http-error-response conn version (second resolved) keep-alive (third resolved))
-          keep-alive))))
+          (list keep-alive (second resolved))))))
 
 (defun ws-handle-static-request (conn cfg req)
   (let* ((method (ws-request-get req 'method))
@@ -533,10 +603,10 @@
             (list "Connection" (if keep-alive "keep-alive" "close")))
            body
            send-body)
-          keep-alive)
+          (list keep-alive 200))
         (progn
           (ws-http-error-response conn version (second resolved) keep-alive (third resolved))
-          keep-alive))))
+          (list keep-alive (second resolved))))))
 
 (defun ws-handle-post-request (conn req)
   (let* ((method (ws-request-get req 'method))
@@ -555,7 +625,7 @@
            (list "Content-Length" (format nil "~A" (length content)))
            (list "Connection" (if keep-alive "keep-alive" "close")))))
     (ws-send-response conn version 200 base-headers content send-body)
-    keep-alive))
+    (list keep-alive 200)))
 
 (defun ws-handle-http-request (conn cfg req)
   (let* ((method (ws-request-get req 'method))
@@ -569,7 +639,7 @@
                 (ws-handle-cgi-request conn cfg req)
                 (progn
                   (ws-http-error-response conn version 404 keep-alive "not found\n")
-                  keep-alive))
+                  (list keep-alive 404)))
             (if (or (string= method "GET") (string= method "HEAD"))
                 (ws-handle-static-request conn cfg req)
                 (ws-handle-post-request conn req)))
@@ -582,30 +652,44 @@
             (list "Content-Type" "text/plain; charset=UTF-8")
             (list "Content-Length" "19")
             (list "Connection" (if keep-alive "keep-alive" "close"))
-            (list "Allow" "GET, HEAD, POST"))
+           (list "Allow" "GET, HEAD, POST"))
            "method not allowed\n"
            #t)
-          keep-alive))))
+          (list keep-alive 405)))))
 
 (defun ws-handle-connection (cfg conn)
   (let ((alive #t))
     (while alive
-      (let ((req (ws-read-http-request conn)))
+      (let ((started (get-internal-run-time))
+            (req (ws-read-http-request conn)))
         (if (eq req 'eof)
             (setq alive #f)
             (if (and (listp req) (eq (car req) 'ok))
-                (setq alive (ws-handle-http-request conn cfg req))
+                (let* ((handled (ws-handle-http-request conn cfg req))
+                      (next-alive (car handled))
+                      (status (second handled))
+                      (duration-ms (truncate (* 1000 (/ (- (get-internal-run-time) started)
+                                                         (internal-time-units-per-second))))))
+                  (ws-access-log (ws-request-get req 'method)
+                                 (ws-target-path-only (ws-request-get req 'target))
+                                 status
+                                 duration-ms)
+                  (setq alive next-alive))
                 (progn
-                  (ws-send-response
-                   conn
-                   "HTTP/1.1"
-                   400
-                   (list
-                    (list "Content-Type" "text/plain; charset=UTF-8")
-                    (list "Content-Length" "12")
-                    (list "Connection" "close"))
-                   "bad request\n"
-                   #t)
+                  (let* ((status (if (and (listp req) (eq (car req) 'error))
+                                     (second req)
+                                     400))
+                         (message (if (and (listp req) (eq (car req) 'error))
+                                      (third req)
+                                      "bad request\n"))
+                         (duration-ms (truncate (* 1000 (/ (- (get-internal-run-time) started)
+                                                            (internal-time-units-per-second))))))
+                    (ws-http-error-response conn "HTTP/1.1" status #f message)
+                    (ws-access-log "INVALID" "-" status duration-ms)
+                    (if (and (listp req) (eq (car req) 'error))
+                        (ws-log-error (format nil "request rejected status=~A reason=~A"
+                                              status message))
+                        nil))
                   (setq alive #f))))))))
 
 (defun ws-conn-send (conn text)
@@ -644,6 +728,7 @@
       (tcp-listener-close listener)))
 
 (defun ws-handle-over-capacity (conn)
+  (ws-log-error "connection limit exceeded: rejecting with 503")
   (handler-case
     (ws-send-response
      conn
@@ -658,7 +743,7 @@
     (error (e) #f))
   (handler-case
     (ws-conn-close conn)
-    (error (e) #f)))
+      (error (e) #f)))
 
 (defun ws-spawn-connection-worker (cfg conn active-mutex active-box)
   (thread-spawn
@@ -687,14 +772,27 @@
          (max-accepts (if (null max-accepts-env) 0 (ws-parse-int max-accepts-env)))
          (active-mutex (mutex-open))
          (active-box (list 0))
-         (listener (ws-make-listener tls-mode port cert-file key-file))
+         (listener
+          (handler-case
+            (ws-make-listener tls-mode port cert-file key-file)
+            (error (e)
+              (ws-log-error (format nil "~A listener startup failed port=~A reason=~A"
+                                    (if tls-mode "https" "http")
+                                    port
+                                    e))
+              (throw 'ws-error e))))
          (accepted 0)
          (workers '()))
     (ws-log (format nil "~A server listening on port ~A"
                     (if tls-mode "https" "http")
                     port))
     (while (or (null max-accepts) (= max-accepts 0) (< accepted max-accepts))
-      (let ((conn (ws-accept-connection listener tls-mode)))
+      (let ((conn
+             (handler-case
+               (ws-accept-connection listener tls-mode)
+               (error (e)
+                 (ws-log-error (format nil "accept failed: ~A" e))
+                 (throw 'ws-error e)))))
         (setq accepted (+ accepted 1))
         (let ((allow nil))
           (ws-with-mutex
