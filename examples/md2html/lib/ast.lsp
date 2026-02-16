@@ -108,6 +108,11 @@
 ;;   (inline-link pos children url id classes attrs)
 ;;   (inline-image pos alt-children url)
 ;;   (inline-span pos children id classes attrs)
+;;   (inline-del pos children)
+;;   (inline-sub pos children)
+;;   (inline-sup pos children)
+;;   (inline-mark pos children)
+;;   (inline-abbr pos text title)
 
 (defun make-inline-text (pos text)
   (list 'inline-text pos text))
@@ -130,6 +135,21 @@
 (defun make-inline-span (pos children id classes attrs)
   (list 'inline-span pos children id classes attrs))
 
+(defun make-inline-del (pos children)
+  (list 'inline-del pos children))
+
+(defun make-inline-sub (pos children)
+  (list 'inline-sub pos children))
+
+(defun make-inline-sup (pos children)
+  (list 'inline-sup pos children))
+
+(defun make-inline-mark (pos children)
+  (list 'inline-mark pos children))
+
+(defun make-inline-abbr (pos text title)
+  (list 'inline-abbr pos text title))
+
 (defun inline-kind (n) (first n))
 (defun inline-pos (n) (second n))
 (defun inline-text-value (n) (third n))
@@ -145,3 +165,5 @@
 (defun inline-span-id (n) (fourth n))
 (defun inline-span-classes (n) (fifth n))
 (defun inline-span-attrs (n) (sixth n))
+(defun inline-abbr-text (n) (third n))
+(defun inline-abbr-title (n) (fourth n))

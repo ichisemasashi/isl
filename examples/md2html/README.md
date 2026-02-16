@@ -45,6 +45,12 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
   - `phase5_fenced_and_native_divs`
   - `phase5_mmd_link_attributes`
   - `phase5_markdown_in_html_blocks`
+  - `phase6_smart_and_dashes`
+  - `phase6_old_dashes`
+  - `phase6_inline_extensions`
+  - `phase6_abbreviations_and_refs`
+  - `phase6_autolink_and_escapable`
+  - `phase6_spaced_reference_links`
 
 ## 実装済み基盤
 
@@ -159,6 +165,28 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - `ascii`
 - `gfm`
 - `mmd`
+
+## 実装済み Markdown（Phase 6）
+
+- `smart`
+- `old_dashes`
+- `strikeout`
+- `subscript`
+- `superscript`
+- `short_subsuperscripts`
+- `mark`
+- `emoji`
+- `abbreviations`
+- `intraword_underscores`
+- `all_symbols_escapable`
+- `angle_brackets_escapable`
+- `autolink_bare_uris`
+- `shortcut_reference_links`
+- `spaced_reference_links`
+
+追加環境変数:
+- `MD2HTML_SMART=0|1` (default: `1`)
+- `MD2HTML_OLD_DASHES=0|1` (default: `0`)
 
 ## ディレクトリ構成
 

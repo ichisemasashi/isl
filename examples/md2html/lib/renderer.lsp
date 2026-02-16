@@ -11,6 +11,12 @@
         m
         "normal")))
 
+(defun smart-enabled-p ()
+  (string= (env-or-default "MD2HTML_SMART" "1") "1"))
+
+(defun old-dashes-p ()
+  (string= (env-or-default "MD2HTML_OLD_DASHES" "0") "1"))
+
 (defun east-asian-codepoint-p (cp)
   (or (and (>= cp #x3000) (<= cp #x303f))
       (and (>= cp #x3040) (<= cp #x30ff))
@@ -31,18 +37,51 @@
           ""
           (substring s 0 (- (length s) n)))))
 
+(defun text-replace-all (s needle repl)
+  (let ((n (length s))
+        (m (length needle))
+        (i 0)
+        (out ""))
+    (while (< i n)
+      (if (and (<= (+ i m) n)
+               (string= (substring s i (+ i m)) needle))
+          (progn
+            (setq out (string-append out repl))
+            (setq i (+ i m)))
+          (progn
+            (setq out (string-append out (substring s i (+ i 1))))
+            (setq i (+ i 1)))))
+    out))
+
+(defun smarten-text (text)
+  (if (not (smart-enabled-p))
+      text
+      (let ((s text))
+        (if (old-dashes-p)
+            (progn
+              (setq s (text-replace-all s "---" "–"))
+              (setq s (text-replace-all s "--" "—")))
+            (progn
+              (setq s (text-replace-all s "---" "—"))
+              (setq s (text-replace-all s "--" "–"))))
+        (setq s (text-replace-all s "..." "…"))
+        (setq s (text-replace-all s "\"" "”"))
+        (setq s (text-replace-all s "'" "’"))
+        s)))
+
 (defun render-inline-text-value (text)
-  (let ((n (length text))
+  (let* ((src (smarten-text text))
+         (n (length src))
         (i 0)
         (out "")
         (mode (line-break-mode)))
     (while (< i n)
-      (let ((ch (substring text i (+ i 1))))
+      (let ((ch (substring src i (+ i 1))))
         (if (string= ch "\n")
-            (let ((escaped-break (and (> i 0) (string= (substring text (- i 1) i) "\\")))
+            (let ((escaped-break (and (> i 0) (string= (substring src (- i 1) i) "\\")))
                   (hard-break (and (> i 1)
-                                   (string= (substring text (- i 1) i) " ")
-                                   (string= (substring text (- i 2) (- i 1)) " "))))
+                                   (string= (substring src (- i 1) i) " ")
+                                   (string= (substring src (- i 2) (- i 1)) " "))))
               (cond
                (escaped-break
                 (setq out (string-append (drop-last-n out 1) "<br />\n")))
@@ -53,8 +92,8 @@
                ((string= mode "ignore")
                 (setq out (string-append out " ")))
                ((string= mode "east-asian")
-                (let ((prev (if (> i 0) (substring text (- i 1) i) ""))
-                      (next (if (< (+ i 1) n) (substring text (+ i 1) (+ i 2)) "")))
+                (let ((prev (if (> i 0) (substring src (- i 1) i) ""))
+                      (next (if (< (+ i 1) n) (substring src (+ i 1) (+ i 2)) "")))
                   (if (and (east-asian-char-p prev) (east-asian-char-p next))
                       (setq out out)
                       (setq out (string-append out "\n")))))
@@ -80,6 +119,11 @@
                 ((eq (inline-kind n) 'inline-link) (inline-plain-text (inline-children n)))
                 ((eq (inline-kind n) 'inline-image) (inline-plain-text (inline-children n)))
                 ((eq (inline-kind n) 'inline-span) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-del) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-sub) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-sup) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-mark) (inline-plain-text (inline-children n)))
+                ((eq (inline-kind n) 'inline-abbr) (inline-abbr-text n))
                 (t "")))))
       (setq rest (cdr rest)))
     out))
@@ -113,6 +157,18 @@
                    ">"
                    (render-inline-nodes (inline-children n))
                    "</span>"))
+   ((eq (inline-kind n) 'inline-del)
+    (string-append "<del>" (render-inline-nodes (inline-children n)) "</del>"))
+   ((eq (inline-kind n) 'inline-sub)
+    (string-append "<sub>" (render-inline-nodes (inline-children n)) "</sub>"))
+   ((eq (inline-kind n) 'inline-sup)
+    (string-append "<sup>" (render-inline-nodes (inline-children n)) "</sup>"))
+   ((eq (inline-kind n) 'inline-mark)
+    (string-append "<mark>" (render-inline-nodes (inline-children n)) "</mark>"))
+   ((eq (inline-kind n) 'inline-abbr)
+    (string-append "<abbr title=\"" (attr-escape (inline-abbr-title n)) "\">"
+                   (html-escape (inline-abbr-text n))
+                   "</abbr>"))
    (t "")))
 
 (defun render-inline-nodes (nodes)
