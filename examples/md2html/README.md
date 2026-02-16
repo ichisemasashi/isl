@@ -1,7 +1,7 @@
-# md2html (Phase 2)
+# md2html (Phase 8)
 
 `md2html` は Markdown を HTML に変換して標準出力へ出すツールです。  
-この時点では **フェーズ2 リスト系** まで実装しています。
+この時点では **フェーズ8 メタデータ/引用** まで実装しています。
 
 ## 使い方
 
@@ -57,6 +57,12 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
   - `phase7_raw_html`
   - `phase7_raw_tex`
   - `phase7_latex_macros`
+  - `phase8_yaml_metadata_block`
+  - `phase8_pandoc_title_block`
+  - `phase8_mmd_title_block`
+  - `phase8_citations`
+  - `phase8_inline_notes`
+  - `phase8_footnotes`
 
 ## 実装済み基盤
 
@@ -202,6 +208,15 @@ cat input.md | /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html
 - `raw_html`
 - `raw_tex`
 - `latex_macros`
+
+## 実装済み Markdown（Phase 8）
+
+- `yaml_metadata_block`
+- `pandoc_title_block`
+- `mmd_title_block`
+- `citations`
+- `inline_notes`
+- `footnotes`
 
 ## ディレクトリ構成
 
