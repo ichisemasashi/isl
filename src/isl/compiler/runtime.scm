@@ -1,5 +1,7 @@
 (define-module isl.compiler.runtime
   (use isl.core)
+  (use gauche.net)
+  (use rfc.tls)
   (use srfi-1)
   (export make-runtime-state
           runtime-load-units!
@@ -13,6 +15,17 @@
           runtime-error-details))
 
 (select-module isl.compiler.runtime)
+
+;; Keep references to Gauche TLS procedures before defining ISL primitives.
+(define gauche-make-tls make-tls)
+(define gauche-tls-bind tls-bind)
+(define gauche-tls-accept tls-accept)
+(define gauche-tls-close tls-close)
+(define gauche-tls-load-certificate tls-load-certificate)
+(define gauche-tls-load-private-key tls-load-private-key)
+(define gauche-connection-input-port connection-input-port)
+(define gauche-connection-output-port connection-output-port)
+(define gauche-connection-close connection-close)
 
 ;; Runtime error object shared by frontend/backend paths.
 (define (make-runtime-error code message details)
@@ -314,6 +327,24 @@
         v
         (runtime-raise 'type-error (string-append who " expects integer") rv))))
 
+(define (runtime-string rv who)
+  (let ((v (runtime-value->host rv)))
+    (if (string? v)
+        v
+        (runtime-raise 'type-error (string-append who " expects string") rv))))
+
+(define (runtime-port-number rv who)
+  (let ((v (runtime-integer rv who)))
+    (if (and (>= v 1) (<= v 65535))
+        v
+        (runtime-raise 'type-error (string-append who " expects integer in 1..65535") rv))))
+
+(define (runtime-byte rv who)
+  (let ((v (runtime-integer rv who)))
+    (if (and (>= v 0) (<= v 255))
+        v
+        (runtime-raise 'type-error (string-append who " expects integer in 0..255") rv))))
+
 (define (runtime-vector rv who)
   (let ((v (runtime-value->host rv)))
     (if (vector? v)
@@ -336,6 +367,62 @@
     (if (pred v)
         v
         (runtime-raise 'type-error (string-append who " received invalid object") rv))))
+
+(define (make-runtime-tcp-connection socket in out)
+  (vector 'tcp-connection socket in out))
+
+(define (runtime-tcp-connection? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 4)
+       (eq? (vector-ref obj 0) 'tcp-connection)))
+
+(define (runtime-tcp-connection-socket conn)
+  (vector-ref conn 1))
+
+(define (runtime-tcp-connection-input conn)
+  (vector-ref conn 2))
+
+(define (runtime-tcp-connection-output conn)
+  (vector-ref conn 3))
+
+(define (make-runtime-tcp-listener socket)
+  (vector 'tcp-listener socket))
+
+(define (runtime-tcp-listener? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 2)
+       (eq? (vector-ref obj 0) 'tcp-listener)))
+
+(define (runtime-tcp-listener-socket listener)
+  (vector-ref listener 1))
+
+(define (make-runtime-tls-connection tls in out)
+  (vector 'tls-connection tls in out))
+
+(define (runtime-tls-connection? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 4)
+       (eq? (vector-ref obj 0) 'tls-connection)))
+
+(define (runtime-tls-connection-raw conn)
+  (vector-ref conn 1))
+
+(define (runtime-tls-connection-input conn)
+  (vector-ref conn 2))
+
+(define (runtime-tls-connection-output conn)
+  (vector-ref conn 3))
+
+(define (make-runtime-tls-listener tls)
+  (vector 'tls-listener tls))
+
+(define (runtime-tls-listener? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 2)
+       (eq? (vector-ref obj 0) 'tls-listener)))
+
+(define (runtime-tls-listener-raw listener)
+  (vector-ref listener 1))
 
 (define (resolve-class-designator obj env)
   (cond
@@ -801,7 +888,308 @@
         (runtime-raise 'arity "slot-value expects 2 arguments" args))
       (let ((obj (runtime-value->host (car args)))
             (slot (runtime-value->host (cadr args))))
-        (host->runtime-value (rt-instance-slot-ref obj slot))))))
+        (host->runtime-value (rt-instance-slot-ref obj slot)))))
+  (def 'tcp-connect
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tcp-connect expects host and port" args))
+      (let ((host (runtime-string (car args) "tcp-connect"))
+            (port (runtime-port-number (cadr args) "tcp-connect")))
+        (let ((sock (make-client-socket 'inet host port)))
+          (host->runtime-value
+           (make-runtime-tcp-connection sock
+                                        (socket-input-port sock)
+                                        (socket-output-port sock)))))))
+  (def 'tcp-listen
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tcp-listen expects port" args))
+      (let ((port (runtime-port-number (car args) "tcp-listen")))
+        (host->runtime-value
+         (make-runtime-tcp-listener
+          (make-server-socket 'inet port :reuse-addr? #t))))))
+  (def 'tcp-listener-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tcp-listener-p expects 1 argument" args))
+      (host->runtime-value
+       (if (runtime-tcp-listener? (runtime-value->host (car args))) #t #f))))
+  (def 'tcp-accept
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tcp-accept expects listener" args))
+      (let ((listener (runtime-value->host (car args))))
+        (unless (runtime-tcp-listener? listener)
+          (runtime-raise 'type-error "tcp-accept expects tcp listener" (car args)))
+        (receive (sock addr) (socket-accept (runtime-tcp-listener-socket listener))
+          (host->runtime-value
+           (make-runtime-tcp-connection sock
+                                        (socket-input-port sock)
+                                        (socket-output-port sock)))))))
+  (def 'tcp-listener-close
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tcp-listener-close expects listener" args))
+      (let ((listener (runtime-value->host (car args))))
+        (unless (runtime-tcp-listener? listener)
+          (runtime-raise 'type-error "tcp-listener-close expects tcp listener" (car args)))
+        (guard (e (else #f))
+          (socket-close (runtime-tcp-listener-socket listener)))
+        (host->runtime-value #t))))
+  (def 'tcp-connection-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tcp-connection-p expects 1 argument" args))
+      (host->runtime-value
+       (if (runtime-tcp-connection? (runtime-value->host (car args))) #t #f))))
+  (def 'tcp-send
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tcp-send expects connection and text" args))
+      (let ((conn (runtime-value->host (car args)))
+            (text (runtime-string (cadr args) "tcp-send")))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-send expects tcp connection" (car args)))
+        (display text (runtime-tcp-connection-output conn))
+        (flush (runtime-tcp-connection-output conn))
+        (host->runtime-value text))))
+  (def 'tcp-send-line
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tcp-send-line expects connection and text" args))
+      (let ((conn (runtime-value->host (car args)))
+            (text (runtime-string (cadr args) "tcp-send-line")))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-send-line expects tcp connection" (car args)))
+        (display text (runtime-tcp-connection-output conn))
+        (newline (runtime-tcp-connection-output conn))
+        (flush (runtime-tcp-connection-output conn))
+        (host->runtime-value text))))
+  (def 'tcp-receive-line
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "tcp-receive-line expects conn and optional eof-error-p" args))
+      (let* ((conn (runtime-value->host (car args)))
+             (eof-error-p (if (= (length args) 2) (runtime-truthy? (cadr args)) #t)))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-receive-line expects tcp connection" (car args)))
+        (let ((line (read-line (runtime-tcp-connection-input conn))))
+          (if (eof-object? line)
+              (if eof-error-p
+                  (runtime-raise 'io-error "tcp-receive-line reached EOF")
+                  (host->runtime-value '()))
+              (host->runtime-value line))))))
+  (def 'tcp-receive-char
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "tcp-receive-char expects conn and optional eof-error-p" args))
+      (let* ((conn (runtime-value->host (car args)))
+             (eof-error-p (if (= (length args) 2) (runtime-truthy? (cadr args)) #t)))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-receive-char expects tcp connection" (car args)))
+        (let ((ch (read-char (runtime-tcp-connection-input conn))))
+          (if (eof-object? ch)
+              (if eof-error-p
+                  (runtime-raise 'io-error "tcp-receive-char reached EOF")
+                  (host->runtime-value '()))
+              (host->runtime-value ch))))))
+  (def 'tcp-send-byte
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tcp-send-byte expects connection and byte" args))
+      (let ((conn (runtime-value->host (car args)))
+            (byte (runtime-byte (cadr args) "tcp-send-byte")))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-send-byte expects tcp connection" (car args)))
+        (write-byte byte (runtime-tcp-connection-output conn))
+        (flush (runtime-tcp-connection-output conn))
+        (host->runtime-value byte))))
+  (def 'tcp-receive-byte
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "tcp-receive-byte expects conn and optional eof-error-p" args))
+      (let* ((conn (runtime-value->host (car args)))
+             (eof-error-p (if (= (length args) 2) (runtime-truthy? (cadr args)) #t)))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-receive-byte expects tcp connection" (car args)))
+        (let ((byte (read-byte (runtime-tcp-connection-input conn))))
+          (if (eof-object? byte)
+              (if eof-error-p
+                  (runtime-raise 'io-error "tcp-receive-byte reached EOF")
+                  (host->runtime-value '()))
+              (host->runtime-value byte))))))
+  (def 'tcp-flush
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tcp-flush expects connection" args))
+      (let ((conn (runtime-value->host (car args))))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-flush expects tcp connection" (car args)))
+        (flush (runtime-tcp-connection-output conn))
+        (host->runtime-value #t))))
+  (def 'tcp-close
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tcp-close expects connection" args))
+      (let ((conn (runtime-value->host (car args))))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-close expects tcp connection" (car args)))
+        (guard (e (else #f))
+          (close-input-port (runtime-tcp-connection-input conn)))
+        (guard (e (else #f))
+          (close-output-port (runtime-tcp-connection-output conn)))
+        (guard (e (else #f))
+          (socket-close (runtime-tcp-connection-socket conn)))
+        (host->runtime-value #t))))
+  (def 'tls-listen
+    (lambda (args state)
+      (unless (or (= (length args) 3) (= (length args) 4))
+        (runtime-raise 'arity "tls-listen expects port cert-file key-file and optional key-password" args))
+      (let* ((port (runtime-port-number (car args) "tls-listen"))
+             (cert-file (runtime-string (cadr args) "tls-listen"))
+             (key-file (runtime-string (caddr args) "tls-listen"))
+             (key-password (if (= (length args) 4)
+                               (runtime-string (cadddr args) "tls-listen")
+                               #f))
+             (tls (gauche-make-tls)))
+        (gauche-tls-load-certificate tls cert-file)
+        (gauche-tls-load-private-key tls key-file key-password)
+        (gauche-tls-bind tls "0.0.0.0" port 'tcp)
+        (host->runtime-value (make-runtime-tls-listener tls)))))
+  (def 'tls-listener-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tls-listener-p expects 1 argument" args))
+      (host->runtime-value
+       (if (runtime-tls-listener? (runtime-value->host (car args))) #t #f))))
+  (def 'tls-accept
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tls-accept expects listener" args))
+      (let ((listener (runtime-value->host (car args))))
+        (unless (runtime-tls-listener? listener)
+          (runtime-raise 'type-error "tls-accept expects tls listener" (car args)))
+        (let ((conn (gauche-tls-accept (runtime-tls-listener-raw listener))))
+          (host->runtime-value
+           (make-runtime-tls-connection conn
+                                        (gauche-connection-input-port conn)
+                                        (gauche-connection-output-port conn)))))))
+  (def 'tls-listener-close
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tls-listener-close expects listener" args))
+      (let ((listener (runtime-value->host (car args))))
+        (unless (runtime-tls-listener? listener)
+          (runtime-raise 'type-error "tls-listener-close expects tls listener" (car args)))
+        (guard (e (else #f))
+          (gauche-tls-close (runtime-tls-listener-raw listener)))
+        (host->runtime-value #t))))
+  (def 'tls-connection-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tls-connection-p expects 1 argument" args))
+      (host->runtime-value
+       (if (runtime-tls-connection? (runtime-value->host (car args))) #t #f))))
+  (def 'tls-send
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tls-send expects connection and text" args))
+      (let ((conn (runtime-value->host (car args)))
+            (text (runtime-string (cadr args) "tls-send")))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-send expects tls connection" (car args)))
+        (display text (runtime-tls-connection-output conn))
+        (flush (runtime-tls-connection-output conn))
+        (host->runtime-value text))))
+  (def 'tls-send-line
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tls-send-line expects connection and text" args))
+      (let ((conn (runtime-value->host (car args)))
+            (text (runtime-string (cadr args) "tls-send-line")))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-send-line expects tls connection" (car args)))
+        (display text (runtime-tls-connection-output conn))
+        (newline (runtime-tls-connection-output conn))
+        (flush (runtime-tls-connection-output conn))
+        (host->runtime-value text))))
+  (def 'tls-receive-line
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "tls-receive-line expects conn and optional eof-error-p" args))
+      (let* ((conn (runtime-value->host (car args)))
+             (eof-error-p (if (= (length args) 2) (runtime-truthy? (cadr args)) #t)))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-receive-line expects tls connection" (car args)))
+        (let ((line (read-line (runtime-tls-connection-input conn))))
+          (if (eof-object? line)
+              (if eof-error-p
+                  (runtime-raise 'io-error "tls-receive-line reached EOF")
+                  (host->runtime-value '()))
+              (host->runtime-value line))))))
+  (def 'tls-receive-char
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "tls-receive-char expects conn and optional eof-error-p" args))
+      (let* ((conn (runtime-value->host (car args)))
+             (eof-error-p (if (= (length args) 2) (runtime-truthy? (cadr args)) #t)))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-receive-char expects tls connection" (car args)))
+        (let ((ch (read-char (runtime-tls-connection-input conn))))
+          (if (eof-object? ch)
+              (if eof-error-p
+                  (runtime-raise 'io-error "tls-receive-char reached EOF")
+                  (host->runtime-value '()))
+              (host->runtime-value ch))))))
+  (def 'tls-send-byte
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tls-send-byte expects connection and byte" args))
+      (let ((conn (runtime-value->host (car args)))
+            (byte (runtime-byte (cadr args) "tls-send-byte")))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-send-byte expects tls connection" (car args)))
+        (write-byte byte (runtime-tls-connection-output conn))
+        (flush (runtime-tls-connection-output conn))
+        (host->runtime-value byte))))
+  (def 'tls-receive-byte
+    (lambda (args state)
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (runtime-raise 'arity "tls-receive-byte expects conn and optional eof-error-p" args))
+      (let* ((conn (runtime-value->host (car args)))
+             (eof-error-p (if (= (length args) 2) (runtime-truthy? (cadr args)) #t)))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-receive-byte expects tls connection" (car args)))
+        (let ((byte (read-byte (runtime-tls-connection-input conn))))
+          (if (eof-object? byte)
+              (if eof-error-p
+                  (runtime-raise 'io-error "tls-receive-byte reached EOF")
+                  (host->runtime-value '()))
+              (host->runtime-value byte))))))
+  (def 'tls-flush
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tls-flush expects connection" args))
+      (let ((conn (runtime-value->host (car args))))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-flush expects tls connection" (car args)))
+        (flush (runtime-tls-connection-output conn))
+        (host->runtime-value #t))))
+  (def 'tls-close
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tls-close expects connection" args))
+      (let ((conn (runtime-value->host (car args))))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-close expects tls connection" (car args)))
+        (guard (e (else #f))
+          (close-input-port (runtime-tls-connection-input conn)))
+        (guard (e (else #f))
+          (close-output-port (runtime-tls-connection-output conn)))
+        (guard (e (else #f))
+          (gauche-connection-close (runtime-tls-connection-raw conn)))
+        (host->runtime-value #t))))
+  )
 
 (define (runtime-eval-special op payload env state)
   (define (handler-case-tag-match? tag)
