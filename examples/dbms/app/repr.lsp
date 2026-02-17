@@ -87,6 +87,21 @@
 (defun dbms-column-def-p (v)
   (dbms-tagged-p v 'dbms-column))
 
+(defun dbms-column-def-name (column-def)
+  (if (dbms-column-def-p column-def)
+      (second column-def)
+      ""))
+
+(defun dbms-column-def-type (column-def)
+  (if (dbms-column-def-p column-def)
+      (third column-def)
+      '()))
+
+(defun dbms-column-def-attrs (column-def)
+  (if (dbms-column-def-p column-def)
+      (fourth column-def)
+      '()))
+
 (defun dbms-make-table-def (name columns constraints options)
   (list 'dbms-table-def name columns constraints options))
 
@@ -101,6 +116,42 @@
 (defun dbms-table-def-columns (table-def)
   (if (dbms-table-def-p table-def)
       (third table-def)
+      '()))
+
+(defun dbms-table-def-constraints (table-def)
+  (if (dbms-table-def-p table-def)
+      (fourth table-def)
+      '()))
+
+(defun dbms-table-def-options (table-def)
+  (if (dbms-table-def-p table-def)
+      (fifth table-def)
+      '()))
+
+(defun dbms-make-constraint (kind name spec)
+  ;; 例:
+  ;; (dbms-make-constraint 'primary-key "pk_pages" '("id"))
+  ;; (dbms-make-constraint 'unique "uq_slug" '("slug"))
+  ;; (dbms-make-constraint 'check "chk_title" '(not-blank "title"))
+  ;; (dbms-make-constraint 'foreign-key "fk_page" '(("page_id") "pages" ("id") CASCADE))
+  (list 'dbms-constraint kind name spec))
+
+(defun dbms-constraint-p (v)
+  (dbms-tagged-p v 'dbms-constraint))
+
+(defun dbms-constraint-kind (c)
+  (if (dbms-constraint-p c)
+      (second c)
+      '()))
+
+(defun dbms-constraint-name (c)
+  (if (dbms-constraint-p c)
+      (third c)
+      ""))
+
+(defun dbms-constraint-spec (c)
+  (if (dbms-constraint-p c)
+      (fourth c)
       '()))
 
 (defun dbms-make-row (row-id values)

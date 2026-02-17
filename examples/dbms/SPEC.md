@@ -376,6 +376,14 @@ DBMS 置換時は等価ワークフローを提供する:
 ### 17.2 テーブル定義
 - カラム定義: `(dbms-column <name> <type> <attrs>)`
 - テーブル定義: `(dbms-table-def <name> <columns> <constraints> <options>)`
+- 制約定義: `(dbms-constraint <kind> <name> <spec>)`
+  - `<kind>`: `primary-key | unique | check | foreign-key`
+  - `primary-key` の `<spec>`: `(<col-name>)`
+  - `unique` の `<spec>`: `(<col-name> ...)`
+  - `check` の `<spec>`: チェック式の内部表現（非空）
+  - `foreign-key` の `<spec>`: `(<local-cols> <ref-table> <ref-cols> <on-delete>)`
+    - `<local-cols>` / `<ref-cols>` は列名リスト
+    - `<on-delete>` は `CASCADE` または `SET-NULL`
 - カタログ: `(dbms-catalog <repr-version> <table-pairs>)`
   - `<table-pairs>` は `(<table-name> <table-def>)` のリスト
 
