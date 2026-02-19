@@ -254,50 +254,29 @@
         nil)
     (ws-conn-send conn out)))
 
-(defun ws-hex-digit-value (ch)
-  (let ((d (string-index ch "0123456789")))
-    (if (null d)
-        (let ((u (string-index ch "ABCDEF")))
-          (if (null u)
-              (let ((l (string-index ch "abcdef")))
-                (if (null l) -1 (+ l 10)))
-              (+ u 10)))
-        d)))
-
-(defun ws-hex-byte (h1 h2)
-  (let ((v1 (ws-hex-digit-value h1))
-        (v2 (ws-hex-digit-value h2)))
-    (if (or (< v1 0) (< v2 0))
-        -1
-        (+ (* v1 16) v2))))
-
-(defun ws-file-bytes-hex (path)
-  (let* ((result (ws-command-output
-                  (string-append "od -An -tx1 -v "
-                                 (ws-shell-quote path)
-                                 " | tr -d ' \\n'")))
-         (status (car result))
-         (out (second result)))
-    (if (= status 0) out "")))
-
-(defun ws-send-hex-bytes (conn hex)
-  (let ((i 0)
-        (n (length hex)))
-    (while (< (+ i 1) n)
-      (let ((b (ws-hex-byte (substring hex i (+ i 1))
-                            (substring hex (+ i 1) (+ i 2)))))
-        (if (>= b 0)
-            (ws-conn-send-byte conn b)
-            nil))
-      (setq i (+ i 2)))))
+(defun ws-read-binary-chunk (port chunk-size)
+  (let ((out "")
+        (count 0)
+        (done nil))
+    (while (and (not done) (< count chunk-size))
+      (let ((b (read-byte port)))
+        (if (eof-object? b)
+            (setq done t)
+            (progn
+              (setq out (string-append out (string (integer->char b))))
+              (setq count (+ count 1))))))
+    out))
 
 (defun ws-send-file-binary (conn file-path)
-  (let ((hex (ws-file-bytes-hex file-path)))
-    (if (= (length hex) 0)
-        #f
-        (progn
-          (ws-send-hex-bytes conn hex)
-          #t))))
+  (with-open-file (s file-path :direction :input)
+    (let ((done nil)
+          (chunk-size 16384))
+      (while (not done)
+        (let ((chunk (ws-read-binary-chunk s chunk-size)))
+          (if (= (length chunk) 0)
+              (setq done t)
+              (ws-conn-send conn chunk)))))
+    #t))
 
 (defun ws-send-response-binary-file (conn version status headers file-path send-body)
   (let* ((status-line (string-append version " "
@@ -993,11 +972,6 @@
   (if (tls-connection-p conn)
       (tls-send conn text)
       (tcp-send conn text)))
-
-(defun ws-conn-send-byte (conn byte)
-  (if (tls-connection-p conn)
-      (tls-send-byte conn byte)
-      (tcp-send-byte conn byte)))
 
 (defun ws-conn-receive-line (conn eof-error-p)
   (if (tls-connection-p conn)
