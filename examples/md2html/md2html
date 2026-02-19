@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-ROOT_DIR="/Volumes/SSD-PLU3/work/LISP/islisp/isl"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 ISL_BIN="$ROOT_DIR/bin/isl"
 APP_PATH="$ROOT_DIR/examples/md2html/app/main.lsp"
 

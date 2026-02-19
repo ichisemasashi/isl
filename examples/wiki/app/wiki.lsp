@@ -314,7 +314,7 @@
 (defun md2html-bin ()
   (let ((v (getenv "ISL_WIKI_MD2HTML")))
     (if (null v)
-        "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/md2html/md2html"
+        "./examples/md2html/md2html"
         v)))
 
 (defun next-temp-base ()
