@@ -155,6 +155,30 @@
 (defun media-delivery-url (stored-filename)
   (string-append (media-public-base) "/" stored-filename))
 
+(defun command-output (cmd)
+  (let ((tmp (string-append "/tmp/isl-wiki-cmd-" (format nil "~A" (get-universal-time)) ".out")))
+    (let ((status (system (string-append cmd " > " (shell-quote tmp) " 2>/dev/null"))))
+      (if (not (= status 0))
+          (progn
+            (if (null (probe-file tmp)) nil (delete-file tmp))
+            "")
+          (let ((out (read-file-text tmp)))
+            (delete-file tmp)
+            out)))))
+
+(defun inline-media-url (db stored-filename mime-type)
+  (let ((meta (fetch-media-file-meta db stored-filename)))
+    (if (null meta)
+        ""
+        (let ((storage-path (first meta))
+              (mtype (if (blank-text-p mime-type) "application/octet-stream" mime-type)))
+          (if (null (probe-file storage-path))
+              ""
+              (let ((b64 (command-output (string-append "base64 " (shell-quote storage-path) " | tr -d '\\n'"))))
+                (if (blank-text-p b64)
+                    ""
+                    (string-append "data:" mtype ";base64," b64))))))))
+
 (defun ensure-media-dir ()
   (system (string-append "mkdir -p " (shell-quote (media-root-dir))))
   (system (string-append "chmod 755 " (shell-quote (media-root-dir)))))
@@ -892,16 +916,23 @@
                             (media-title (second m))
                             (stored-filename (third m))
                             (media-mime (fourth m)))
-                        (let ((media-url (media-delivery-url stored-filename)))
+                        (let ((media-url (if (string= media-type "image")
+                                             (let ((u (inline-media-url db stored-filename media-mime)))
+                                               (if (blank-text-p u)
+                                                   (media-delivery-url stored-filename)
+                                                   u))
+                                             (media-delivery-url stored-filename))))
                         (format t "<div style=\"margin:0 0 1rem 0\">~%")
                         (if (string= media-title "")
                             nil
                             (format t "<p><strong>~A</strong></p>~%" (html-escape media-title)))
                         (render-media-embed media-url media-title media-type media-mime)
-                        (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
-                                (html-escape media-url)
-                                (html-escape media-url)
-                                (html-escape media-mime))
+                        (if (starts-with media-url "data:")
+                            (format t "<p><small>inline image (~A)</small></p>~%" (html-escape media-mime))
+                            (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
+                                    (html-escape media-url)
+                                    (html-escape media-url)
+                                    (html-escape media-mime)))
                         (format t "</div>~%"))))))
               (if (blank-text-p search-q)
                   nil
@@ -998,17 +1029,24 @@
                 (stored-filename (fourth row))
                 (media-mime (fifth row))
                 (page-slug (sixth row)))
-            (let ((media-url (media-delivery-url stored-filename)))
+            (let ((media-url (if (string= media-type "image")
+                                 (let ((u (inline-media-url db stored-filename media-mime)))
+                                   (if (blank-text-p u)
+                                       (media-delivery-url stored-filename)
+                                       u))
+                                 (media-delivery-url stored-filename))))
             (format t "<section style=\"margin:0 0 1.5rem 0;padding:1rem;border:1px solid #ddd;border-radius:8px\">~%")
             (format t "<p><strong>#~A</strong> [~A]</p>~%" (html-escape media-id) (html-escape media-type))
             (if (string= media-title "")
                 nil
                 (format t "<p>~A</p>~%" (html-escape media-title)))
             (render-media-embed media-url media-title media-type media-mime)
-            (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
-                    (html-escape media-url)
-                    (html-escape media-url)
-                    (html-escape media-mime))
+            (if (starts-with media-url "data:")
+                (format t "<p><small>inline image (~A)</small></p>~%" (html-escape media-mime))
+                (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
+                        (html-escape media-url)
+                        (html-escape media-url)
+                        (html-escape media-mime)))
             (if (string= page-slug "")
                 nil
                 (format t "<p><small>page: <a href=\"~A/~A\">~A</a></small></p>~%"
