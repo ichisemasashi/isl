@@ -182,6 +182,9 @@
 (defun inline-cache-path (stored-filename)
   (string-append (inline-cache-dir) "/" (sanitize-filename stored-filename) ".b64"))
 
+(defun inline-thumb-cache-path (stored-filename)
+  (string-append (inline-cache-dir) "/" (sanitize-filename stored-filename) ".thumb.b64"))
+
 (defun inline-media-url (db stored-filename mime-type)
   (let ((meta (fetch-media-file-meta db stored-filename)))
     (if (null meta)
@@ -222,6 +225,47 @@
                             (progn
                               (write-file-text cache-path b64)
                               (string-append "data:" source-mime ";base64," b64))))))))))))
+
+(defun inline-media-thumb-url (db stored-filename mime-type)
+  (let ((meta (fetch-media-file-meta db stored-filename)))
+    (if (null meta)
+        ""
+        (let ((storage-path (first meta))
+              (mtype (if (blank-text-p mime-type) "application/octet-stream" mime-type)))
+          (if (null (probe-file storage-path))
+              ""
+              (let* ((cache-path (inline-thumb-cache-path stored-filename))
+                     (cached (if (null (probe-file cache-path))
+                                 ""
+                                 (trim-ws (read-file-text cache-path)))))
+                (if (not (blank-text-p cached))
+                    (string-append "data:image/jpeg;base64," cached)
+                    (progn
+                      (ensure-inline-cache-dir)
+                      (let* ((thumb-path (string-append "/tmp/isl-wiki-thumb-"
+                                                        (format nil "~A" (get-universal-time))
+                                                        "-"
+                                                        (format nil "~A" *command-temp-counter*)
+                                                        ".jpg"))
+                             (thumb-ok (and (= (system "sh -c 'test -x /usr/bin/sips'") 0)
+                                            (= (system (string-append "/usr/bin/sips -Z 220 "
+                                                                      (shell-quote storage-path)
+                                                                      " --out "
+                                                                      (shell-quote thumb-path)
+                                                                      " >/dev/null 2>&1")) 0)))
+                             (b64 (if thumb-ok
+                                      (command-output (string-append "/usr/bin/base64 < "
+                                                                     (shell-quote thumb-path)
+                                                                     " | /usr/bin/tr -d '\\n'"))
+                                      "")))
+                        (if thumb-ok
+                            (if (null (probe-file thumb-path)) nil (delete-file thumb-path))
+                            nil)
+                        (if (blank-text-p b64)
+                            ""
+                            (progn
+                              (write-file-text cache-path b64)
+                              (string-append "data:image/jpeg;base64," b64))))))))))))
 
 (defun ensure-media-dir ()
   (system (string-append "mkdir -p " (shell-quote (media-root-dir))))
@@ -1074,7 +1118,7 @@
                 (media-mime (fifth row))
                 (page-slug (sixth row)))
             (let ((media-url (if (string= media-type "image")
-                                 (let ((u (inline-media-url db stored-filename media-mime)))
+                                 (let ((u (inline-media-thumb-url db stored-filename media-mime)))
                                    (if (blank-text-p u)
                                        (media-delivery-url stored-filename)
                                        u))
