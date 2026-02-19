@@ -1004,27 +1004,16 @@
                             (media-title (second m))
                             (stored-filename (third m))
                             (media-mime (fourth m)))
-                        (let ((original-url (media-delivery-url stored-filename))
-                              (media-url (if (string= media-type "image")
-                                             (let ((u (inline-media-url db stored-filename media-mime)))
-                                               (if (blank-text-p u)
-                                                   (media-delivery-url stored-filename)
-                                                   u))
-                                             (media-delivery-url stored-filename))))
+                        (let ((media-url (media-delivery-url stored-filename)))
                         (format t "<div style=\"margin:0 0 1rem 0\">~%")
                         (if (string= media-title "")
                             nil
                             (format t "<p><strong>~A</strong></p>~%" (html-escape media-title)))
                         (render-media-embed media-url media-title media-type media-mime)
-                        (if (starts-with media-url "data:")
-                            (format t "<p><small>inline image (~A) / original: <a href=\"~A\">~A</a></small></p>~%"
-                                    (html-escape media-mime)
-                                    (html-escape original-url)
-                                    (html-escape original-url))
-                            (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
-                                    (html-escape media-url)
-                                    (html-escape media-url)
-                                    (html-escape media-mime)))
+                        (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
+                                (html-escape media-url)
+                                (html-escape media-url)
+                                (html-escape media-mime))
                         (format t "</div>~%"))))))
               (if (blank-text-p search-q)
                   nil
@@ -1121,28 +1110,17 @@
                 (stored-filename (fourth row))
                 (media-mime (fifth row))
                 (page-slug (sixth row)))
-            (let ((original-url (media-delivery-url stored-filename))
-                  (media-url (if (string= media-type "image")
-                                 (let ((u (inline-media-thumb-url db stored-filename media-mime)))
-                                   (if (blank-text-p u)
-                                       (media-delivery-url stored-filename)
-                                       u))
-                                 (media-delivery-url stored-filename))))
+            (let ((media-url (media-delivery-url stored-filename)))
             (format t "<section style=\"margin:0 0 1.5rem 0;padding:1rem;border:1px solid #ddd;border-radius:8px\">~%")
             (format t "<p><strong>#~A</strong> [~A]</p>~%" (html-escape media-id) (html-escape media-type))
             (if (string= media-title "")
                 nil
                 (format t "<p>~A</p>~%" (html-escape media-title)))
             (render-media-embed media-url media-title media-type media-mime)
-            (if (starts-with media-url "data:")
-                (format t "<p><small>inline image (~A) / original: <a href=\"~A\">~A</a></small></p>~%"
-                        (html-escape media-mime)
-                        (html-escape original-url)
-                        (html-escape original-url))
-                (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
-                        (html-escape media-url)
-                        (html-escape media-url)
-                        (html-escape media-mime)))
+            (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
+                    (html-escape media-url)
+                    (html-escape media-url)
+                    (html-escape media-mime))
             (if (string= page-slug "")
                 nil
                 (format t "<p><small>page: <a href=\"~A/~A\">~A</a></small></p>~%"
