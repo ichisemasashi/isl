@@ -24,6 +24,76 @@
         "/wiki"
         script-name)))
 
+(defun wiki-config-path ()
+  "./examples/wiki/conf/wiki.conf")
+
+(defun conf-trim-left (s)
+  (let ((i 0)
+        (n (length s)))
+    (while (and (< i n)
+                (not (null (string-index (substring s i (+ i 1)) " \t"))))
+      (setq i (+ i 1)))
+    (substring s i n)))
+
+(defun conf-trim-right (s)
+  (let ((n (length s))
+        (i (- (length s) 1)))
+    (while (and (>= i 0)
+                (not (null (string-index (substring s i (+ i 1)) " \t"))))
+      (setq i (- i 1)))
+    (substring s 0 (+ i 1))))
+
+(defun conf-trim (s)
+  (conf-trim-right (conf-trim-left s)))
+
+(defun conf-split-kv (line)
+  (let ((p (string-index "=" line)))
+    (if (null p)
+        '()
+        (list (conf-trim (substring line 0 p))
+              (conf-trim (substring line (+ p 1) (length line)))))))
+
+(defun conf-comment-or-blank-p (line)
+  (let ((tline (conf-trim line)))
+    (or (= (length tline) 0)
+        (starts-with tline "#")
+        (starts-with tline ";"))))
+
+(defun read-wiki-config-file (path)
+  (if (null (probe-file path))
+      '()
+      (with-open-file (s path :direction :input)
+        (let ((line (read-line s #f))
+              (acc '()))
+          (while (not (null line))
+            (if (conf-comment-or-blank-p line)
+                nil
+                (let ((kv (conf-split-kv line)))
+                  (if (or (null kv) (= (length (first kv)) 0))
+                      nil
+                      (setq acc (cons kv acc)))))
+            (setq line (read-line s #f)))
+          (reverse acc)))))
+
+(defglobal *wiki-config-cache* '())
+
+(defun wiki-config ()
+  (if (null *wiki-config-cache*)
+      (setq *wiki-config-cache* (read-wiki-config-file (wiki-config-path)))
+      nil)
+  *wiki-config-cache*)
+
+(defun wiki-config-get (key fallback)
+  (let ((xs (wiki-config))
+        (found '()))
+    (while (and (null found) (not (null xs)))
+      (let ((kv (car xs)))
+        (if (string= (first kv) key)
+            (setq found (second kv))
+            nil))
+      (setq xs (cdr xs)))
+    (if (null found) fallback found)))
+
 (defun trim-leading-slashes (s)
   (if (> (length s) 0)
       (if (string= (substring s 0 1) "/")
@@ -135,22 +205,13 @@
       (string= slug "admin")))
 
 (defun media-root-dir ()
-  (let ((v (getenv "ISL_WIKI_MEDIA_DIR")))
-    (if (null v)
-        "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/storage/media"
-        v)))
+  (wiki-config-get "media_dir" "./examples/webserver/runtime/docroot/public/wiki-files"))
 
 (defun backup-root-dir ()
-  (let ((v (getenv "ISL_WIKI_BACKUP_DIR")))
-    (if (null v)
-        "/tmp/isl-wiki-backups"
-        v)))
+  (wiki-config-get "backup_dir" "/tmp/isl-wiki-backups"))
 
 (defun media-public-base ()
-  (let ((v (getenv "ISL_WIKI_MEDIA_BASE_URL")))
-    (if (null v)
-        (string-append (app-base) "/files")
-        v)))
+  (wiki-config-get "media_base_url" (string-append (app-base) "/files")))
 
 (defun media-delivery-url (stored-filename)
   (string-append (media-public-base) "/" stored-filename))
@@ -416,18 +477,12 @@
               (html-escape media-url))))))
 
 (defun db-url ()
-  (let ((v (getenv "ISL_WIKI_DB_URL")))
-    (if (null v)
-        "postgresql://127.0.0.1:5432/isl_wiki"
-        v)))
+  (wiki-config-get "db_url" "postgresql://127.0.0.1:5432/isl_wiki"))
 
 (defglobal *markdown-temp-counter* 0)
 
 (defun md2html-bin ()
-  (let ((v (getenv "ISL_WIKI_MD2HTML")))
-    (if (null v)
-        "./examples/md2html/md2html"
-        v)))
+  (wiki-config-get "md2html_bin" "./examples/md2html/md2html"))
 
 (defun next-temp-base ()
   (setq *markdown-temp-counter* (+ *markdown-temp-counter* 1))
