@@ -155,8 +155,15 @@
 (defun media-delivery-url (stored-filename)
   (string-append (media-public-base) "/" stored-filename))
 
+(defglobal *command-temp-counter* 0)
+
 (defun command-output (cmd)
-  (let ((tmp (string-append "/tmp/isl-wiki-cmd-" (format nil "~A" (get-universal-time)) ".out")))
+  (setq *command-temp-counter* (+ *command-temp-counter* 1))
+  (let ((tmp (string-append "/tmp/isl-wiki-cmd-"
+                            (format nil "~A" (get-universal-time))
+                            "-"
+                            (format nil "~A" *command-temp-counter*)
+                            ".out")))
     (let ((status (system (string-append cmd " > " (shell-quote tmp) " 2>/dev/null"))))
       (if (not (= status 0))
           (progn
@@ -166,6 +173,15 @@
             (delete-file tmp)
             out)))))
 
+(defun inline-cache-dir ()
+  "/tmp/isl-wiki-inline-cache")
+
+(defun ensure-inline-cache-dir ()
+  (system (string-append "mkdir -p " (shell-quote (inline-cache-dir)))))
+
+(defun inline-cache-path (stored-filename)
+  (string-append (inline-cache-dir) "/" (sanitize-filename stored-filename) ".b64"))
+
 (defun inline-media-url (db stored-filename mime-type)
   (let ((meta (fetch-media-file-meta db stored-filename)))
     (if (null meta)
@@ -174,30 +190,38 @@
               (mtype (if (blank-text-p mime-type) "application/octet-stream" mime-type)))
           (if (null (probe-file storage-path))
               ""
-              (let* ((size (file-size-bytes storage-path))
-                     (thumb-path (string-append "/tmp/isl-wiki-thumb-"
-                                                (format nil "~A" (get-universal-time))
-                                                "-"
-                                                (format nil "~A" *markdown-temp-counter*)
-                                                ".jpg"))
-                     (use-thumb (and (> size 600000)
-                                     (= (system "sh -c 'command -v sips >/dev/null 2>&1'") 0)
-                                     (= (system (string-append "sips -Z 640 "
-                                                               (shell-quote storage-path)
-                                                               " --out "
-                                                               (shell-quote thumb-path)
-                                                               " >/dev/null 2>&1")) 0)))
-                     (source-path (if use-thumb thumb-path storage-path))
-                     (source-mime (if use-thumb "image/jpeg" mtype))
-                     (b64 (command-output (string-append "base64 < "
-                                                         (shell-quote source-path)
-                                                         " | tr -d '\\n'"))))
-                (if use-thumb
-                    (if (null (probe-file thumb-path)) nil (delete-file thumb-path))
-                    nil)
-                (if (blank-text-p b64)
-                    ""
-                    (string-append "data:" source-mime ";base64," b64))))))))
+              (let* ((cache-path (inline-cache-path stored-filename))
+                     (cached (if (null (probe-file cache-path))
+                                 ""
+                                 (trim-ws (read-file-text cache-path)))))
+                (if (not (blank-text-p cached))
+                    (string-append "data:" mtype ";base64," cached)
+                    (progn
+                      (ensure-inline-cache-dir)
+                      (let* ((thumb-path (string-append "/tmp/isl-wiki-thumb-"
+                                                        (format nil "~A" (get-universal-time))
+                                                        "-"
+                                                        (format nil "~A" *command-temp-counter*)
+                                                        ".jpg"))
+                             (use-thumb (and (= (system "sh -c 'command -v sips >/dev/null 2>&1'") 0)
+                                             (= (system (string-append "sips -Z 256 "
+                                                                       (shell-quote storage-path)
+                                                                       " --out "
+                                                                       (shell-quote thumb-path)
+                                                                       " >/dev/null 2>&1")) 0)))
+                             (source-path (if use-thumb thumb-path storage-path))
+                             (source-mime (if use-thumb "image/jpeg" mtype))
+                             (b64 (command-output (string-append "base64 < "
+                                                                 (shell-quote source-path)
+                                                                 " | tr -d '\\n'"))))
+                        (if use-thumb
+                            (if (null (probe-file thumb-path)) nil (delete-file thumb-path))
+                            nil)
+                        (if (blank-text-p b64)
+                            ""
+                            (progn
+                              (write-file-text cache-path b64)
+                              (string-append "data:" source-mime ";base64," b64))))))))))))
 
 (defun ensure-media-dir ()
   (system (string-append "mkdir -p " (shell-quote (media-root-dir))))
