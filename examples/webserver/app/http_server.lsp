@@ -410,6 +410,22 @@
                  (format nil "~A" (get-internal-run-time))
                  suffix))
 
+(defun ws-byte-length (text)
+  (let* ((tmp (ws-temp-file "webserver-bytes" ".tmp"))
+         (result '())
+         (status 1)
+         (out "")
+         (n '()))
+    (ws-write-file-raw tmp text)
+    (setq result (ws-command-output (string-append "wc -c < " (ws-shell-quote tmp))))
+    (setq status (car result))
+    (setq out (second result))
+    (ws-delete-file-if-exists tmp)
+    (setq n (if (= status 0) (ws-parse-int out) '()))
+    (if (null n)
+        (length text)
+        n)))
+
 (defun ws-split-lines (s)
   (let ((i 0)
         (start 0)
@@ -465,7 +481,7 @@
    status
    (list
     (list "Content-Type" "text/plain; charset=UTF-8")
-    (list "Content-Length" (format nil "~A" (length body)))
+    (list "Content-Length" (format nil "~A" (ws-byte-length body)))
     (list "Connection" (if keep-alive "keep-alive" "close")))
    body
    #t))
@@ -638,7 +654,7 @@
     (ws-write-file-raw stdin-path body)
     (setenv "REQUEST_METHOD" method)
     (setenv "QUERY_STRING" query)
-    (setenv "CONTENT_LENGTH" (format nil "~A" (length body)))
+    (setenv "CONTENT_LENGTH" (format nil "~A" (ws-byte-length body)))
     (setenv "CONTENT_TYPE" (if (null content-type) "" content-type))
     (setenv "SCRIPT_NAME" script-name)
     (setenv "PATH_INFO" path-info)
@@ -697,7 +713,7 @@
                                    '())
                                filtered
                                (list
-                                (list "Content-Length" (format nil "~A" (length body)))
+                                (list "Content-Length" (format nil "~A" (ws-byte-length body)))
                                 (list "Connection" (if keep-alive "keep-alive" "close"))))))
                 (ws-send-response conn version status headers body send-body)
                 (list keep-alive status))
@@ -809,7 +825,7 @@
          (base-headers
           (list
            (list "Content-Type" "text/plain; charset=UTF-8")
-           (list "Content-Length" (format nil "~A" (length content)))
+           (list "Content-Length" (format nil "~A" (ws-byte-length content)))
            (list "Connection" (if keep-alive "keep-alive" "close")))))
     (ws-send-response conn version 200 base-headers content send-body)
     (list keep-alive 200)))
