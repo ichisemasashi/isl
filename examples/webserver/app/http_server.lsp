@@ -254,6 +254,70 @@
         nil)
     (ws-conn-send conn out)))
 
+(defun ws-hex-digit-value (ch)
+  (let ((d (string-index ch "0123456789")))
+    (if (null d)
+        (let ((u (string-index ch "ABCDEF")))
+          (if (null u)
+              (let ((l (string-index ch "abcdef")))
+                (if (null l) -1 (+ l 10)))
+              (+ u 10)))
+        d)))
+
+(defun ws-hex-byte (h1 h2)
+  (let ((v1 (ws-hex-digit-value h1))
+        (v2 (ws-hex-digit-value h2)))
+    (if (or (< v1 0) (< v2 0))
+        -1
+        (+ (* v1 16) v2))))
+
+(defun ws-file-bytes-hex (path)
+  (let* ((result (ws-command-output
+                  (string-append "od -An -tx1 -v "
+                                 (ws-shell-quote path)
+                                 " | tr -d ' \\n'")))
+         (status (car result))
+         (out (second result)))
+    (if (= status 0) out "")))
+
+(defun ws-send-hex-bytes (conn hex)
+  (let ((i 0)
+        (n (length hex)))
+    (while (< (+ i 1) n)
+      (let ((b (ws-hex-byte (substring hex i (+ i 1))
+                            (substring hex (+ i 1) (+ i 2)))))
+        (if (>= b 0)
+            (ws-conn-send-byte conn b)
+            nil))
+      (setq i (+ i 2)))))
+
+(defun ws-send-file-binary (conn file-path)
+  (let ((hex (ws-file-bytes-hex file-path)))
+    (if (= (length hex) 0)
+        #f
+        (progn
+          (ws-send-hex-bytes conn hex)
+          #t))))
+
+(defun ws-send-response-binary-file (conn version status headers file-path send-body)
+  (let* ((status-line (string-append version " "
+                                     (format nil "~A" status)
+                                     " "
+                                     (ws-reason status)
+                                     "\r\n"))
+         (out status-line))
+    (while (not (null headers))
+      (let ((h (car headers)))
+        (setq out (string-append out (car h) ": " (second h) "\r\n")))
+      (setq headers (cdr headers)))
+    (setq out (string-append out "\r\n"))
+    (ws-conn-send conn out)
+    (if send-body
+        (if (ws-send-file-binary conn file-path)
+            nil
+            (ws-conn-send conn ""))
+        nil)))
+
 (defun ws-contains (hay needle)
   (not (null (string-index needle hay))))
 
@@ -275,6 +339,13 @@
                                 (if (ws-ends-with p ".jpg") "image/jpeg"
                                     (if (ws-ends-with p ".jpeg") "image/jpeg"
                                         "application/octet-stream")))))))))))
+
+(defun ws-text-like-mime-p (mime)
+  (or (ws-starts-with mime "text/")
+      (ws-contains mime "json")
+      (ws-contains mime "javascript")
+      (ws-contains mime "xml")
+      (ws-contains mime "svg")))
 
 (defun ws-read-file-text (path)
   (with-open-file (s path :direction :input)
@@ -311,6 +382,13 @@
                   (string-append "stat -c %Y " (ws-shell-quote path))
                   (string-append "stat -f %m " (ws-shell-quote path))))
          (result (ws-command-output cmd))
+         (status (car result))
+         (out (second result))
+         (n (if (= status 0) (ws-parse-int out) '())))
+    (if (null n) 0 n)))
+
+(defun ws-file-size-bytes (path)
+  (let* ((result (ws-command-output (string-append "wc -c < " (ws-shell-quote path))))
          (status (car result))
          (out (second result))
          (n (if (= status 0) (ws-parse-int out) '())))
@@ -735,8 +813,9 @@
     (if (eq (car resolved) 'ok)
         (let* ((file-path (second resolved))
                (mime (third resolved))
-               (full-body (ws-read-file-raw file-path))
-               (total-size (length full-body))
+               (is-text (ws-text-like-mime-p mime))
+               (full-body (if is-text (ws-read-file-raw file-path) ""))
+               (total-size (if is-text (length full-body) (ws-file-size-bytes file-path)))
                (mtime-epoch (ws-file-mtime-epoch cfg file-path))
                (last-modified (ws-http-date-from-epoch cfg mtime-epoch))
                (if-modified-since (ws-header-get headers "if-modified-since"))
@@ -757,56 +836,71 @@
                  ""
                  #f)
                 (list keep-alive 304))
-              (let* ((range-header (ws-header-get headers "range"))
-                     (range-result (ws-parse-range-header range-header total-size)))
-                (if (or (eq (car range-result) 'error)
-                        (eq (car range-result) 'unsat))
-                    (progn
-                      (ws-send-response
-                       conn
-                       version
-                       416
-                       (list
-                        (list "Content-Type" "text/plain; charset=UTF-8")
-                        (list "Content-Range" (format nil "bytes */~A" total-size))
-                        (list "Content-Length" "22")
-                        (list "Connection" (if keep-alive "keep-alive" "close")))
-                       "range not satisfiable\n"
-                       send-body)
-                      (list keep-alive 416))
-                    (if (eq (car range-result) 'ok)
-                        (let* ((start (second range-result))
-                               (end (third range-result))
-                               (part-body (substring full-body start (+ end 1))))
-                          (ws-send-response
-                           conn
-                           version
-                           206
-                           (list
-                            (list "Content-Type" mime)
-                            (list "Last-Modified" last-modified)
-                            (list "Accept-Ranges" "bytes")
-                            (list "Content-Range"
-                                  (format nil "bytes ~A-~A/~A" start end total-size))
-                            (list "Content-Length" (format nil "~A" (length part-body)))
-                            (list "Connection" (if keep-alive "keep-alive" "close")))
-                           part-body
-                           send-body)
-                          (list keep-alive 206))
+              (if is-text
+                  (let* ((range-header (ws-header-get headers "range"))
+                         (range-result (ws-parse-range-header range-header total-size)))
+                    (if (or (eq (car range-result) 'error)
+                            (eq (car range-result) 'unsat))
                         (progn
                           (ws-send-response
                            conn
                            version
-                           200
+                           416
                            (list
-                            (list "Content-Type" mime)
-                            (list "Last-Modified" last-modified)
-                            (list "Accept-Ranges" "bytes")
-                            (list "Content-Length" (format nil "~A" total-size))
+                            (list "Content-Type" "text/plain; charset=UTF-8")
+                            (list "Content-Range" (format nil "bytes */~A" total-size))
+                            (list "Content-Length" "22")
                             (list "Connection" (if keep-alive "keep-alive" "close")))
-                           full-body
+                           "range not satisfiable\n"
                            send-body)
-                          (list keep-alive 200)))))))
+                          (list keep-alive 416))
+                        (if (eq (car range-result) 'ok)
+                            (let* ((start (second range-result))
+                                   (end (third range-result))
+                                   (part-body (substring full-body start (+ end 1))))
+                              (ws-send-response
+                               conn
+                               version
+                               206
+                               (list
+                                (list "Content-Type" mime)
+                                (list "Last-Modified" last-modified)
+                                (list "Accept-Ranges" "bytes")
+                                (list "Content-Range"
+                                      (format nil "bytes ~A-~A/~A" start end total-size))
+                                (list "Content-Length" (format nil "~A" (length part-body)))
+                                (list "Connection" (if keep-alive "keep-alive" "close")))
+                               part-body
+                               send-body)
+                              (list keep-alive 206))
+                            (progn
+                              (ws-send-response
+                               conn
+                               version
+                               200
+                               (list
+                                (list "Content-Type" mime)
+                                (list "Last-Modified" last-modified)
+                                (list "Accept-Ranges" "bytes")
+                                (list "Content-Length" (format nil "~A" total-size))
+                                (list "Connection" (if keep-alive "keep-alive" "close")))
+                               full-body
+                               send-body)
+                              (list keep-alive 200)))))
+                  (progn
+                    (ws-send-response-binary-file
+                     conn
+                     version
+                     200
+                     (list
+                      (list "Content-Type" mime)
+                      (list "Last-Modified" last-modified)
+                      (list "Accept-Ranges" "bytes")
+                      (list "Content-Length" (format nil "~A" total-size))
+                      (list "Connection" (if keep-alive "keep-alive" "close")))
+                     file-path
+                     send-body)
+                    (list keep-alive 200)))))
         (progn
           (ws-http-error-response conn version (second resolved) keep-alive (third resolved))
           (list keep-alive (second resolved))))))
@@ -899,6 +993,11 @@
   (if (tls-connection-p conn)
       (tls-send conn text)
       (tcp-send conn text)))
+
+(defun ws-conn-send-byte (conn byte)
+  (if (tls-connection-p conn)
+      (tls-send-byte conn byte)
+      (tcp-send-byte conn byte)))
 
 (defun ws-conn-receive-line (conn eof-error-p)
   (if (tls-connection-p conn)
