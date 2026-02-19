@@ -174,10 +174,30 @@
               (mtype (if (blank-text-p mime-type) "application/octet-stream" mime-type)))
           (if (null (probe-file storage-path))
               ""
-              (let ((b64 (command-output (string-append "base64 < " (shell-quote storage-path) " | tr -d '\\n'"))))
+              (let* ((size (file-size-bytes storage-path))
+                     (thumb-path (string-append "/tmp/isl-wiki-thumb-"
+                                                (format nil "~A" (get-universal-time))
+                                                "-"
+                                                (format nil "~A" *markdown-temp-counter*)
+                                                ".jpg"))
+                     (use-thumb (and (> size 600000)
+                                     (= (system "sh -c 'command -v sips >/dev/null 2>&1'") 0)
+                                     (= (system (string-append "sips -Z 640 "
+                                                               (shell-quote storage-path)
+                                                               " --out "
+                                                               (shell-quote thumb-path)
+                                                               " >/dev/null 2>&1")) 0)))
+                     (source-path (if use-thumb thumb-path storage-path))
+                     (source-mime (if use-thumb "image/jpeg" mtype))
+                     (b64 (command-output (string-append "base64 < "
+                                                         (shell-quote source-path)
+                                                         " | tr -d '\\n'"))))
+                (if use-thumb
+                    (if (null (probe-file thumb-path)) nil (delete-file thumb-path))
+                    nil)
                 (if (blank-text-p b64)
                     ""
-                    (string-append "data:" mtype ";base64," b64))))))))
+                    (string-append "data:" source-mime ";base64," b64))))))))
 
 (defun ensure-media-dir ()
   (system (string-append "mkdir -p " (shell-quote (media-root-dir))))
