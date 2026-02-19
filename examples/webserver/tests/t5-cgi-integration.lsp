@@ -148,6 +148,7 @@
       "printf \"len=%s\\n\" \"$CONTENT_LENGTH\"\n"
       "printf \"ctype=%s\\n\" \"$CONTENT_TYPE\"\n"
       "printf \"script=%s\\n\" \"$SCRIPT_NAME\"\n"
+      "printf \"path_info=%s\\n\" \"$PATH_INFO\"\n"
       "body=$(cat)\n"
       "printf \"body=%s\\n\" \"$body\"\n"))
     (ws-write-file-text cgi-fail "#!/bin/sh\nexit 7")
@@ -174,6 +175,9 @@
            (r-post (ws-request-once
                     tmp-port
                     "POST /cgi-bin/t5-echo.cgi HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"))
+           (r-path-info (ws-request-once
+                         tmp-port
+                         "GET /cgi-bin/t5-echo.cgi/foo/bar?x=9 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
            (r-head (ws-request-once-no-body
                     tmp-port
                     "HEAD /cgi-bin/t5-echo.cgi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
@@ -190,6 +194,8 @@
                    (ws-contains (ws-resp-get r-get 'body) "query=x=1&y=2"))
       (assert-true "CGI GET script env"
                    (ws-contains (ws-resp-get r-get 'body) "script=/cgi-bin/t5-echo.cgi"))
+      (assert-true "CGI GET no path-info env"
+                   (ws-contains (ws-resp-get r-get 'body) "path_info="))
 
       (assert-true "CGI POST status 200" (= (ws-status-code r-post) 200))
       (assert-true "CGI POST method env"
@@ -200,6 +206,14 @@
                    (ws-contains (ws-resp-get r-post 'body) "ctype=text/plain"))
       (assert-true "CGI POST body via stdin"
                    (ws-contains (ws-resp-get r-post 'body) "body=hello"))
+
+      (assert-true "CGI PATH_INFO status 200" (= (ws-status-code r-path-info) 200))
+      (assert-true "CGI PATH_INFO script env"
+                   (ws-contains (ws-resp-get r-path-info 'body) "script=/cgi-bin/t5-echo.cgi"))
+      (assert-true "CGI PATH_INFO value env"
+                   (ws-contains (ws-resp-get r-path-info 'body) "path_info=/foo/bar"))
+      (assert-true "CGI PATH_INFO query env"
+                   (ws-contains (ws-resp-get r-path-info 'body) "query=x=9"))
 
       (assert-true "CGI HEAD status 200" (= (ws-status-code r-head) 200))
       (assert-true "CGI HEAD body empty" (= (length (ws-resp-get r-head 'body)) 0))
