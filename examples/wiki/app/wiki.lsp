@@ -174,7 +174,7 @@
               (mtype (if (blank-text-p mime-type) "application/octet-stream" mime-type)))
           (if (null (probe-file storage-path))
               ""
-              (let ((b64 (command-output (string-append "base64 " (shell-quote storage-path) " | tr -d '\\n'"))))
+              (let ((b64 (command-output (string-append "base64 < " (shell-quote storage-path) " | tr -d '\\n'"))))
                 (if (blank-text-p b64)
                     ""
                     (string-append "data:" mtype ";base64," b64))))))))
