@@ -1004,7 +1004,8 @@
                             (media-title (second m))
                             (stored-filename (third m))
                             (media-mime (fourth m)))
-                        (let ((media-url (if (string= media-type "image")
+                        (let ((original-url (media-delivery-url stored-filename))
+                              (media-url (if (string= media-type "image")
                                              (let ((u (inline-media-url db stored-filename media-mime)))
                                                (if (blank-text-p u)
                                                    (media-delivery-url stored-filename)
@@ -1016,7 +1017,10 @@
                             (format t "<p><strong>~A</strong></p>~%" (html-escape media-title)))
                         (render-media-embed media-url media-title media-type media-mime)
                         (if (starts-with media-url "data:")
-                            (format t "<p><small>inline image (~A)</small></p>~%" (html-escape media-mime))
+                            (format t "<p><small>inline image (~A) / original: <a href=\"~A\">~A</a></small></p>~%"
+                                    (html-escape media-mime)
+                                    (html-escape original-url)
+                                    (html-escape original-url))
                             (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
                                     (html-escape media-url)
                                     (html-escape media-url)
@@ -1117,7 +1121,8 @@
                 (stored-filename (fourth row))
                 (media-mime (fifth row))
                 (page-slug (sixth row)))
-            (let ((media-url (if (string= media-type "image")
+            (let ((original-url (media-delivery-url stored-filename))
+                  (media-url (if (string= media-type "image")
                                  (let ((u (inline-media-thumb-url db stored-filename media-mime)))
                                    (if (blank-text-p u)
                                        (media-delivery-url stored-filename)
@@ -1130,7 +1135,10 @@
                 (format t "<p>~A</p>~%" (html-escape media-title)))
             (render-media-embed media-url media-title media-type media-mime)
             (if (starts-with media-url "data:")
-                (format t "<p><small>inline image (~A)</small></p>~%" (html-escape media-mime))
+                (format t "<p><small>inline image (~A) / original: <a href=\"~A\">~A</a></small></p>~%"
+                        (html-escape media-mime)
+                        (html-escape original-url)
+                        (html-escape original-url))
                 (format t "<p><small><a href=\"~A\">~A</a> (~A)</small></p>~%"
                         (html-escape media-url)
                         (html-escape media-url)
