@@ -185,10 +185,10 @@
 (defun ws-cgi-timeout-seconds ()
   (let ((v (getenv "WEBSERVER_CGI_TIMEOUT_SEC")))
     (if (null v)
-        5
+        30
         (let ((n (ws-parse-int v)))
           (if (or (null n) (< n 1))
-              5
+              30
               n)))))
 
 (defun ws-max-request-line-bytes ()
