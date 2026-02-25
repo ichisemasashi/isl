@@ -254,20 +254,10 @@
         nil)
     (ws-conn-send conn out)))
 
-(defun ws-conn-send-byte (conn byte)
-  (if (tls-connection-p conn)
-      (tls-send-byte conn byte)
-      (tcp-send-byte conn byte)))
-
 (defun ws-send-file-binary (conn file-path)
-  (with-open-file (s file-path :direction :input)
-    (let ((done nil))
-      (while (not done)
-        (let ((b (read-byte s)))
-          (if (eof-object? b)
-              (setq done t)
-              (ws-conn-send-byte conn b)))))
-    #t))
+  (if (tls-connection-p conn)
+      (tls-send-file conn file-path)
+      (tcp-send-file conn file-path)))
 
 (defun ws-send-response-binary-file (conn version status headers file-path send-body)
   (let* ((status-line (string-append version " "

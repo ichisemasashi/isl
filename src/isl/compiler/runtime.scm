@@ -979,6 +979,23 @@
         (newline (runtime-tcp-connection-output conn))
         (flush (runtime-tcp-connection-output conn))
         (host->runtime-value text))))
+  (def 'tcp-send-file
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tcp-send-file expects connection and path" args))
+      (let ((conn (runtime-value->host (car args)))
+            (path (runtime-string (cadr args) "tcp-send-file")))
+        (unless (runtime-tcp-connection? conn)
+          (runtime-raise 'type-error "tcp-send-file expects tcp connection" (car args)))
+        (call-with-input-file
+         path
+         (lambda (in)
+           (let loop ((byte (read-byte in)))
+             (unless (eof-object? byte)
+               (write-byte byte (runtime-tcp-connection-output conn))
+               (loop (read-byte in))))))
+        (flush (runtime-tcp-connection-output conn))
+        (host->runtime-value #t))))
   (def 'tcp-receive-line
     (lambda (args state)
       (unless (or (= (length args) 1) (= (length args) 2))
@@ -1127,6 +1144,23 @@
         (newline (runtime-tls-connection-output conn))
         (flush (runtime-tls-connection-output conn))
         (host->runtime-value text))))
+  (def 'tls-send-file
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "tls-send-file expects connection and path" args))
+      (let ((conn (runtime-value->host (car args)))
+            (path (runtime-string (cadr args) "tls-send-file")))
+        (unless (runtime-tls-connection? conn)
+          (runtime-raise 'type-error "tls-send-file expects tls connection" (car args)))
+        (call-with-input-file
+         path
+         (lambda (in)
+           (let loop ((byte (read-byte in)))
+             (unless (eof-object? byte)
+               (write-byte byte (runtime-tls-connection-output conn))
+               (loop (read-byte in))))))
+        (flush (runtime-tls-connection-output conn))
+        (host->runtime-value #t))))
   (def 'tls-receive-line
     (lambda (args state)
       (unless (or (= (length args) 1) (= (length args) 2))

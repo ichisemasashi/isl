@@ -3461,6 +3461,21 @@
       (newline (tcp-connection-output conn))
       (flush (tcp-connection-output conn))
       #t))
+  (def 'tcp-send-file
+    (lambda (conn path)
+      (unless (tcp-connection? conn)
+        (error "tcp-send-file needs tcp connection object" conn))
+      (unless (string? path)
+        (error "tcp-send-file path must be a string" path))
+      (call-with-input-file
+       path
+       (lambda (in)
+         (let loop ((b (read-byte in)))
+           (unless (eof-object? b)
+             (write-byte b (tcp-connection-output conn))
+             (loop (read-byte in))))))
+      (flush (tcp-connection-output conn))
+      #t))
   (def 'tcp-receive-line
     (lambda args
       (unless (or (= (length args) 1) (= (length args) 2))
@@ -3588,6 +3603,21 @@
         (error "tls-send-line text must be a string" text))
       (display text (tls-connection-output conn))
       (newline (tls-connection-output conn))
+      (flush (tls-connection-output conn))
+      #t))
+  (def 'tls-send-file
+    (lambda (conn path)
+      (unless (tls-connection? conn)
+        (error "tls-send-file needs tls connection object" conn))
+      (unless (string? path)
+        (error "tls-send-file path must be a string" path))
+      (call-with-input-file
+       path
+       (lambda (in)
+         (let loop ((b (read-byte in)))
+           (unless (eof-object? b)
+             (write-byte b (tls-connection-output conn))
+             (loop (read-byte in))))))
       (flush (tls-connection-output conn))
       #t))
   (def 'tls-receive-line
@@ -4107,10 +4137,10 @@
     mysql-open mysql-db-p mysql-close mysql-exec mysql-query mysql-query-one
     tcp-connect tcp-listen tcp-listener-p tcp-accept tcp-listener-close
     tcp-connection-p tcp-send tcp-send-line tcp-receive-line tcp-receive-char
-    tcp-send-byte tcp-receive-byte tcp-flush tcp-close
+    tcp-send-byte tcp-send-file tcp-receive-byte tcp-flush tcp-close
     tls-listen tls-listener-p tls-accept tls-listener-close
     tls-connection-p tls-send tls-send-line tls-receive-line tls-receive-char
-    tls-send-byte tls-receive-byte tls-flush tls-close
+    tls-send-byte tls-send-file tls-receive-byte tls-flush tls-close
     thread-spawn thread-p thread-join thread-join-timeout mutex-open mutex-p mutex-lock mutex-unlock
     udp-open udp-socket-p udp-bind udp-connect udp-send udp-receive udp-sendto udp-receive-from udp-close
     http-get http-head http-post
