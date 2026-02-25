@@ -114,6 +114,25 @@ gosh test/compiler/lowering-smoke.scm
 ./bin/islc --run examples/hello.lsp
 ```
 
+`islc` の基本形:
+```sh
+./bin/islc [--profile strict|extended] [--opt-level 0|1|2|3|s|z] \
+  [--opt-preset none|safe|aggressive] [--emit-llvm out.ll] [--emit-obj out.o] \
+  [--run|--jit] [-o out-bin] <file> [file ...]
+```
+
+実践例（`md2html` を LLVM IR へコンパイル）:
+```sh
+./bin/islc --profile extended --emit-llvm /tmp/md2html.ll examples/md2html/app/main.lsp
+```
+
+`examples/md2html/app/main.lsp` は `getenv` / `load` / `system` を使うため、通常は `--profile extended` を指定します。  
+また、実行時は `MD2HTML_ROOT` などの環境変数が必要です（`examples/md2html/md2html` ラッパー参照）。
+
+現状の注意:
+- `md2html` はこの時点の実装では `./bin/islc --run ...` / `./bin/islc -o ...` で失敗する場合があります
+- その場合は `examples/md2html/md2html` または `./bin/isl examples/md2html/app/main.lsp` を利用してください
+
 従来ツール (`islc-llvm`) で LLVM IR モジュールを生成:
 ```sh
 ./bin/islc-llvm --mode module -o out.ll examples/hello.lsp
