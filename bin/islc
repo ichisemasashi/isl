@@ -135,5 +135,12 @@ if [ "$RUN_MODE" -eq 1 ] || { [ -z "$EMIT_LL" ] && [ -z "$EMIT_OBJ" ]; }; then
 fi
 
 if [ "$RUN_MODE" -eq 1 ]; then
-  "$OUT_BIN"
+  case "$OUT_BIN" in
+    */*)
+      "$OUT_BIN"
+      ;;
+    *)
+      "./$OUT_BIN"
+      ;;
+  esac
 fi
