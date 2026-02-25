@@ -59,6 +59,14 @@
         (starts-with tline "#")
         (starts-with tline ";"))))
 
+(defun wiki-reverse (xs)
+  (let ((cur xs)
+        (acc '()))
+    (while (not (null cur))
+      (setq acc (cons (car cur) acc))
+      (setq cur (cdr cur)))
+    acc))
+
 (defun read-wiki-config-file (path)
   (if (null (probe-file path))
       '()
@@ -73,7 +81,7 @@
                       nil
                       (setq acc (cons kv acc)))))
             (setq line (read-line s #f)))
-          (reverse acc)))))
+          (wiki-reverse acc)))))
 
 (defglobal *wiki-config-cache* '())
 
