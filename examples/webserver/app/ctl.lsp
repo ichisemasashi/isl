@@ -1,8 +1,12 @@
 (defun ws-root ()
   (let ((v (getenv "WEBSERVER_ROOT")))
-    (if (null v)
-        "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver"
-        v)))
+    (if (not (null v))
+        v
+        (if (not (null (probe-file "examples/webserver/app/config.lsp")))
+            "examples/webserver"
+            (if (not (null (probe-file "app/config.lsp")))
+                "."
+                "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver")))))
 
 (load (string-append (ws-root) "/app/config.lsp"))
 (load (string-append (ws-root) "/app/http_server.lsp"))

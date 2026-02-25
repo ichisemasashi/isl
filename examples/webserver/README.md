@@ -10,9 +10,11 @@
 
 ## 共通
 
+リポジトリのルート (`isl/`) で実行する前提です。先に環境変数を設定してください。
+
 ```sh
-WEBSERVER_ROOT=/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver \
-WEBSERVER_CONFIG=/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/webserver/conf/webserver.conf.lsp
+export WEBSERVER_ROOT="$(pwd)/examples/webserver"
+export WEBSERVER_CONFIG="$WEBSERVER_ROOT/conf/webserver.conf.lsp"
 ```
 
 ## 起動コマンド
