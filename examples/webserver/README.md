@@ -48,11 +48,22 @@ WEBSERVER_TRANSPORT=http \
 
 ## 停止コマンド
 
+通常停止:
+
 ```sh
 WEBSERVER_CMD=stop \
 WEBSERVER_PID_FILE=/tmp/webserver.pid \
 ./bin/isl examples/webserver/app/ctl.lsp
 ```
+
+PIDファイル不整合などで通常停止できない場合（復旧手順）:
+
+```sh
+kill -TERM "$(cat /tmp/webserver.pid)" 2>/dev/null || true
+rm -f /tmp/webserver.pid
+```
+
+`WEBSERVER_CMD=stop` / `WEBSERVER_CMD=restart` が失敗した場合のみ使用してください。
 
 ## 設定検証コマンド（`-t` 相当）
 

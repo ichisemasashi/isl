@@ -18,8 +18,9 @@
   (format t "  WEBSERVER_CMD=stop     ./bin/isl examples/webserver/app/ctl.lsp\n")
   (format t "  WEBSERVER_CMD=restart  ./bin/isl examples/webserver/app/ctl.lsp\n")
   (format t "  WEBSERVER_CMD=test     ./bin/isl examples/webserver/app/ctl.lsp\n")
-  (format t "  WEBSERVER_CMD=-t     ./bin/isl examples/webserver/app/ctl.lsp\n")
-  (format t "  WEBSERVER_CMD=logs   ./bin/isl examples/webserver/app/ctl.lsp\n"))
+  (format t "  WEBSERVER_CMD=-t       ./bin/isl examples/webserver/app/ctl.lsp\n")
+  (format t "  WEBSERVER_CMD=logs     ./bin/isl examples/webserver/app/ctl.lsp\n")
+  (format t "  (export WEBSERVER_ROOT and WEBSERVER_CONFIG first; see examples/webserver/README.md)\n"))
 
 (defun ws-ctl-bin-path (root)
   (if (not (null (probe-file "./bin/isl")))
