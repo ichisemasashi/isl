@@ -22,7 +22,9 @@
   (format t "  WEBSERVER_CMD=logs   ./bin/isl examples/webserver/app/ctl.lsp\n"))
 
 (defun ws-ctl-bin-path (root)
-  (string-append (substring root 0 (- (length root) (length "/examples/webserver"))) "/bin/isl"))
+  (if (not (null (probe-file "./bin/isl")))
+      "./bin/isl"
+      (string-append (substring root 0 (- (length root) (length "/examples/webserver"))) "/bin/isl")))
 
 (defun ws-ctl-main-path (root)
   (string-append root "/app/main.lsp"))
