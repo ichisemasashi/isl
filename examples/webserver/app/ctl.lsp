@@ -342,5 +342,10 @@
                                     (ws-ctl-usage)
                                     (ws-die (format nil "unknown WEBSERVER_CMD: ~A" cmd)))))))))))))
 
-(catch 'ws-error
-  (ws-ctl-main))
+(let ((result (catch 'ws-error
+                (progn
+                  (ws-ctl-main)
+                  'ok))))
+  (if (eq result 'ok)
+      t
+      (exit 1)))
