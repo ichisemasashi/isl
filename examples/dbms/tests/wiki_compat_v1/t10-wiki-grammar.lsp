@@ -29,7 +29,9 @@
          (q-on-conflict (dbms-parse-sql
                          "INSERT INTO pages (id, title, published) VALUES (1, 'x', TRUE) ON CONFLICT (id) DO NOTHING;"))
          (q-upd-from-ret (dbms-parse-sql
-                          "UPDATE pages p SET title = r.title FROM page_revisions r WHERE p.id = r.page_id RETURNING p.id, p.title;")))
+                          "UPDATE pages p SET title = r.title FROM page_revisions r WHERE p.id = r.page_id RETURNING p.id, p.title;"))
+         (q-begin (dbms-parse-sql "BEGIN;"))
+         (q-commit (dbms-parse-sql "COMMIT;")))
 
     (assert-true "WITH parses" (dbms-ast-p q-with))
     (assert-true "WITH stmt kind" (eq (stmt-kind (first-stmt q-with)) 'with))
@@ -51,6 +53,11 @@
 
     (assert-true "UPDATE ... FROM ... RETURNING parses" (dbms-ast-p q-upd-from-ret))
     (assert-true "UPDATE ... FROM ... RETURNING kind" (eq (stmt-kind (first-stmt q-upd-from-ret)) 'update-wiki))
+
+    (assert-true "BEGIN parses" (dbms-ast-p q-begin))
+    (assert-true "BEGIN kind" (eq (stmt-kind (first-stmt q-begin)) 'begin))
+    (assert-true "COMMIT parses" (dbms-ast-p q-commit))
+    (assert-true "COMMIT kind" (eq (stmt-kind (first-stmt q-commit)) 'commit))
 
     (format t "dbms wiki grammar tests passed.~%")))
 

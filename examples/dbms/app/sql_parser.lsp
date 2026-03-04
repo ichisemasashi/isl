@@ -1056,6 +1056,10 @@
         (cond
          ((dbms-token-is-keyword-p tok "WITH")
           (dbms-parse-with (cdr tokens)))
+         ((dbms-token-is-keyword-p tok "BEGIN")
+          (dbms-parser-ok (dbms-make-stmt 'begin '()) (cdr tokens)))
+         ((dbms-token-is-keyword-p tok "COMMIT")
+          (dbms-parser-ok (dbms-make-stmt 'commit '()) (cdr tokens)))
          ((dbms-token-is-keyword-p tok "CREATE")
           (if (null (cdr tokens))
               (dbms-parser-error "CREATE requires TABLE or INDEX" 'eof)
