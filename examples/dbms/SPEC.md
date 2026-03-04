@@ -331,6 +331,18 @@ wiki のスキーマ・クエリから確認できた不足機能:
 注記:
 - 本節は状態追跡の導入を目的とし、隔離性や rollback 保証は後続マイルストーンで強化する。
 
+### 14.7.2 Commit staging（P1-004）
+`active` トランザクション中の更新系文は、永続ストレージへ即時反映せず staging 領域へ保持する。
+
+- staging 対象:
+  - catalog 変更
+  - テーブル行変更（INSERT/UPDATE/DELETE、FK 連鎖更新を含む）
+- `COMMIT` 成功時のみ staging 内容を永続ストレージへ反映する
+- `ROLLBACK` 時は staging 内容を破棄する
+
+可視性:
+- トランザクション外の committed read（storage 直読）は、`COMMIT` 前の未確定変更を観測してはならない
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト
