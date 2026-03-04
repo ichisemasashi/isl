@@ -15,7 +15,9 @@
     dbms/arity-mismatch
     dbms/not-implemented
     dbms/no-input
-    dbms/invalid-representation))
+    dbms/invalid-representation
+    dbms/tx-already-active
+    dbms/tx-not-active))
 
 (defun dbms-member-eq (x xs)
   (if (null xs)

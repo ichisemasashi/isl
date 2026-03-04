@@ -343,6 +343,17 @@ wiki のスキーマ・クエリから確認できた不足機能:
 可視性:
 - トランザクション外の committed read（storage 直読）は、`COMMIT` 前の未確定変更を観測してはならない
 
+### 14.7.3 tx エラーコード契約（P1-005）
+トランザクション境界文は次の契約コードを返す。
+
+- `dbms/tx-already-active`:
+  - `active` 状態で `BEGIN` を実行した場合
+- `dbms/tx-not-active`:
+  - `idle` 状態で `COMMIT` を実行した場合
+  - `idle` 状態で `ROLLBACK` を実行した場合
+
+これらは `dbms-result` の `error` payload に格納し、実行経路（`isl`/`islc-run`）で同一挙動とする。
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト
