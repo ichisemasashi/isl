@@ -209,6 +209,10 @@
              (normalize-expr test)
              (normalize-expr then)
              (normalize-expr else-form))))
+    ((and)
+     (list 'special 'and (map normalize-expr args)))
+    ((or)
+     (list 'special 'or (map normalize-expr args)))
     ((progn)
      (normalize-body args))
     ((lambda)
@@ -226,6 +230,15 @@
          (let ((bindings (normalize-let-bindings (car args))))
            (if bindings
                (list 'special 'let
+                     (list bindings
+                           (normalize-body (cdr args))))
+               (list 'invalid-special op args)))))
+    ((let*)
+     (if (null? args)
+         (list 'invalid-special op args)
+         (let ((bindings (normalize-let-bindings (car args))))
+           (if bindings
+               (list 'special 'let*
                      (list bindings
                            (normalize-body (cdr args))))
                (list 'invalid-special op args)))))
@@ -329,7 +342,7 @@
           (args (cdr form)))
       (if (symbol? op)
           (case op
-            ((quote if progn lambda setq let setf block return-from catch throw go tagbody handler-case
+            ((quote if and or progn lambda setq let let* setf block return-from catch throw go tagbody handler-case
                     defpackage in-package
                     defclass defgeneric defmethod)
              (normalize-special op args))
