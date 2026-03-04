@@ -258,3 +258,68 @@
               (if (dbms-error-p checked)
                   checked
                   (dbms-catalog-add-table-def catalog checked)))))))
+
+(defun dbms-constraint-name-equals-p (c name)
+  (and (dbms-constraint-p c) (string= (dbms-constraint-name c) name)))
+
+(defun dbms-remove-constraint-by-name (constraints name)
+  (if (null constraints)
+      '()
+      (let ((c (car constraints)))
+        (if (dbms-constraint-name-equals-p c name)
+            (dbms-remove-constraint-by-name (cdr constraints) name)
+            (cons c (dbms-remove-constraint-by-name (cdr constraints) name))))))
+
+(defun dbms-constraint-exists-p (constraints name)
+  (if (null constraints)
+      nil
+      (if (dbms-constraint-name-equals-p (car constraints) name)
+          t
+          (dbms-constraint-exists-p (cdr constraints) name))))
+
+(defun dbms-catalog-replace-table-def (catalog table-def)
+  (let ((target (dbms-table-def-name table-def))
+        (pairs (dbms-catalog-tables catalog))
+        (out '())
+        (found nil))
+    (dolist (p pairs)
+      (if (string= (first p) target)
+          (progn
+            (setq out (cons (list target table-def) out))
+            (setq found t))
+          (setq out (cons p out))))
+    (if found
+        (list 'dbms-catalog *dbms-repr-version* (dbms-reverse out))
+        (dbms-make-error 'dbms/table-not-found "table not found" target))))
+
+(defun dbms-catalog-add-constraint (catalog table-name constraint)
+  (let ((table-def (dbms-catalog-find-table catalog table-name)))
+    (if (null table-def)
+        (dbms-make-error 'dbms/table-not-found "table not found" table-name)
+        (let* ((constraints (dbms-table-def-constraints table-def))
+               (new-table (dbms-make-table-def (dbms-table-def-name table-def)
+                                               (dbms-table-def-columns table-def)
+                                               (append constraints (list constraint))
+                                               (dbms-table-def-options table-def)))
+               (checked (dbms-catalog-validate-table-def catalog new-table)))
+          (if (dbms-error-p checked)
+              checked
+              (dbms-catalog-replace-table-def catalog checked))))))
+
+(defun dbms-catalog-drop-constraint (catalog table-name constraint-name if-exists)
+  (let ((table-def (dbms-catalog-find-table catalog table-name)))
+    (if (null table-def)
+        (dbms-make-error 'dbms/table-not-found "table not found" table-name)
+        (let* ((constraints (dbms-table-def-constraints table-def))
+               (exists (dbms-constraint-exists-p constraints constraint-name)))
+          (if (and (not exists) (not if-exists))
+              (dbms-make-error 'dbms/column-not-found "constraint not found" constraint-name)
+              (let* ((new-constraints (dbms-remove-constraint-by-name constraints constraint-name))
+                     (new-table (dbms-make-table-def (dbms-table-def-name table-def)
+                                                     (dbms-table-def-columns table-def)
+                                                     new-constraints
+                                                     (dbms-table-def-options table-def)))
+                     (checked (dbms-catalog-validate-table-def catalog new-table)))
+                (if (dbms-error-p checked)
+                    checked
+                    (dbms-catalog-replace-table-def catalog checked))))))))

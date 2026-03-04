@@ -497,26 +497,212 @@
                           (dbms-parser-ok pairs rest))))))))))
 
 (defun dbms-parse-create-table (tokens)
+  (let ((rest tokens)
+        (if-not-exists nil))
+    (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "IF"))
+        (let ((r-not (dbms-expect-keyword (cdr rest) "NOT")))
+          (if (dbms-error-p r-not)
+              r-not
+              (let ((r-exists (dbms-expect-keyword (dbms-parser-ok-rest r-not) "EXISTS")))
+                (if (dbms-error-p r-exists)
+                    r-exists
+                    (progn
+                      (setq if-not-exists t)
+                      (setq rest (dbms-parser-ok-rest r-exists)))))))
+        nil)
+    (let ((r-table (dbms-expect-identifier rest)))
+      (if (dbms-error-p r-table)
+          r-table
+          (let ((r-lp (dbms-expect-symbol (dbms-parser-ok-rest r-table) "(")))
+            (if (dbms-error-p r-lp)
+                r-lp
+                (let ((r-cols (dbms-parse-column-def-list (dbms-parser-ok-rest r-lp))))
+                  (if (dbms-error-p r-cols)
+                      r-cols
+                      (let ((r-rp (dbms-expect-symbol (dbms-parser-ok-rest r-cols) ")")))
+                        (if (dbms-error-p r-rp)
+                            r-rp
+                            (dbms-parser-ok
+                             (if if-not-exists
+                                 (dbms-make-stmt
+                                  'create-table-wiki
+                                  (list (list "table-def"
+                                              (dbms-make-table-def (dbms-parser-ok-value r-table)
+                                                                   (dbms-parser-ok-value r-cols)
+                                                                   '()
+                                                                   '()))
+                                        (list "if-not-exists" t)))
+                                 (dbms-make-stmt
+                                  'create-table
+                                  (dbms-make-table-def (dbms-parser-ok-value r-table)
+                                                       (dbms-parser-ok-value r-cols)
+                                                       '()
+                                                       '())))
+                             (dbms-parser-ok-rest r-rp))))))))))))
+
+(defun dbms-parse-id-list-from-paren (tokens)
+  (let ((r-inner (dbms-read-parenthesized-tokens tokens)))
+    (if (dbms-error-p r-inner)
+        r-inner
+        (let ((r-ids (dbms-parse-identifier-list (dbms-parser-ok-value r-inner))))
+          (if (dbms-error-p r-ids)
+              r-ids
+              (if (null (dbms-parser-ok-rest r-ids))
+                  (dbms-parser-ok (dbms-parser-ok-value r-ids) (dbms-parser-ok-rest r-inner))
+                  (dbms-parser-error "invalid identifier list" (dbms-parser-ok-value r-inner))))))))
+
+(defun dbms-parse-create-index (tokens)
+  (let ((rest tokens)
+        (if-not-exists nil))
+    (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "IF"))
+        (let ((r-not (dbms-expect-keyword (cdr rest) "NOT")))
+          (if (dbms-error-p r-not)
+              r-not
+              (let ((r-exists (dbms-expect-keyword (dbms-parser-ok-rest r-not) "EXISTS")))
+                (if (dbms-error-p r-exists)
+                    r-exists
+                    (progn
+                      (setq if-not-exists t)
+                      (setq rest (dbms-parser-ok-rest r-exists)))))))
+        nil)
+    (let ((r-index-name (dbms-expect-identifier rest)))
+      (if (dbms-error-p r-index-name)
+          r-index-name
+          (let ((r-on (dbms-expect-keyword (dbms-parser-ok-rest r-index-name) "ON")))
+            (if (dbms-error-p r-on)
+                r-on
+                (let ((r-table (dbms-expect-identifier (dbms-parser-ok-rest r-on))))
+                  (if (dbms-error-p r-table)
+                      r-table
+                      (let ((r-cols (dbms-parse-id-list-from-paren (dbms-parser-ok-rest r-table))))
+                        (if (dbms-error-p r-cols)
+                            r-cols
+                            (dbms-parser-ok
+                             (dbms-make-stmt
+                              'create-index
+                              (list (list "index-name" (dbms-parser-ok-value r-index-name))
+                                    (list "table" (dbms-parser-ok-value r-table))
+                                    (list "columns" (dbms-parser-ok-value r-cols))
+                                    (list "if-not-exists" if-not-exists)))
+                             (dbms-parser-ok-rest r-cols))))))))))))
+
+(defun dbms-parse-add-check-constraint (table-name c-name tokens)
+  (let ((r-check (dbms-read-parenthesized-tokens tokens)))
+    (if (dbms-error-p r-check)
+        r-check
+        (dbms-parser-ok
+         (dbms-make-stmt
+          'alter-table
+          (list (list "table" table-name)
+                (list "action" "ADD-CONSTRAINT")
+                (list "constraint"
+                      (dbms-make-constraint 'check c-name (dbms-parser-ok-value r-check)))))
+         (dbms-parser-ok-rest r-check)))))
+
+(defun dbms-parse-add-foreign-key-constraint (table-name c-name tokens)
+  (let ((r-local (dbms-parse-id-list-from-paren tokens)))
+    (if (dbms-error-p r-local)
+        r-local
+        (let ((r-ref (dbms-expect-keyword (dbms-parser-ok-rest r-local) "REFERENCES")))
+          (if (dbms-error-p r-ref)
+              r-ref
+              (let ((r-ref-table (dbms-expect-identifier (dbms-parser-ok-rest r-ref))))
+                (if (dbms-error-p r-ref-table)
+                    r-ref-table
+                    (let ((r-ref-cols (dbms-parse-id-list-from-paren (dbms-parser-ok-rest r-ref-table))))
+                      (if (dbms-error-p r-ref-cols)
+                          r-ref-cols
+                          (let ((r-on (dbms-expect-keyword (dbms-parser-ok-rest r-ref-cols) "ON")))
+                            (if (dbms-error-p r-on)
+                                r-on
+                                (let ((r-delete (dbms-expect-keyword (dbms-parser-ok-rest r-on) "DELETE")))
+                                  (if (dbms-error-p r-delete)
+                                      r-delete
+                                      (let ((tail (dbms-parser-ok-rest r-delete))
+                                            (on-delete '()))
+                                        (if (and (not (null tail))
+                                                 (string= (dbms-sql-upper (dbms-sql-token-lexeme (first tail))) "CASCADE"))
+                                            (progn
+                                              (setq on-delete 'CASCADE)
+                                              (setq tail (cdr tail)))
+                                            (if (and (not (null tail))
+                                                     (dbms-token-is-keyword-p (first tail) "SET")
+                                                     (not (null (cdr tail)))
+                                                     (or (dbms-token-is-keyword-p (second tail) "NULL")
+                                                         (dbms-token-is-kind-p (second tail) 'literal-null)))
+                                                (progn
+                                                  (setq on-delete 'SET-NULL)
+                                                  (setq tail (cdr (cdr tail))))
+                                                nil))
+                                        (if (null on-delete)
+                                            (dbms-parser-error "ON DELETE must be CASCADE or SET NULL" (dbms-parser-ok-rest r-delete))
+                                            (dbms-parser-ok
+                                             (dbms-make-stmt
+                                              'alter-table
+                                              (list (list "table" table-name)
+                                                    (list "action" "ADD-CONSTRAINT")
+                                                    (list "constraint"
+                                                          (dbms-make-constraint
+                                                           'foreign-key
+                                                           c-name
+                                                           (list (dbms-parser-ok-value r-local)
+                                                                 (dbms-parser-ok-value r-ref-table)
+                                                                 (dbms-parser-ok-value r-ref-cols)
+                                                                 on-delete)))))
+                                             tail))))))))))))))))
+
+(defun dbms-parse-add-constraint (table-name tokens)
+  (let ((r-name (dbms-expect-identifier tokens)))
+    (if (dbms-error-p r-name)
+        r-name
+        (let ((cname (dbms-parser-ok-value r-name))
+              (rest (dbms-parser-ok-rest r-name)))
+          (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "CHECK"))
+              (dbms-parse-add-check-constraint table-name cname (cdr rest))
+              (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "FOREIGN"))
+                  (let ((r-key (dbms-expect-keyword (cdr rest) "KEY")))
+                    (if (dbms-error-p r-key)
+                        r-key
+                        (dbms-parse-add-foreign-key-constraint table-name cname (dbms-parser-ok-rest r-key))))
+                  (dbms-parser-error "ADD CONSTRAINT supports CHECK or FOREIGN KEY" rest)))))))
+
+(defun dbms-parse-alter-table (tokens)
   (let ((r-table (dbms-expect-identifier tokens)))
     (if (dbms-error-p r-table)
         r-table
-        (let ((r-lp (dbms-expect-symbol (dbms-parser-ok-rest r-table) "(")))
-          (if (dbms-error-p r-lp)
-              r-lp
-              (let ((r-cols (dbms-parse-column-def-list (dbms-parser-ok-rest r-lp))))
-                (if (dbms-error-p r-cols)
-                    r-cols
-                    (let ((r-rp (dbms-expect-symbol (dbms-parser-ok-rest r-cols) ")")))
-                      (if (dbms-error-p r-rp)
-                          r-rp
-                          (dbms-parser-ok
-                           (dbms-make-stmt
-                            'create-table
-                            (dbms-make-table-def (dbms-parser-ok-value r-table)
-                                                 (dbms-parser-ok-value r-cols)
-                                                 '()
-                                                 '()))
-                           (dbms-parser-ok-rest r-rp)))))))))))
+        (let ((table-name (dbms-parser-ok-value r-table))
+              (rest (dbms-parser-ok-rest r-table)))
+          (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "DROP"))
+              (let ((r-constraint (dbms-expect-keyword (cdr rest) "CONSTRAINT")))
+                (if (dbms-error-p r-constraint)
+                    r-constraint
+                    (let ((rest2 (dbms-parser-ok-rest r-constraint))
+                          (if-exists nil))
+                      (if (and (not (null rest2)) (dbms-token-is-keyword-p (first rest2) "IF"))
+                          (let ((r-exists (dbms-expect-keyword (cdr rest2) "EXISTS")))
+                            (if (dbms-error-p r-exists)
+                                r-exists
+                                (progn
+                                  (setq if-exists t)
+                                  (setq rest2 (dbms-parser-ok-rest r-exists)))))
+                          nil)
+                      (let ((r-name (dbms-expect-identifier rest2)))
+                        (if (dbms-error-p r-name)
+                            r-name
+                            (dbms-parser-ok
+                             (dbms-make-stmt
+                              'alter-table
+                              (list (list "table" table-name)
+                                    (list "action" "DROP-CONSTRAINT")
+                                    (list "if-exists" if-exists)
+                                    (list "constraint-name" (dbms-parser-ok-value r-name))))
+                             (dbms-parser-ok-rest r-name)))))))
+              (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "ADD"))
+                  (let ((r-constraint (dbms-expect-keyword (cdr rest) "CONSTRAINT")))
+                    (if (dbms-error-p r-constraint)
+                        r-constraint
+                        (dbms-parse-add-constraint table-name (dbms-parser-ok-rest r-constraint))))
+                  (dbms-parser-error "ALTER TABLE supports DROP/ADD CONSTRAINT" rest)))))))
 
 (defun dbms-parse-insert (tokens)
   (let ((r-table (dbms-expect-identifier tokens)))
@@ -845,10 +1031,13 @@
          ((dbms-token-is-keyword-p tok "WITH")
           (dbms-parse-with (cdr tokens)))
          ((dbms-token-is-keyword-p tok "CREATE")
-          (let ((r-tablekw (dbms-expect-keyword (cdr tokens) "TABLE")))
-            (if (dbms-error-p r-tablekw)
-                r-tablekw
-                (dbms-parse-create-table (dbms-parser-ok-rest r-tablekw)))))
+          (if (null (cdr tokens))
+              (dbms-parser-error "CREATE requires TABLE or INDEX" 'eof)
+              (if (dbms-token-is-keyword-p (second tokens) "TABLE")
+                  (dbms-parse-create-table (cdr (cdr tokens)))
+                  (if (dbms-token-is-keyword-p (second tokens) "INDEX")
+                      (dbms-parse-create-index (cdr (cdr tokens)))
+                      (dbms-parser-error "CREATE supports TABLE or INDEX" (second tokens))))))
          ((dbms-token-is-keyword-p tok "INSERT")
           (let ((r-into (dbms-expect-keyword (cdr tokens) "INTO")))
             (if (dbms-error-p r-into)
@@ -860,6 +1049,11 @@
           (dbms-parse-update (cdr tokens)))
          ((dbms-token-is-keyword-p tok "DELETE")
           (dbms-parse-delete (cdr tokens)))
+         ((dbms-token-is-keyword-p tok "ALTER")
+          (let ((r-table (dbms-expect-keyword (cdr tokens) "TABLE")))
+            (if (dbms-error-p r-table)
+                r-table
+                (dbms-parse-alter-table (dbms-parser-ok-rest r-table)))))
          (t
           (dbms-parser-error "unsupported statement" (dbms-sql-token-lexeme tok)))))))
 
