@@ -104,6 +104,126 @@
       (string= op ">=")
       (string= op "<>")))
 
+(defun dbms-keyword-in-list-p (kw kws)
+  (if (null kws)
+      nil
+      (if (string= kw (car kws))
+          t
+          (dbms-keyword-in-list-p kw (cdr kws)))))
+
+(defun dbms-token-keyword-upper-or-empty (tok)
+  (if (dbms-token-is-kind-p tok 'keyword)
+      (fourth tok)
+      ""))
+
+(defun dbms-token-list-contains-keyword-p (tokens kw-upper)
+  (if (null tokens)
+      nil
+      (if (dbms-token-is-keyword-p (car tokens) kw-upper)
+          t
+          (dbms-token-list-contains-keyword-p (cdr tokens) kw-upper))))
+
+(defun dbms-scan-until-top-level-keywords (tokens stop-kws)
+  ;; Returns (segment rest stop-kw-or-empty)
+  (let ((rest tokens)
+        (seg '())
+        (depth 0)
+        (stop "")
+        (done nil))
+    (while (and (not done) (not (null rest)))
+      (let ((tok (car rest)))
+        (if (and (= depth 0)
+                 (dbms-token-is-kind-p tok 'keyword)
+                 (dbms-keyword-in-list-p (fourth tok) stop-kws))
+            (progn
+              (setq stop (fourth tok))
+              (setq done t))
+            (progn
+              (if (dbms-token-is-symbol-p tok "(")
+                  (setq depth (+ depth 1))
+                  (if (and (dbms-token-is-symbol-p tok ")") (> depth 0))
+                      (setq depth (- depth 1))
+                      nil))
+              (setq seg (append seg (list tok)))
+              (setq rest (cdr rest))))))
+    (list seg rest stop)))
+
+(defun dbms-read-parenthesized-tokens (tokens)
+  (if (or (null tokens) (not (dbms-token-is-symbol-p (first tokens) "(")))
+      (dbms-parser-error "expected (" (if (null tokens) 'eof (dbms-sql-token-lexeme (first tokens))))
+      (let ((rest (cdr tokens))
+            (inner '())
+            (depth 1)
+            (done nil))
+        (while (and (not done) (not (null rest)))
+          (let ((tok (car rest)))
+            (if (dbms-token-is-symbol-p tok "(")
+                (progn
+                  (setq depth (+ depth 1))
+                  (setq inner (append inner (list tok)))
+                  (setq rest (cdr rest)))
+                (if (dbms-token-is-symbol-p tok ")")
+                    (if (= depth 1)
+                        (progn
+                          (setq done t)
+                          (setq rest (cdr rest)))
+                        (progn
+                          (setq depth (- depth 1))
+                          (setq inner (append inner (list tok)))
+                          (setq rest (cdr rest))))
+                    (progn
+                      (setq inner (append inner (list tok)))
+                      (setq rest (cdr rest))))))
+          )
+        (if done
+            (dbms-parser-ok inner rest)
+            (dbms-parser-error "unclosed parenthesis" tokens)))))
+
+(defun dbms-parse-simple-select-list-from-tokens (tokens)
+  (if (and (= (length tokens) 1)
+           (dbms-token-is-operator-p (first tokens) "*"))
+      (dbms-parser-ok '* '())
+      (dbms-parse-identifier-list tokens)))
+
+(defun dbms-parse-simple-order-by-from-tokens (tokens)
+  (if (null tokens)
+      (dbms-parser-ok '() '())
+      (let ((r-col (dbms-expect-identifier tokens)))
+        (if (dbms-error-p r-col)
+            r-col
+            (let ((dir 'ASC)
+                  (rest (dbms-parser-ok-rest r-col)))
+              (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "ASC"))
+                  (setq rest (cdr rest))
+                  (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "DESC"))
+                      (progn
+                        (setq dir 'DESC)
+                        (setq rest (cdr rest)))
+                      nil))
+              (if (null rest)
+                  (dbms-parser-ok (list (dbms-parser-ok-value r-col) dir) '())
+                  (dbms-parser-error "complex ORDER BY not allowed in MVP parser path" rest)))))))
+
+(defun dbms-list-last (xs)
+  (if (null (cdr xs))
+      (car xs)
+      (dbms-list-last (cdr xs))))
+
+(defun dbms-list-butlast (xs)
+  (if (null xs)
+      '()
+      (if (null (cdr xs))
+          '()
+          (cons (car xs) (dbms-list-butlast (cdr xs))))))
+
+(defun dbms-drop-trailing-semicolon-token (tokens)
+  (if (null tokens)
+      tokens
+      (let ((tail (dbms-list-last tokens)))
+        (if (dbms-token-is-symbol-p tail ";")
+            (dbms-list-butlast tokens)
+            tokens))))
+
 (defun dbms-parse-predicate (tokens)
   (let ((r-col (dbms-expect-identifier tokens)))
     (if (dbms-error-p r-col)
@@ -316,25 +436,73 @@
               nil)
           (if (dbms-error-p failed)
               failed
-              (let ((r-values-kw (dbms-expect-keyword rest "VALUES")))
-                (if (dbms-error-p r-values-kw)
-                    r-values-kw
-                    (let ((r-lp (dbms-expect-symbol (dbms-parser-ok-rest r-values-kw) "(")))
+              (let ((mode "")
+                    (source '())
+                    (on-conflict '()))
+                (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "VALUES"))
+                    (let ((r-lp (dbms-expect-symbol (cdr rest) "(")))
                       (if (dbms-error-p r-lp)
-                          r-lp
+                          (setq failed r-lp)
                           (let ((r-vals (dbms-parse-expr-list (dbms-parser-ok-rest r-lp))))
                             (if (dbms-error-p r-vals)
-                                r-vals
+                                (setq failed r-vals)
                                 (let ((r-rp (dbms-expect-symbol (dbms-parser-ok-rest r-vals) ")")))
                                   (if (dbms-error-p r-rp)
-                                      r-rp
-                                      (dbms-parser-ok
-                                       (dbms-make-stmt
-                                        'insert
-                                        (list (list "table" table-name)
-                                              (list "columns" columns)
-                                              (list "values" (dbms-parser-ok-value r-vals))))
-                                       (dbms-parser-ok-rest r-rp)))))))))))))))
+                                      (setq failed r-rp)
+                                      (progn
+                                        (setq mode "VALUES")
+                                        (setq source (dbms-parser-ok-value r-vals))
+                                        (setq rest (dbms-parser-ok-rest r-rp)))))))))
+                    (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "SELECT"))
+                        (let ((r-sel (dbms-parse-select (cdr rest))))
+                          (if (dbms-error-p r-sel)
+                              (setq failed r-sel)
+                              (progn
+                                (setq mode "SELECT")
+                                (setq source (dbms-parser-ok-value r-sel))
+                                (setq rest (dbms-parser-ok-rest r-sel)))))
+                        (setq failed (dbms-parser-error "INSERT requires VALUES or SELECT" rest))))
+
+                (if (and (null failed)
+                         (not (null rest))
+                         (dbms-token-is-keyword-p (first rest) "ON"))
+                    (let ((r-conflict (dbms-expect-keyword (cdr rest) "CONFLICT")))
+                      (if (dbms-error-p r-conflict)
+                          (setq failed r-conflict)
+                          (let ((r-target (dbms-read-parenthesized-tokens (dbms-parser-ok-rest r-conflict))))
+                            (if (dbms-error-p r-target)
+                                (setq failed r-target)
+                                (let ((r-do (dbms-expect-keyword (dbms-parser-ok-rest r-target) "DO")))
+                                  (if (dbms-error-p r-do)
+                                      (setq failed r-do)
+                                      (let ((r-nothing (dbms-expect-keyword (dbms-parser-ok-rest r-do) "NOTHING")))
+                                        (if (dbms-error-p r-nothing)
+                                            (setq failed r-nothing)
+                                            (progn
+                                              (setq on-conflict (list (list "target" (dbms-parser-ok-value r-target))
+                                                                      (list "action" "DO NOTHING")))
+                                              (setq rest (dbms-parser-ok-rest r-nothing)))))))))))
+                    nil)
+
+                (if (dbms-error-p failed)
+                    failed
+                    (if (and (string= mode "VALUES") (null on-conflict))
+                        (dbms-parser-ok
+                         (dbms-make-stmt
+                          'insert
+                          (list (list "table" table-name)
+                                (list "columns" columns)
+                                (list "values" source)))
+                         rest)
+                        (dbms-parser-ok
+                         (dbms-make-stmt
+                          'insert-wiki
+                          (list (list "table" table-name)
+                                (list "columns" columns)
+                                (list "source-kind" mode)
+                                (list "source" source)
+                                (list "on-conflict" on-conflict)))
+                         rest)))))))))
 
 (defun dbms-parse-select-list (tokens)
   (if (and (not (null tokens)) (dbms-token-is-operator-p (first tokens) "*"))
@@ -342,91 +510,158 @@
       (dbms-parse-identifier-list tokens)))
 
 (defun dbms-parse-select (tokens)
-  (let ((r-cols (dbms-parse-select-list tokens)))
-    (if (dbms-error-p r-cols)
-        r-cols
-        (let ((r-from (dbms-expect-keyword (dbms-parser-ok-rest r-cols) "FROM")))
-          (if (dbms-error-p r-from)
-              r-from
-              (let ((r-table (dbms-expect-identifier (dbms-parser-ok-rest r-from))))
-                (if (dbms-error-p r-table)
-                    r-table
-                    (let ((where '())
-                          (order-by '())
-                          (rest (dbms-parser-ok-rest r-table))
-                          (failed '()))
-                      (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "WHERE"))
-                          (let ((r-where (dbms-parse-predicate (cdr rest))))
-                            (if (dbms-error-p r-where)
-                                (setq failed r-where)
-                                (progn
-                                  (setq where (dbms-parser-ok-value r-where))
-                                  (setq rest (dbms-parser-ok-rest r-where)))))
-                          nil)
-                      (if (and (null failed)
-                               (not (null rest))
-                               (dbms-token-is-keyword-p (first rest) "ORDER"))
-                          (let ((r-by (dbms-expect-keyword (cdr rest) "BY")))
-                            (if (dbms-error-p r-by)
-                                (setq failed r-by)
-                                (let ((r-col (dbms-expect-identifier (dbms-parser-ok-rest r-by))))
-                                  (if (dbms-error-p r-col)
-                                      (setq failed r-col)
-                                      (let ((dir 'ASC)
-                                            (rest2 (dbms-parser-ok-rest r-col)))
-                                        (if (and (not (null rest2)) (dbms-token-is-keyword-p (first rest2) "ASC"))
-                                            (progn
-                                              (setq dir 'ASC)
-                                              (setq rest2 (cdr rest2)))
-                                            (if (and (not (null rest2)) (dbms-token-is-keyword-p (first rest2) "DESC"))
-                                                (progn
-                                                  (setq dir 'DESC)
-                                                  (setq rest2 (cdr rest2)))
-                                                nil))
-                                        (setq order-by (list (dbms-parser-ok-value r-col) dir))
-                                        (setq rest rest2))))))
-                          nil)
-                      (if (dbms-error-p failed)
-                          failed
-                          (dbms-parser-ok
-                           (dbms-make-stmt
-                            'select
-                            (list (list "columns" (dbms-parser-ok-value r-cols))
-                                  (list "table" (dbms-parser-ok-value r-table))
-                                  (list "where" where)
-                                  (list "order-by" order-by)))
-                           rest))))))))))
+  (let* ((scan-from (dbms-scan-until-top-level-keywords tokens '("FROM")))
+         (select-list-toks (first scan-from))
+         (rest0 (second scan-from)))
+    (if (null rest0)
+        (dbms-parser-error "SELECT requires FROM" tokens)
+        (if (null select-list-toks)
+            (dbms-parser-error "SELECT list must not be empty" tokens)
+            (let* ((scan-where (dbms-scan-until-top-level-keywords (cdr rest0) '("WHERE" "ORDER" "LIMIT")))
+               (from-toks (first scan-where))
+               (rest1 (second scan-where))
+               (where-toks '())
+               (order-toks '())
+               (limit-tok '())
+               (rest rest1)
+               (failed '()))
+          (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "WHERE"))
+              (let ((scan-order (dbms-scan-until-top-level-keywords (cdr rest) '("ORDER" "LIMIT"))))
+                (setq where-toks (first scan-order))
+                (setq rest (second scan-order)))
+              nil)
+          (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "ORDER"))
+              (let ((r-by (dbms-expect-keyword (cdr rest) "BY")))
+                (if (dbms-error-p r-by)
+                    (setq failed r-by)
+                    (let ((scan-limit (dbms-scan-until-top-level-keywords (dbms-parser-ok-rest r-by) '("LIMIT"))))
+                      (setq order-toks (first scan-limit))
+                      (setq rest (second scan-limit)))))
+              nil)
+          (if (and (null failed) (not (null rest)) (dbms-token-is-keyword-p (first rest) "LIMIT"))
+              (if (or (null (cdr rest)) (not (dbms-token-is-kind-p (second rest) 'number)))
+                  (setq failed (dbms-parser-error "LIMIT requires integer literal" rest))
+                  (progn
+                    (setq limit-tok (second rest))
+                    (setq rest (cdr (cdr rest)))))
+              nil)
+
+          (if (dbms-error-p failed)
+              failed
+              (let* ((simple-list-r (dbms-parse-simple-select-list-from-tokens select-list-toks))
+                     (simple-from-r (if (and (= (length from-toks) 1)
+                                             (dbms-token-is-kind-p (first from-toks) 'identifier))
+                                        (dbms-parser-ok (fourth (first from-toks)) '())
+                                        (dbms-parser-error "complex FROM" from-toks)))
+                     (simple-where-r (if (null where-toks)
+                                         (dbms-parser-ok '() '())
+                                         (let ((r (dbms-parse-predicate where-toks)))
+                                           (if (dbms-error-p r)
+                                               r
+                                               (if (null (dbms-parser-ok-rest r))
+                                                   r
+                                                   (dbms-parser-error "complex WHERE" where-toks)))))
+                     )
+                     (simple-order-r (if (null order-toks)
+                                         (dbms-parser-ok '() '())
+                                         (dbms-parse-simple-order-by-from-tokens order-toks)))
+                     (mvp-simple (and (not (dbms-error-p simple-list-r))
+                                      (not (dbms-error-p simple-from-r))
+                                      (not (dbms-error-p simple-where-r))
+                                      (not (dbms-error-p simple-order-r))
+                                      (null limit-tok)
+                                      (not (dbms-token-list-contains-keyword-p from-toks "JOIN")))))
+                (if mvp-simple
+                    (dbms-parser-ok
+                     (dbms-make-stmt
+                      'select
+                      (list (list "columns" (dbms-parser-ok-value simple-list-r))
+                            (list "table" (dbms-parser-ok-value simple-from-r))
+                            (list "where" (dbms-parser-ok-value simple-where-r))
+                            (list "order-by" (dbms-parser-ok-value simple-order-r))))
+                     rest)
+                    (dbms-parser-ok
+                     (dbms-make-stmt
+                      'select-wiki
+                      (list (list "select-list" select-list-toks)
+                            (list "from" from-toks)
+                            (list "where" where-toks)
+                            (list "order-by" order-toks)
+                            (list "limit" (if (null limit-tok) '() (fourth limit-tok)))))
+                     rest)))))))))
 
 (defun dbms-parse-update (tokens)
   (let ((r-table (dbms-expect-identifier tokens)))
     (if (dbms-error-p r-table)
         r-table
-        (let ((r-set (dbms-expect-keyword (dbms-parser-ok-rest r-table) "SET")))
+        (let ((rest-after-table (dbms-parser-ok-rest r-table))
+              (table-alias '())
+              (r-set '()))
+          (if (and (not (null rest-after-table))
+                   (dbms-token-is-kind-p (first rest-after-table) 'identifier))
+              (progn
+                (setq table-alias (fourth (first rest-after-table)))
+                (setq rest-after-table (cdr rest-after-table)))
+              nil)
+          (setq r-set (dbms-expect-keyword rest-after-table "SET"))
           (if (dbms-error-p r-set)
               r-set
-              (let ((r-assign (dbms-parse-set-assignments (dbms-parser-ok-rest r-set))))
-                (if (dbms-error-p r-assign)
-                    r-assign
-                    (let ((where '())
-                          (rest (dbms-parser-ok-rest r-assign))
-                          (failed '()))
-                      (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "WHERE"))
-                          (let ((r-where (dbms-parse-predicate (cdr rest))))
-                            (if (dbms-error-p r-where)
-                                (setq failed r-where)
-                                (progn
-                                  (setq where (dbms-parser-ok-value r-where))
-                                  (setq rest (dbms-parser-ok-rest r-where)))))
-                          nil)
-                      (if (dbms-error-p failed)
-                          failed
-                          (dbms-parser-ok
-                           (dbms-make-stmt
-                            'update
-                            (list (list "table" (dbms-parser-ok-value r-table))
-                                  (list "set" (dbms-parser-ok-value r-assign))
-                                  (list "where" where)))
-                           rest))))))))))
+              (let* ((scan-main (dbms-scan-until-top-level-keywords (dbms-parser-ok-rest r-set) '("FROM" "WHERE" "RETURNING")))
+                     (set-toks (first scan-main))
+                     (rest (second scan-main))
+                     (from-toks '())
+                     (where-toks '())
+                     (returning-toks '())
+                     (failed '()))
+                (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "FROM"))
+                    (let ((scan-where (dbms-scan-until-top-level-keywords (cdr rest) '("WHERE" "RETURNING"))))
+                      (setq from-toks (first scan-where))
+                      (setq rest (second scan-where)))
+                    nil)
+                (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "WHERE"))
+                    (let ((scan-ret (dbms-scan-until-top-level-keywords (cdr rest) '("RETURNING"))))
+                      (setq where-toks (first scan-ret))
+                      (setq rest (second scan-ret)))
+                    nil)
+                (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "RETURNING"))
+                    (progn
+                      (setq returning-toks (cdr rest))
+                      (setq rest '()))
+                    nil)
+
+                (let* ((simple-assign-r (dbms-parse-set-assignments set-toks))
+                       (simple-where-r (if (null where-toks)
+                                           (dbms-parser-ok '() '())
+                                           (let ((r (dbms-parse-predicate where-toks)))
+                                             (if (dbms-error-p r)
+                                                 r
+                                                 (if (null (dbms-parser-ok-rest r))
+                                                     r
+                                                     (dbms-parser-error "complex WHERE" where-toks))))))
+                       (mvp-simple (and (null from-toks)
+                                        (null table-alias)
+                                        (null returning-toks)
+                                        (not (dbms-error-p simple-assign-r))
+                                        (not (dbms-error-p simple-where-r))))
+                       )
+                  (if mvp-simple
+                      (dbms-parser-ok
+                       (dbms-make-stmt
+                        'update
+                        (list (list "table" (dbms-parser-ok-value r-table))
+                              (list "set" (dbms-parser-ok-value simple-assign-r))
+                              (list "where" (dbms-parser-ok-value simple-where-r))))
+                       rest)
+                      (dbms-parser-ok
+                       (dbms-make-stmt
+                        'update-wiki
+                        (list (list "table" (dbms-parser-ok-value r-table))
+                              (list "alias" table-alias)
+                              (list "set" set-toks)
+                              (list "from" from-toks)
+                              (list "where" where-toks)
+                              (list "returning" returning-toks)))
+                       rest)))))))))
 
 (defun dbms-parse-delete (tokens)
   (let ((r-from (dbms-expect-keyword tokens "FROM")))
@@ -435,48 +670,95 @@
         (let ((r-table (dbms-expect-identifier (dbms-parser-ok-rest r-from))))
           (if (dbms-error-p r-table)
               r-table
-              (let ((where '())
-                    (rest (dbms-parser-ok-rest r-table))
-                    (failed '()))
+              (let ((rest (dbms-parser-ok-rest r-table))
+                    (where-toks '()))
                 (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "WHERE"))
-                    (let ((r-where (dbms-parse-predicate (cdr rest))))
-                      (if (dbms-error-p r-where)
-                          (setq failed r-where)
-                          (progn
-                            (setq where (dbms-parser-ok-value r-where))
-                            (setq rest (dbms-parser-ok-rest r-where)))))
+                    (progn
+                      (setq where-toks (cdr rest))
+                      (setq rest '()))
                     nil)
-                (if (dbms-error-p failed)
-                    failed
+                (if (null where-toks)
                     (dbms-parser-ok
                      (dbms-make-stmt
                       'delete
                       (list (list "table" (dbms-parser-ok-value r-table))
-                            (list "where" where)))
-                     rest))))))))
+                            (list "where" '())))
+                     rest)
+                    (let ((r-where (dbms-parse-predicate where-toks)))
+                      (if (and (not (dbms-error-p r-where))
+                               (null (dbms-parser-ok-rest r-where)))
+                          (dbms-parser-ok
+                           (dbms-make-stmt
+                            'delete
+                            (list (list "table" (dbms-parser-ok-value r-table))
+                                  (list "where" (dbms-parser-ok-value r-where))))
+                           rest)
+                          (dbms-parser-ok
+                           (dbms-make-stmt
+                            'delete-wiki
+                            (list (list "table" (dbms-parser-ok-value r-table))
+                                  (list "where" where-toks)))
+                           rest))))))))))
+
+(defun dbms-parse-with (tokens)
+  (let ((rest tokens)
+        (ctes '())
+        (failed '())
+        (done nil))
+    (while (and (null failed) (not done))
+      (let ((r-name (dbms-expect-identifier rest)))
+        (if (dbms-error-p r-name)
+            (setq failed r-name)
+            (let ((r-as (dbms-expect-keyword (dbms-parser-ok-rest r-name) "AS")))
+              (if (dbms-error-p r-as)
+                  (setq failed r-as)
+                  (let ((r-subq (dbms-read-parenthesized-tokens (dbms-parser-ok-rest r-as))))
+                    (if (dbms-error-p r-subq)
+                        (setq failed r-subq)
+                        (progn
+                          (setq ctes (append ctes (list (list (dbms-parser-ok-value r-name)
+                                                               (dbms-parser-ok-value r-subq)))))
+                          (setq rest (dbms-parser-ok-rest r-subq))
+                          (if (and (not (null rest)) (dbms-token-is-symbol-p (first rest) ","))
+                              (setq rest (cdr rest))
+                              (setq done t))))))))))
+    (if (dbms-error-p failed)
+        failed
+        (let ((r-final (dbms-parse-statement rest)))
+          (if (dbms-error-p r-final)
+              r-final
+              (dbms-parser-ok
+               (dbms-make-stmt
+                'with
+                (list (list "ctes" ctes)
+                      (list "statement" (dbms-parser-ok-value r-final))))
+               (dbms-parser-ok-rest r-final)))))))
 
 (defun dbms-parse-statement (tokens)
   (if (null tokens)
       (dbms-parser-error "empty token stream" '())
       (let ((tok (first tokens)))
-        (if (dbms-token-is-keyword-p tok "CREATE")
-            (let ((r-tablekw (dbms-expect-keyword (cdr tokens) "TABLE")))
-              (if (dbms-error-p r-tablekw)
-                  r-tablekw
-                  (dbms-parse-create-table (dbms-parser-ok-rest r-tablekw))))
-            (if (dbms-token-is-keyword-p tok "INSERT")
-                (let ((r-into (dbms-expect-keyword (cdr tokens) "INTO")))
-                  (if (dbms-error-p r-into)
-                      r-into
-                      (dbms-parse-insert (dbms-parser-ok-rest r-into))))
-                (if (dbms-token-is-keyword-p tok "SELECT")
-                    (dbms-parse-select (cdr tokens))
-                    (if (dbms-token-is-keyword-p tok "UPDATE")
-                        (dbms-parse-update (cdr tokens))
-                        (if (dbms-token-is-keyword-p tok "DELETE")
-                            (dbms-parse-delete (cdr tokens))
-                            (dbms-parser-error "unsupported statement"
-                                               (dbms-sql-token-lexeme tok))))))))))
+        (cond
+         ((dbms-token-is-keyword-p tok "WITH")
+          (dbms-parse-with (cdr tokens)))
+         ((dbms-token-is-keyword-p tok "CREATE")
+          (let ((r-tablekw (dbms-expect-keyword (cdr tokens) "TABLE")))
+            (if (dbms-error-p r-tablekw)
+                r-tablekw
+                (dbms-parse-create-table (dbms-parser-ok-rest r-tablekw)))))
+         ((dbms-token-is-keyword-p tok "INSERT")
+          (let ((r-into (dbms-expect-keyword (cdr tokens) "INTO")))
+            (if (dbms-error-p r-into)
+                r-into
+                (dbms-parse-insert (dbms-parser-ok-rest r-into)))))
+         ((dbms-token-is-keyword-p tok "SELECT")
+          (dbms-parse-select (cdr tokens)))
+         ((dbms-token-is-keyword-p tok "UPDATE")
+          (dbms-parse-update (cdr tokens)))
+         ((dbms-token-is-keyword-p tok "DELETE")
+          (dbms-parse-delete (cdr tokens)))
+         (t
+          (dbms-parser-error "unsupported statement" (dbms-sql-token-lexeme tok)))))))
 
 (defun dbms-parse-sql (sql-text)
   (if (or (null sql-text) (string= sql-text ""))
@@ -484,13 +766,11 @@
       (let ((tokens (dbms-lex-sql sql-text)))
         (if (dbms-error-p tokens)
             tokens
-            (let ((r-stmt (dbms-parse-statement tokens)))
+            (let* ((tokens2 (dbms-drop-trailing-semicolon-token tokens))
+                   (r-stmt (dbms-parse-statement tokens2)))
               (if (dbms-error-p r-stmt)
                   r-stmt
                   (let ((rest (dbms-parser-ok-rest r-stmt)))
-                    (if (and (not (null rest)) (dbms-token-is-symbol-p (first rest) ";"))
-                        (setq rest (cdr rest))
-                        nil)
                     (if (null rest)
                         (dbms-make-ast
                          (list (dbms-parser-ok-value r-stmt))

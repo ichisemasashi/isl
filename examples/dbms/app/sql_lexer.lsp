@@ -10,7 +10,7 @@
     "INT" "TEXT" "BOOL"
     "ALTER" "ADD" "DROP" "CONSTRAINT" "CHECK" "FOREIGN" "REFERENCES"
     "INDEX" "IF" "EXISTS" "ON" "CONFLICT" "DO" "NOTHING" "RETURNING"
-    "WITH" "AS" "LIMIT" "JOIN"))
+    "WITH" "AS" "LIMIT" "JOIN" "INNER" "AND" "OR" "IS"))
 
 (defglobal *dbms-sql-operator-2ch* '("!=" "<=" ">=" "<>"))
 (defglobal *dbms-sql-operator-1ch* '("=" "<" ">" "+" "-" "*" "/" "%"))
