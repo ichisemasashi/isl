@@ -354,6 +354,71 @@ wiki のスキーマ・クエリから確認できた不足機能:
 
 これらは `dbms-result` の `error` payload に格納し、実行経路（`isl`/`islc-run`）で同一挙動とする。
 
+### 14.7.4 WAL record 仕様（P1-006）
+本節は `P1-007`（WAL append/flush 実装）と `P1-008`（recovery 実装）に先行して、
+永続ログ形式を固定する。
+
+#### 14.7.4.1 目的
+- トランザクション変更を append-only ログとして記録する。
+- `COMMIT` の永続性判定を commit record で一意に行う。
+- クラッシュ時の再生単位（redo/undo 境界）を固定する。
+
+#### 14.7.4.2 物理配置（v1）
+- ストレージルート直下に WAL ファイルを置く。
+  - `wal.log`（単一ファイル運用）
+- `P1-006` 時点では単一ファイル固定。セグメント分割は後続拡張とする。
+
+#### 14.7.4.3 レコード表現（S式）
+1 レコードは次の S 式で永続化する:
+
+`(dbms-wal-record <lsn> <txid> <kind> <op> <payload>)`
+
+- `<lsn>`: 単調増加整数（1 以上）
+- `<txid>`: 非負整数（tx 非依存イベントは `0`）
+- `<kind>`: `begin | data | commit | abort | checkpoint`
+- `<op>`: `symbol`（例: `catalog-replace`, `table-replace`）
+- `<payload>`: 操作再生に必要な S 式データ
+
+commit marker:
+- `kind=commit` のレコードを commit marker と定義する。
+- `kind=commit` の `op` は `tx-commit` 固定とする。
+
+例:
+- `(dbms-wal-record 101 7 begin tx-begin ())`
+- `(dbms-wal-record 102 7 data table-replace ("pages" <table-state>))`
+- `(dbms-wal-record 103 7 data catalog-replace (<catalog>))`
+- `(dbms-wal-record 104 7 commit tx-commit ())`
+
+#### 14.7.4.4 順序保証（write-ahead 規約）
+- 同一 tx 内では `lsn` 昇順で `begin -> data* -> (commit|abort)` を記録する。
+- `data` 対応の実データファイル反映は、対応 WAL record が永続化された後にのみ許可する。
+- `COMMIT` 成功応答条件:
+  - 当該 tx の `commit` record が `wal.log` に永続化済みであること。
+
+#### 14.7.4.5 妥当性制約
+- `lsn` は重複してはならない。
+- `txid>0` の `commit` は、同一 `txid` の `begin` を先行必須とする。
+- `commit` 後に同一 `txid` の `data` を書いてはならない。
+
+違反時は実装が記録を拒否し、`dbms/result error` を返すこと。
+
+#### 14.7.4.6 破損・不正時の扱い（recovery 前提契約）
+`wal.log` 読み取り時に以下を検出した場合:
+- S 式として読めない
+- `dbms-wal-record` 形でない
+- 必須フィールド不足または型不正
+- `lsn` 非単調
+
+挙動:
+- 最初の不正レコード位置以降は無効 tail として切り捨てる。
+- `commit` marker が無い tx は未コミット扱いとする。
+- 不正検出イベントはエラーとして報告可能にしつつ、
+  「有効先頭部分のみ」を使った復旧続行を許可する。
+
+#### 14.7.4.7 実装境界
+- `P1-006` は「形式と意味の固定」のみを対象とする。
+- 実際の append/flush 実装は `P1-007`、起動時 replay は `P1-008` で実施する。
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト
