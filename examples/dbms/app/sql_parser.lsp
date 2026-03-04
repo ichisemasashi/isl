@@ -406,27 +406,53 @@
                       (failed '())
                       (done nil))
                   (while (not done)
-                    (if (and (not (null rest))
-                             (dbms-token-is-keyword-p (first rest) "PRIMARY"))
-                        (let ((r-key (dbms-expect-keyword (cdr rest) "KEY")))
-                          (if (dbms-error-p r-key)
-                              (progn
-                                (setq failed r-key)
-                                (setq done t))
-                              (progn
-                                (setq attrs (append attrs '(PRIMARY-KEY)))
-                                (setq rest (dbms-parser-ok-rest r-key)))))
-                        (if (and (not (null rest))
-                                 (dbms-token-is-keyword-p (first rest) "NOT"))
-                            (let ((r-null (dbms-expect-null-word (cdr rest))))
-                              (if (dbms-error-p r-null)
-                                  (progn
-                                    (setq failed r-null)
-                                    (setq done t))
-                                  (progn
-                                    (setq attrs (append attrs '(NOT-NULL)))
-                                    (setq rest (dbms-parser-ok-rest r-null)))))
-                            (setq done t))))
+                    (cond
+                     ((and (not (null rest))
+                           (dbms-token-is-keyword-p (first rest) "PRIMARY"))
+                      (let ((r-key (dbms-expect-keyword (cdr rest) "KEY")))
+                        (if (dbms-error-p r-key)
+                            (progn
+                              (setq failed r-key)
+                              (setq done t))
+                            (progn
+                              (setq attrs (append attrs '(PRIMARY-KEY)))
+                              (setq rest (dbms-parser-ok-rest r-key))))))
+                     ((and (not (null rest))
+                           (dbms-token-is-keyword-p (first rest) "NOT"))
+                      (let ((r-null (dbms-expect-null-word (cdr rest))))
+                        (if (dbms-error-p r-null)
+                            (progn
+                              (setq failed r-null)
+                              (setq done t))
+                            (progn
+                              (setq attrs (append attrs '(NOT-NULL)))
+                              (setq rest (dbms-parser-ok-rest r-null))))))
+                     ((and (not (null rest))
+                           (dbms-token-is-keyword-p (first rest) "DEFAULT"))
+                      (let ((r-now-name (dbms-expect-identifier (cdr rest))))
+                        (if (dbms-error-p r-now-name)
+                            (progn
+                              (setq failed r-now-name)
+                              (setq done t))
+                            (if (string= (dbms-sql-upper (dbms-parser-ok-value r-now-name)) "NOW")
+                                (let ((r-lp (dbms-expect-symbol (dbms-parser-ok-rest r-now-name) "(")))
+                                  (if (dbms-error-p r-lp)
+                                      (progn
+                                        (setq failed r-lp)
+                                        (setq done t))
+                                      (let ((r-rp (dbms-expect-symbol (dbms-parser-ok-rest r-lp) ")")))
+                                        (if (dbms-error-p r-rp)
+                                            (progn
+                                              (setq failed r-rp)
+                                              (setq done t))
+                                            (progn
+                                              (setq attrs (append attrs '(DEFAULT-NOW)))
+                                              (setq rest (dbms-parser-ok-rest r-rp)))))))
+                                (progn
+                                  (setq failed (dbms-parser-error "DEFAULT supports only now()" (dbms-parser-ok-value r-now-name)))
+                                  (setq done t))))))
+                     (t
+                      (setq done t))))
                   (if (dbms-error-p failed)
                       failed
                       (dbms-parser-ok

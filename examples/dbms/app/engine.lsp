@@ -277,6 +277,12 @@
 (defun dbms-col-primary-key-p (col)
   (dbms-symbol-in-list-p 'PRIMARY-KEY (dbms-column-def-attrs col)))
 
+(defun dbms-col-default-now-p (col)
+  (dbms-symbol-in-list-p 'DEFAULT-NOW (dbms-column-def-attrs col)))
+
+(defun dbms-current-timestamptz ()
+  (format nil "~A" (get-universal-time)))
+
 (defun dbms-table-primary-key-columns (table-def)
   (let ((cols (dbms-table-def-columns table-def))
         (out '()))
@@ -504,8 +510,9 @@
         (if (null (dbms-row-get-entry (dbms-make-row 0 pairs) name))
             (if (eq ty 'BIGSERIAL)
                 (setq pairs (append pairs (list (list name (dbms-next-serial-for-column rows name)))))
-                (setq pairs (append pairs (list (list name 'NULL))))
-                )
+                (if (dbms-col-default-now-p col)
+                    (setq pairs (append pairs (list (list name (dbms-current-timestamptz)))))
+                    (setq pairs (append pairs (list (list name 'NULL))))))
             nil))
       (setq rest-cols (cdr rest-cols)))
 
@@ -527,6 +534,22 @@
         (if (string= (first h) key)
             (cons (list key value) (cdr pairs))
             (cons h (dbms-row-values-set (cdr pairs) key value))))))
+
+(defun dbms-set-pairs-contains-column-p (set-pairs column-name)
+  (if (null set-pairs)
+      nil
+      (if (string= (first (car set-pairs)) column-name)
+          t
+          (dbms-set-pairs-contains-column-p (cdr set-pairs) column-name))))
+
+(defun dbms-should-auto-touch-updated-at-p (table-name table-cols set-pairs)
+  (if (not (string= table-name "pages"))
+      nil
+      (if (dbms-set-pairs-contains-column-p set-pairs "updated_at")
+          nil
+          (let ((col (dbms-find-column-def table-cols "updated_at")))
+            (and (not (null col))
+                 (eq (dbms-column-def-type col) 'TIMESTAMPTZ))))))
 
 (defun dbms-rows-filter-by-predicate (rows pred table-columns)
   (let ((rest rows)
@@ -718,9 +741,10 @@
          (table-def (dbms-catalog-find-table catalog table-name)))
     (if (null table-def)
         (dbms-make-result-error 'dbms/table-not-found "table not found" table-name)
-        (let* ((state (dbms-storage-load-table-rows table-name))
+         (let* ((state (dbms-storage-load-table-rows table-name))
                (rows (third state))
                (table-cols (dbms-table-def-columns table-def))
+               (auto-touch-updated-at (dbms-should-auto-touch-updated-at-p table-name table-cols set-pairs))
                (updated '())
                (affected 0)
                (failed '()))
@@ -754,6 +778,11 @@
                                         (setq newvals (dbms-row-values-set newvals col-name evv))
                                         (setq failed (dbms-make-error 'dbms/type-mismatch "update value type mismatch" (list col-name target-type et)))))))
                             (setq sr (cdr sr)))
+                          (if (null failed)
+                              (if auto-touch-updated-at
+                                  (setq newvals (dbms-row-values-set newvals "updated_at" (dbms-current-timestamptz)))
+                                  nil)
+                              nil)
                           (if (null failed)
                               (progn
                                 (setq updated (append updated (list (dbms-make-row (dbms-row-id row) newvals))))
