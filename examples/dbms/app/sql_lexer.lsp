@@ -7,10 +7,10 @@
   '("CREATE" "TABLE" "INSERT" "INTO" "VALUES" "SELECT" "FROM" "WHERE"
     "ORDER" "BY" "ASC" "DESC" "UPDATE" "SET" "DELETE"
     "PRIMARY" "KEY" "NOT"
-    "INT" "TEXT" "BOOL"
+    "INT" "INTEGER" "BIGINT" "BIGSERIAL" "TEXT" "BOOL" "TIMESTAMPTZ"
     "ALTER" "ADD" "DROP" "CONSTRAINT" "CHECK" "FOREIGN" "REFERENCES"
     "INDEX" "IF" "EXISTS" "ON" "CONFLICT" "DO" "NOTHING" "RETURNING"
-    "WITH" "AS" "LIMIT" "JOIN" "INNER" "AND" "OR" "IS"))
+    "WITH" "AS" "LIMIT" "JOIN" "INNER" "AND" "OR" "IS" "IN" "DEFAULT"))
 
 (defglobal *dbms-sql-operator-2ch* '("!=" "<=" ">=" "<>"))
 (defglobal *dbms-sql-operator-1ch* '("=" "<" ">" "+" "-" "*" "/" "%"))

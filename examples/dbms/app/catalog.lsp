@@ -44,7 +44,7 @@
     out))
 
 (defun dbms-column-type-valid-p (type)
-  (dbms-symbol-in-list-p type '(INT TEXT BOOL BIGINT INTEGER TIMESTAMPTZ)))
+  (dbms-symbol-in-list-p type '(INT TEXT BOOL BIGINT INTEGER TIMESTAMPTZ BIGSERIAL)))
 
 (defun dbms-column-attr-valid-p (attr)
   (dbms-symbol-in-list-p attr '(PRIMARY-KEY NOT-NULL UNIQUE)))
