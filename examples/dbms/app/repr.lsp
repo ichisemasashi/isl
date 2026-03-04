@@ -201,3 +201,36 @@
     (list 'dbms-catalog
           *dbms-repr-version*
           (cons (list name table-def) pairs))))
+
+;; tx-state: (dbms-tx-state <status> <read-set> <write-set> <tx-id>)
+;; <status>: idle | active | aborted | committed
+;; <read-set>/<write-set>: (table-name ...)
+;; <tx-id>: integer (idle時は0)
+(defun dbms-make-tx-state (status read-set write-set tx-id)
+  (list 'dbms-tx-state status read-set write-set tx-id))
+
+(defun dbms-tx-state-p (v)
+  (dbms-tagged-p v 'dbms-tx-state))
+
+(defun dbms-tx-state-status (tx-state)
+  (if (dbms-tx-state-p tx-state)
+      (second tx-state)
+      'idle))
+
+(defun dbms-tx-state-read-set (tx-state)
+  (if (dbms-tx-state-p tx-state)
+      (third tx-state)
+      '()))
+
+(defun dbms-tx-state-write-set (tx-state)
+  (if (dbms-tx-state-p tx-state)
+      (fourth tx-state)
+      '()))
+
+(defun dbms-tx-state-tx-id (tx-state)
+  (if (dbms-tx-state-p tx-state)
+      (fifth tx-state)
+      0))
+
+(defun dbms-tx-state-idle ()
+  (dbms-make-tx-state 'idle '() '() 0))

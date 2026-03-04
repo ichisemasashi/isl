@@ -313,6 +313,23 @@ wiki のスキーマ・クエリから確認できた不足機能:
 - 文単位のベストエフォート原子性（immediate mode）
 - `BEGIN/COMMIT` は明示バッチ境界として扱う（同時実行分離は保証しない）
 
+### 14.7.1 トランザクション状態管理（P1-002）
+エンジンはセッション内 tx 状態を保持する。
+
+- 形式: `(dbms-tx-state <status> <read-set> <write-set> <tx-id>)`
+- `<status>`: `idle | active | aborted | committed`
+- `<read-set>/<write-set>`: 文字列テーブル名の集合（重複なし）
+- `<tx-id>`: 非負整数（`idle` は `0`）
+
+状態遷移:
+- 初期状態は `idle`
+- `BEGIN` 成功時に `active` へ遷移し、`read-set/write-set` を空集合で開始する
+- `active` 中に成功した文の対象テーブルを `read-set`/`write-set` に反映する
+- `COMMIT` 後は `idle` に戻す
+
+注記:
+- 本節は状態追跡の導入を目的とし、隔離性や rollback 保証は後続マイルストーンで強化する。
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト

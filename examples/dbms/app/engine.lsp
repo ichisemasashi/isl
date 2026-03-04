@@ -7,10 +7,19 @@
 (load "./examples/dbms/app/storage.lsp")
 (load "./examples/dbms/app/sql_parser.lsp")
 
-(defglobal *dbms-tx-open* nil)
+(defglobal *dbms-tx-state* (dbms-tx-state-idle))
+(defglobal *dbms-next-tx-id* 1)
 
 (defun dbms-engine-init ()
   (dbms-catalog-load))
+
+(defun dbms-current-tx-state ()
+  *dbms-tx-state*)
+
+(defun dbms-engine-reset-tx-state ()
+  (setq *dbms-tx-state* (dbms-tx-state-idle))
+  (setq *dbms-next-tx-id* 1)
+  *dbms-tx-state*)
 
 (defun dbms-assoc-get (pairs key)
   (if (null pairs)
@@ -18,6 +27,60 @@
       (if (string= (first (first pairs)) key)
           (second (first pairs))
           (dbms-assoc-get (cdr pairs) key))))
+
+(defun dbms-string-in-list-p (s xs)
+  (if (null xs)
+      nil
+      (if (string= s (car xs))
+          t
+          (dbms-string-in-list-p s (cdr xs)))))
+
+(defun dbms-set-union-strings (xs ys)
+  (let ((out xs)
+        (rest ys))
+    (while (not (null rest))
+      (if (dbms-string-in-list-p (car rest) out)
+          nil
+          (setq out (append out (list (car rest)))))
+      (setq rest (cdr rest)))
+    out))
+
+(defun dbms-stmt-kind-write-p (kind)
+  (or (eq kind 'insert)
+      (eq kind 'update)
+      (eq kind 'delete)
+      (eq kind 'create-table)
+      (eq kind 'create-table-wiki)
+      (eq kind 'create-index)
+      (eq kind 'alter-table)))
+
+(defun dbms-stmt-kind-read-p (kind)
+  (eq kind 'select))
+
+(defun dbms-stmt-table-name (stmt)
+  (let* ((payload (third stmt))
+         (name-a (dbms-assoc-get payload "table"))
+         (name-b (dbms-assoc-get payload "table-name")))
+    (if (null name-a) name-b name-a)))
+
+(defun dbms-tx-record-statement! (stmt)
+  (if (eq (dbms-tx-state-status *dbms-tx-state*) 'active)
+      (let* ((kind (second stmt))
+             (table-name (dbms-stmt-table-name stmt))
+             (add-set (if (or (null table-name) (not (stringp table-name)) (string= table-name ""))
+                          '()
+                          (list table-name)))
+             (read-set (dbms-tx-state-read-set *dbms-tx-state*))
+             (write-set (dbms-tx-state-write-set *dbms-tx-state*))
+             (tx-id (dbms-tx-state-tx-id *dbms-tx-state*))
+             (new-read (if (dbms-stmt-kind-read-p kind)
+                           (dbms-set-union-strings read-set add-set)
+                           read-set))
+             (new-write (if (dbms-stmt-kind-write-p kind)
+                            (dbms-set-union-strings write-set add-set)
+                            write-set)))
+        (setq *dbms-tx-state* (dbms-make-tx-state 'active new-read new-write tx-id)))
+      nil))
 
 (defun dbms-reverse (xs)
   (let ((rest xs)
@@ -902,13 +965,20 @@
                           (dbms-make-result-count affected))))))))))
 
 (defun dbms-engine-begin (_catalog _stmt)
-  ;; v1: explicit batch boundary marker only.
-  (setq *dbms-tx-open* t)
+  (let ((tx-id *dbms-next-tx-id*))
+    (setq *dbms-next-tx-id* (+ *dbms-next-tx-id* 1))
+    (setq *dbms-tx-state* (dbms-make-tx-state 'active '() '() tx-id)))
   (dbms-make-result-ok 'ok))
 
 (defun dbms-engine-commit (_catalog _stmt)
-  ;; v1: immediate mode; COMMIT closes marker.
-  (setq *dbms-tx-open* nil)
+  (if (eq (dbms-tx-state-status *dbms-tx-state*) 'active)
+      (let ((tx-id (dbms-tx-state-tx-id *dbms-tx-state*)))
+        (setq *dbms-tx-state* (dbms-make-tx-state 'committed
+                                                  (dbms-tx-state-read-set *dbms-tx-state*)
+                                                  (dbms-tx-state-write-set *dbms-tx-state*)
+                                                  tx-id))
+        (setq *dbms-tx-state* (dbms-tx-state-idle)))
+      (setq *dbms-tx-state* (dbms-tx-state-idle)))
   (dbms-make-result-ok 'ok))
 
 (defun dbms-catalog-table-names (catalog)
@@ -1003,7 +1073,9 @@
             (list "error" "restore failed")))))
 
 (defun dbms-engine-dispatch (catalog stmt)
-  (let ((kind (second stmt)))
+  (let ((kind (second stmt))
+        (result '()))
+    (setq result
     (cond
      ((eq kind 'begin) (dbms-engine-begin catalog stmt))
      ((eq kind 'commit) (dbms-engine-commit catalog stmt))
@@ -1015,7 +1087,12 @@
      ((eq kind 'select) (dbms-engine-select catalog stmt))
      ((eq kind 'update) (dbms-engine-update catalog stmt))
      ((eq kind 'delete) (dbms-engine-delete catalog stmt))
-     (t (dbms-make-result-error 'dbms/not-implemented "statement not implemented" kind)))))
+     (t (dbms-make-result-error 'dbms/not-implemented "statement not implemented" kind))))
+    (if (and (dbms-result-p result)
+             (not (eq (second result) 'error)))
+        (dbms-tx-record-statement! stmt)
+        nil)
+    result))
 
 (defun dbms-exec-sql (catalog sql-text)
   (let ((ast (dbms-parse-sql sql-text))
