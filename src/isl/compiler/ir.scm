@@ -196,6 +196,58 @@
       #f))
 
 (define (normalize-special op args)
+  (define (normalize-with-open-file spec body-forms)
+    (if (and (list? spec) (>= (length spec) 2) (symbol? (car spec)))
+        (let ((var (car spec))
+              (path-form (cadr spec))
+              (rest (cddr spec)))
+          (let loop ((xs rest) (acc '()))
+            (cond
+             ((null? xs)
+              (list 'special 'with-open-file
+                    (list var
+                          (normalize-expr path-form)
+                          (reverse acc)
+                          (normalize-body body-forms))))
+             ((or (null? (cdr xs))
+                  (not (or (symbol? (car xs)) (keyword? (car xs)))))
+              (list 'invalid-special op args))
+             (else
+              (loop (cddr xs)
+                    (cons (list (car xs) (normalize-expr (cadr xs))) acc))))))
+        (list 'invalid-special op args)))
+  (define (normalize-cond-clauses clauses)
+    (if (not (list? clauses))
+        #f
+        (let loop ((xs clauses) (acc '()))
+          (cond
+           ((null? xs) (reverse acc))
+           ((or (not (list? (car xs))) (null? (car xs)))
+            #f)
+           (else
+            (let ((clause (car xs)))
+              (loop (cdr xs)
+                    (cons (list (normalize-expr (car clause))
+                                (if (null? (cdr clause))
+                                    #f
+                                    (normalize-body (cdr clause))))
+                          acc))))))))
+  (define (normalize-dolist args*)
+    (if (null? args*)
+        (list 'invalid-special op args)
+        (let ((spec (car args*))
+              (body (cdr args*)))
+          (if (and (list? spec)
+                   (or (= (length spec) 2) (= (length spec) 3))
+                   (symbol? (car spec)))
+              (list 'special 'dolist
+                    (list (car spec)
+                          (normalize-expr (cadr spec))
+                          (if (= (length spec) 3)
+                              (normalize-expr (caddr spec))
+                              #f)
+                          (normalize-body body)))
+              (list 'invalid-special op args)))))
   (case op
     ((quote)
      (if (= (length args) 1)
@@ -209,6 +261,11 @@
              (normalize-expr test)
              (normalize-expr then)
              (normalize-expr else-form))))
+    ((cond)
+     (let ((clauses (normalize-cond-clauses args)))
+       (if clauses
+           (list 'special 'cond clauses)
+           (list 'invalid-special op args))))
     ((and)
      (list 'special 'and (map normalize-expr args)))
     ((or)
@@ -290,6 +347,18 @@
          (list 'invalid-special op args)))
     ((tagbody)
      (list 'special 'tagbody (normalize-tagbody-items args)))
+    ((with-open-file)
+     (if (and (pair? args) (pair? (cdr args)))
+         (normalize-with-open-file (car args) (cdr args))
+         (list 'invalid-special op args)))
+    ((dolist)
+     (normalize-dolist args))
+    ((while)
+     (if (>= (length args) 1)
+         (list 'special 'while
+               (list (normalize-expr (car args))
+                     (normalize-body (cdr args))))
+         (list 'invalid-special op args)))
     ((handler-case)
      (if (>= (length args) 2)
          (let ((protected (normalize-expr (car args)))
@@ -342,7 +411,7 @@
           (args (cdr form)))
       (if (symbol? op)
           (case op
-            ((quote if and or progn lambda setq let let* setf block return-from catch throw go tagbody handler-case
+            ((quote if cond and or progn lambda setq let let* setf block return-from catch throw go tagbody with-open-file dolist while handler-case
                     defpackage in-package
                     defclass defgeneric defmethod)
              (normalize-special op args))
