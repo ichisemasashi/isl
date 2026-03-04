@@ -23,6 +23,10 @@
     ;; BEGIN/COMMIT executable
     (setq r (dbms-exec-sql catalog "BEGIN;"))
     (assert-true "BEGIN ok" (and (dbms-result-p r) (eq (second r) 'ok)))
+    (setq r (dbms-exec-sql catalog "ROLLBACK;"))
+    (assert-true "ROLLBACK ok" (and (dbms-result-p r) (eq (second r) 'ok)))
+    (setq r (dbms-exec-sql catalog "BEGIN;"))
+    (assert-true "BEGIN #2 ok" (and (dbms-result-p r) (eq (second r) 'ok)))
     (setq r (dbms-exec-sql catalog "COMMIT;"))
     (assert-true "COMMIT ok" (and (dbms-result-p r) (eq (second r) 'ok)))
 

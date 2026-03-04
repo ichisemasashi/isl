@@ -31,7 +31,8 @@
          (q-upd-from-ret (dbms-parse-sql
                           "UPDATE pages p SET title = r.title FROM page_revisions r WHERE p.id = r.page_id RETURNING p.id, p.title;"))
          (q-begin (dbms-parse-sql "BEGIN;"))
-         (q-commit (dbms-parse-sql "COMMIT;")))
+         (q-commit (dbms-parse-sql "COMMIT;"))
+         (q-rollback (dbms-parse-sql "ROLLBACK;")))
 
     (assert-true "WITH parses" (dbms-ast-p q-with))
     (assert-true "WITH stmt kind" (eq (stmt-kind (first-stmt q-with)) 'with))
@@ -58,6 +59,8 @@
     (assert-true "BEGIN kind" (eq (stmt-kind (first-stmt q-begin)) 'begin))
     (assert-true "COMMIT parses" (dbms-ast-p q-commit))
     (assert-true "COMMIT kind" (eq (stmt-kind (first-stmt q-commit)) 'commit))
+    (assert-true "ROLLBACK parses" (dbms-ast-p q-rollback))
+    (assert-true "ROLLBACK kind" (eq (stmt-kind (first-stmt q-rollback)) 'rollback))
 
     (format t "dbms wiki grammar tests passed.~%")))
 
