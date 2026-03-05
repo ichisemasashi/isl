@@ -1048,8 +1048,43 @@
             (writes (dbms-tx-state-write-set *dbms-tx-state*))
             (failed '())
             (result '()))
-        ;; staged catalog is committed as one unit before table rows.
-        (if (dbms-catalog-p *dbms-tx-staged-catalog*)
+        ;; WAL append/flush must complete before any data file writes.
+        (let ((wal-begin (dbms-storage-wal-append-record tx-id 'begin 'tx-begin '())))
+          (if (dbms-error-p wal-begin)
+              (setq failed wal-begin)
+              nil))
+        (if (and (null failed) (dbms-catalog-p *dbms-tx-staged-catalog*))
+            (let ((wal-catalog (dbms-storage-wal-append-record tx-id
+                                                               'data
+                                                               'catalog-replace
+                                                               (list *dbms-tx-staged-catalog*))))
+              (if (dbms-error-p wal-catalog)
+                  (setq failed wal-catalog)
+                  nil))
+            nil)
+        (dolist (name writes)
+          (if (dbms-error-p failed)
+              nil
+              (let ((entry (dbms-find-staged-table-state-pair name *dbms-tx-staged-table-states*)))
+                (if (null entry)
+                    nil
+                    (let* ((state (second entry))
+                           (wal-table (dbms-storage-wal-append-record tx-id
+                                                                      'data
+                                                                      'table-replace
+                                                                      (list name state))))
+                      (if (dbms-error-p wal-table)
+                          (setq failed wal-table)
+                          nil))))))
+        (if (null failed)
+            (let ((wal-commit (dbms-storage-wal-append-record tx-id 'commit 'tx-commit '())))
+              (if (dbms-error-p wal-commit)
+                  (setq failed wal-commit)
+                  nil))
+            nil)
+
+        ;; Data-file commit phase (after WAL commit marker has been persisted).
+        (if (and (null failed) (dbms-catalog-p *dbms-tx-staged-catalog*))
             (let ((saved-catalog (dbms-catalog-save *dbms-tx-staged-catalog*)))
               (if (dbms-error-p saved-catalog)
                   (setq failed saved-catalog)

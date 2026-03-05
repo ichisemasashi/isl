@@ -419,6 +419,20 @@ commit marker:
 - `P1-006` は「形式と意味の固定」のみを対象とする。
 - 実際の append/flush 実装は `P1-007`、起動時 replay は `P1-008` で実施する。
 
+### 14.7.5 WAL append/flush（P1-007）
+`active` tx の `COMMIT` 処理では、以下順序を必須とする。
+
+1. `begin` record を append
+2. `data` record 群（`catalog-replace`, `table-replace`）を append
+3. `commit` record（`tx-commit`）を append
+4. その後に実データファイル（catalog/table）へ反映
+
+`COMMIT` 成功応答は、少なくとも 1〜3 の WAL 永続化成功を前提条件とする。
+
+失敗時:
+- WAL append に失敗した場合、データファイル反映を行わず `error` を返す。
+- 反映フェーズ失敗時は `error` を返す（recovery は `P1-008` 範囲）。
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト

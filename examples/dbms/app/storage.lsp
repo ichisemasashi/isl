@@ -17,6 +17,9 @@
 (defun dbms-storage-table-path (table-name)
   (string-append (dbms-storage-root) "/table_" table-name ".lspdata"))
 
+(defun dbms-storage-wal-path ()
+  (string-append (dbms-storage-root) "/wal.log"))
+
 (defun dbms-storage-shell-quote (s)
   (let ((i 0)
         (n (length s))
@@ -46,6 +49,81 @@
       '()
       (with-open-file (s path :direction :input)
         (read s))))
+
+(defun dbms-storage-read-all-sexpr-file (path)
+  (if (null (probe-file path))
+      '()
+      (with-open-file (s path :direction :input)
+        (let ((out '())
+              (v '())
+              (done nil))
+          (setq v (read s))
+          (while (not done)
+            (if (or (null v)
+                    (string= (format nil "~A" v) "#<eof>"))
+                (setq done t)
+                (progn
+                  (setq out (append out (list v)))
+                  (setq v (read s)))))
+          out))))
+
+(defun dbms-wal-record-p (v)
+  (and (listp v)
+       (= (length v) 6)
+       (eq (first v) 'dbms-wal-record)
+       (numberp (second v))
+       (numberp (third v))
+       (not (null (fourth v)))
+       (not (null (fifth v)))))
+
+(defun dbms-wal-record-lsn (r)
+  (if (dbms-wal-record-p r) (second r) 0))
+
+(defun dbms-storage-load-wal-records ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-wal-path)))
+        (out '())
+        (done nil))
+    (if (or (null raw) (not (listp raw)))
+        (setq raw '())
+        nil)
+    ;; P1-006 contract: first invalid record and after are treated as invalid tail.
+    (while (and (not done) (not (null raw)))
+      (if (dbms-wal-record-p (car raw))
+          (progn
+            (setq out (append out (list (car raw))))
+            (setq raw (cdr raw)))
+          (setq done t)))
+    out))
+
+(defun dbms-storage-wal-next-lsn ()
+  (let ((records (dbms-storage-load-wal-records))
+        (mx 0))
+    (dolist (r records)
+      (if (> (dbms-wal-record-lsn r) mx)
+          (setq mx (dbms-wal-record-lsn r))
+          nil))
+    (+ mx 1)))
+
+(defun dbms-storage-wal-append-record (txid kind op payload)
+  (if (not (dbms-storage-ensure-root))
+      (dbms-make-error 'dbms/not-implemented "failed to create storage root for WAL" (dbms-storage-root))
+      (let ((record (list 'dbms-wal-record
+                          (dbms-storage-wal-next-lsn)
+                          txid
+                          kind
+                          op
+                          payload))
+            (records (dbms-storage-load-wal-records)))
+        (if (or (not (numberp txid))
+                (null kind)
+                (null op))
+            (dbms-make-error 'dbms/invalid-representation "invalid wal record fields" record)
+            (progn
+              (setq records (append records (list record)))
+              (let ((saved (dbms-storage-atomic-replace (dbms-storage-wal-path) records)))
+                (if (dbms-error-p saved)
+                    saved
+                    record)))))))
 
 (defun dbms-storage-atomic-replace (target-path value)
   (if (not (dbms-storage-ensure-root))
