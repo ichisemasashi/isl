@@ -448,6 +448,18 @@ redo 対象 op:
 - 可視データは committed tx のみを反映した状態であること
 - 次 txid は WAL の最大 txid より大きい値に進めること
 
+### 14.7.7 durability 試験（P1-009）
+クラッシュ耐性は kill/restart を含む反復試験で検証する。
+
+試験契約:
+- 反復回数は 10 回以上
+- 各反復で `COMMIT` 中（WAL commit 後、data file 反映前）に強制 kill を注入
+- 再起動時 recovery 後、committed 変更のみが可視であること
+- 不整合件数 0 件で合格
+
+実装ではテスト専用 failpoint（環境変数）を利用して
+「WAL 永続化済みだが data file 未反映」のクラッシュ窓を決定的に再現してよい。
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト

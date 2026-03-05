@@ -161,6 +161,34 @@
       (setq rest (cdr rest)))
     out))
 
+(defun dbms-digits-only-p (s)
+  (let ((i 0)
+        (n (length s))
+        (ok t))
+    (if (= n 0)
+        nil
+        (progn
+          (while (and ok (< i n))
+            (let ((ch (substring s i (+ i 1))))
+              (if (null (string-index ch "0123456789"))
+                  (setq ok nil)
+                  nil))
+            (setq i (+ i 1)))
+          ok))))
+
+(defun dbms-test-commit-failpoint (tx-id)
+  (let ((marker-path (getenv "DBMS_TEST_COMMIT_MARKER_PATH"))
+        (delay-sec (getenv "DBMS_TEST_COMMIT_DELAY_SEC")))
+    (if (and (not (null marker-path)) (not (string= marker-path "")))
+        (with-open-file (s marker-path :direction :output :if-exists :overwrite :if-does-not-exist :create)
+          (format s "tx=~A~%" tx-id))
+        nil)
+    (if (and (not (null delay-sec))
+             (not (string= delay-sec ""))
+             (dbms-digits-only-p delay-sec))
+        (system (string-append "sleep " delay-sec))
+        0)))
+
 (defun dbms-find-column-def (columns name)
   (if (null columns)
       '()
@@ -1091,6 +1119,9 @@
               (if (dbms-error-p wal-commit)
                   (setq failed wal-commit)
                   nil))
+            nil)
+        (if (null failed)
+            (dbms-test-commit-failpoint tx-id)
             nil)
 
         ;; Data-file commit phase (after WAL commit marker has been persisted).

@@ -134,7 +134,7 @@ run_one() {
   local err_file="$TMP_DIR/${runner_name}.${idx}.err"
 
   printf '[%s] (%d/%d) %s\n' "$runner_name" "$idx" "$total" "$test_file"
-  if (cd "$REPO_ROOT" && "$bin" "$test_file" >"$out_file" 2>"$err_file"); then
+  if (cd "$REPO_ROOT" && DBMS_TEST_RUNNER_BIN="$bin" "$bin" "$test_file" >"$out_file" 2>"$err_file"); then
     local summary
     summary="$(tail -n 1 "$out_file" || true)"
     if [[ -n "$summary" ]]; then
