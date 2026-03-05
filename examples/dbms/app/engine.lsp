@@ -15,7 +15,17 @@
 (defglobal *dbms-tx-staged-table-states* '())
 
 (defun dbms-engine-init ()
-  (dbms-catalog-load))
+  (let ((recovered (dbms-storage-recover-from-wal))
+        (next-tx-id (+ (dbms-storage-wal-max-txid) 1)))
+    ;; Startup path: ensure tx runtime state is reset and txid monotonicity survives restart.
+    (dbms-engine-reset-tx-state)
+    (if (> next-tx-id 1)
+        (setq *dbms-next-tx-id* next-tx-id)
+        nil)
+    (if (dbms-error-p recovered)
+        (format t "[dbms-recovery-warning] ~A~%" recovered)
+        nil)
+    (dbms-catalog-load)))
 
 (defun dbms-current-tx-state ()
   *dbms-tx-state*)

@@ -433,6 +433,21 @@ commit marker:
 - WAL append に失敗した場合、データファイル反映を行わず `error` を返す。
 - 反映フェーズ失敗時は `error` を返す（recovery は `P1-008` 範囲）。
 
+### 14.7.6 起動時 recovery（P1-008）
+起動時に `wal.log` を走査し、以下を実施する。
+
+1. `begin` と `commit(tx-commit)` が揃っている `txid` を committed と判定
+2. committed tx の `data` record を `lsn` 順に redo 適用
+3. `commit` の無い tx は未コミットとして不適用（取り消し）
+
+redo 対象 op:
+- `catalog-replace`: catalog 全体を置換
+- `table-replace`: table state 全体を置換
+
+起動完了後:
+- 可視データは committed tx のみを反映した状態であること
+- 次 txid は WAL の最大 txid より大きい値に進めること
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト
