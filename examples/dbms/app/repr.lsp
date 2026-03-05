@@ -18,7 +18,8 @@
     dbms/invalid-representation
     dbms/tx-already-active
     dbms/tx-not-active
-    dbms/lock-conflict))
+    dbms/lock-conflict
+    dbms/deadlock-detected))
 
 (defun dbms-member-eq (x xs)
   (if (null xs)

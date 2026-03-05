@@ -502,6 +502,20 @@ debug API:
 - session 分離レベルを `READ-COMMITTED` / `SERIALIZABLE` で切替可能
 - `BEGIN` 時に current session level を tx level として固定する
 
+### 14.7.11 デッドロック検知（P2-004）
+lock 競合時に wait-for graph を構築し、cycle を検知する。
+
+規約:
+- lock 競合で待機関係 `requester -> holder(s)` を記録する
+- 新規待機辺追加後に cycle が成立する場合は deadlock と判定する
+- deadlock 検出時は `dbms/deadlock-detected` を返し、victim tx を abort する
+
+victim ポリシー（現行実装）:
+- 競合を発生させた request 側 tx を victim として abort-first
+
+完了条件:
+- deadlock シナリオで有限時間内に少なくとも 1 tx が abort されること
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト

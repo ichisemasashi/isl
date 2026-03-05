@@ -15,6 +15,8 @@
 (defglobal *dbms-tx-staged-table-states* '())
 ;; lock entry: (<table-name> <mode:S|X> <holders:(txid ...)>)
 (defglobal *dbms-lock-table* '())
+;; wait-for graph entry: (<txid> <waiting-on-txids...>)
+(defglobal *dbms-wait-for-graph* '())
 ;; isolation level:
 ;;   READ-COMMITTED: SELECT S lock is statement-boundary
 ;;   SERIALIZABLE  : SELECT S lock is tx-boundary
@@ -45,6 +47,7 @@
   (setq *dbms-tx-staged-catalog* '())
   (setq *dbms-tx-staged-table-states* '())
   (setq *dbms-lock-table* '())
+  (setq *dbms-wait-for-graph* '())
   (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
   *dbms-tx-state*)
 
@@ -53,10 +56,14 @@
 
 (defun dbms-lock-table-reset! ()
   (setq *dbms-lock-table* '())
+  (setq *dbms-wait-for-graph* '())
   *dbms-lock-table*)
 
 (defun dbms-lock-table-snapshot ()
   *dbms-lock-table*)
+
+(defun dbms-wait-for-graph-snapshot ()
+  *dbms-wait-for-graph*)
 
 (defun dbms-isolation-level-valid-p (level)
   (or (eq level 'READ-COMMITTED)
@@ -79,6 +86,7 @@
   (if (dbms-tx-active-p)
       (let ((tx-id (dbms-tx-state-tx-id *dbms-tx-state*)))
         (dbms-lock-release-tx tx-id)
+        (dbms-wfg-clear-tx tx-id)
         (setq *dbms-tx-state* (dbms-make-tx-state 'aborted
                                                   (dbms-tx-state-read-set *dbms-tx-state*)
                                                   (dbms-tx-state-write-set *dbms-tx-state*)
@@ -129,6 +137,87 @@
           (dbms-lock-remove-txid-from-holders txid (cdr holders))
           (cons (car holders) (dbms-lock-remove-txid-from-holders txid (cdr holders))))))
 
+(defun dbms-wfg-find-entry (txid graph)
+  (if (null graph)
+      '()
+      (let ((e (car graph)))
+        (if (= txid (first e))
+            e
+            (dbms-wfg-find-entry txid (cdr graph))))))
+
+(defun dbms-wfg-put-entry (txid waits graph)
+  (if (null graph)
+      (list (list txid waits))
+      (let ((e (car graph)))
+        (if (= txid (first e))
+            (cons (list txid waits) (cdr graph))
+            (cons e (dbms-wfg-put-entry txid waits (cdr graph)))))))
+
+(defun dbms-wfg-out-neighbors (txid)
+  (let ((e (dbms-wfg-find-entry txid *dbms-wait-for-graph*)))
+    (if (null e) '() (second e))))
+
+(defun dbms-wfg-clear-tx (txid)
+  (let ((rest *dbms-wait-for-graph*)
+        (out '()))
+    (while (not (null rest))
+      (let* ((e (car rest))
+             (src (first e))
+             (waits (second e)))
+        (if (= src txid)
+            nil
+            (let ((new-waits (dbms-lock-remove-txid-from-holders txid waits)))
+              (if (null new-waits)
+                  nil
+                  (setq out (append out (list (list src new-waits))))))))
+      (setq rest (cdr rest)))
+    (setq *dbms-wait-for-graph* out)
+    t))
+
+(defun dbms-wfg-add-edges (requester holders)
+  (let ((clean (dbms-lock-remove-txid-from-holders requester holders))
+        (existing (dbms-wfg-out-neighbors requester)))
+    (dolist (h clean)
+      (if (dbms-number-in-list-p h existing)
+          nil
+          (setq existing (append existing (list h)))))
+    (if (null existing)
+        nil
+        (setq *dbms-wait-for-graph*
+              (dbms-wfg-put-entry requester existing *dbms-wait-for-graph*)))
+    existing))
+
+(defun dbms-wfg-path-exists-p (from to visited)
+  (if (= from to)
+      t
+      (if (dbms-number-in-list-p from visited)
+          nil
+          (let ((nexts (dbms-wfg-out-neighbors from))
+                (ok nil)
+                (vis2 (append visited (list from))))
+            (while (and (not ok) (not (null nexts)))
+              (if (dbms-wfg-path-exists-p (car nexts) to vis2)
+                  (setq ok t)
+                  nil)
+              (setq nexts (cdr nexts)))
+            ok))))
+
+(defun dbms-wfg-deadlock-after-wait-p (requester holders)
+  (let ((clean (dbms-lock-remove-txid-from-holders requester holders))
+        (dead nil))
+    (while (and (not dead) (not (null clean)))
+      (if (dbms-wfg-path-exists-p (car clean) requester '())
+          (setq dead t)
+          nil)
+      (setq clean (cdr clean)))
+    dead))
+
+(defun dbms-lock-make-conflict-or-deadlock (txid table-name holders message)
+  (dbms-wfg-add-edges txid holders)
+  (if (dbms-wfg-deadlock-after-wait-p txid holders)
+      (dbms-make-error 'dbms/deadlock-detected "deadlock detected" (list table-name txid holders))
+      (dbms-make-error 'dbms/lock-conflict message (list table-name txid holders))))
+
 (defun dbms-lock-holders-only-tx-p (txid holders)
   (if (null holders)
       nil
@@ -150,6 +239,7 @@
             (if (null entry)
                 (progn
                   (setq *dbms-lock-table* (dbms-lock-put-entry table-name mode (list txid) *dbms-lock-table*))
+                  (dbms-wfg-clear-tx txid)
                   t)
                 (let ((cur-mode (second entry))
                       (holders (third entry)))
@@ -160,21 +250,27 @@
                           (if (dbms-number-in-list-p txid holders)
                               nil
                               (setq holders (append holders (list txid))))
-                          (setq *dbms-lock-table* (dbms-lock-put-entry table-name 'S holders *dbms-lock-table*))
-                          t)
+                            (setq *dbms-lock-table* (dbms-lock-put-entry table-name 'S holders *dbms-lock-table*))
+                            (dbms-wfg-clear-tx txid)
+                            t)
                         (if (dbms-number-in-list-p txid holders)
-                            t
-                            (dbms-make-error 'dbms/lock-conflict "S lock blocked by X lock" (list table-name txid holders)))))
+                            (progn
+                              (dbms-wfg-clear-tx txid)
+                              t)
+                            (dbms-lock-make-conflict-or-deadlock txid table-name holders "S lock blocked by X lock"))))
                    ((eq mode 'X)
                     (if (eq cur-mode 'X)
                         (if (dbms-number-in-list-p txid holders)
-                            t
-                            (dbms-make-error 'dbms/lock-conflict "X lock held by other tx" (list table-name txid holders)))
+                            (progn
+                              (dbms-wfg-clear-tx txid)
+                              t)
+                            (dbms-lock-make-conflict-or-deadlock txid table-name holders "X lock held by other tx"))
                         (if (dbms-lock-holders-only-tx-p txid holders)
                             (progn
                               (setq *dbms-lock-table* (dbms-lock-put-entry table-name 'X (list txid) *dbms-lock-table*))
+                              (dbms-wfg-clear-tx txid)
                               t)
-                            (dbms-make-error 'dbms/lock-conflict "X lock blocked by shared holders" (list table-name txid holders)))))
+                            (dbms-lock-make-conflict-or-deadlock txid table-name holders "X lock blocked by shared holders"))))
                    (t
                     (dbms-make-error 'dbms/invalid-representation "lock mode must be S or X" mode)))))))))
 
@@ -192,6 +288,7 @@
             (setq out (append out (list (list table-name mode new-holders)))))
         (setq entries (cdr entries))))
     (setq *dbms-lock-table* out)
+    (dbms-wfg-clear-tx txid)
     t))
 
 (defun dbms-lock-release-shared-on-table (txid table-name)
@@ -1518,7 +1615,8 @@
                 (setq lock-res (dbms-lock-acquire (dbms-tx-state-tx-id *dbms-tx-state*) target mode))
                 (if (dbms-error-p lock-res)
                     (progn
-                      (if (eq *dbms-tx-isolation-level* 'SERIALIZABLE)
+                      (if (or (eq (dbms-error-code lock-res) 'dbms/deadlock-detected)
+                              (eq *dbms-tx-isolation-level* 'SERIALIZABLE))
                           (dbms-abort-active-tx-on-conflict!)
                           nil)
                       (setq result (dbms-make-result 'error lock-res)))
