@@ -490,6 +490,18 @@ debug API:
 
 これにより dirty read（未コミット更新の読取り）を防止する。
 
+### 14.7.10 SERIALIZABLE（P2-003, 保守的）
+保守的実装として、`READ COMMITTED` より強い lock 保持を行う。
+
+規約:
+- tx 分離レベル `SERIALIZABLE` では、`SELECT` による `S` lock を tx 終了まで保持する
+- lock 競合時は待機せず、競合した tx を優先的に abort する（abort-first）
+- abort された tx の lock / staging / snapshot は即時破棄する
+
+分離レベル API:
+- session 分離レベルを `READ-COMMITTED` / `SERIALIZABLE` で切替可能
+- `BEGIN` 時に current session level を tx level として固定する
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト

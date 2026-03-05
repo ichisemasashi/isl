@@ -15,6 +15,11 @@
 (defglobal *dbms-tx-staged-table-states* '())
 ;; lock entry: (<table-name> <mode:S|X> <holders:(txid ...)>)
 (defglobal *dbms-lock-table* '())
+;; isolation level:
+;;   READ-COMMITTED: SELECT S lock is statement-boundary
+;;   SERIALIZABLE  : SELECT S lock is tx-boundary
+(defglobal *dbms-session-isolation-level* 'READ-COMMITTED)
+(defglobal *dbms-tx-isolation-level* 'READ-COMMITTED)
 
 (defun dbms-engine-init ()
   (let ((recovered (dbms-storage-recover-from-wal))
@@ -40,6 +45,7 @@
   (setq *dbms-tx-staged-catalog* '())
   (setq *dbms-tx-staged-table-states* '())
   (setq *dbms-lock-table* '())
+  (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
   *dbms-tx-state*)
 
 (defun dbms-tx-active-p ()
@@ -51,6 +57,39 @@
 
 (defun dbms-lock-table-snapshot ()
   *dbms-lock-table*)
+
+(defun dbms-isolation-level-valid-p (level)
+  (or (eq level 'READ-COMMITTED)
+      (eq level 'SERIALIZABLE)))
+
+(defun dbms-set-session-isolation-level! (level)
+  (if (dbms-isolation-level-valid-p level)
+      (progn
+        (setq *dbms-session-isolation-level* level)
+        level)
+      (dbms-make-error 'dbms/invalid-representation "isolation level must be READ-COMMITTED or SERIALIZABLE" level)))
+
+(defun dbms-current-session-isolation-level ()
+  *dbms-session-isolation-level*)
+
+(defun dbms-current-tx-isolation-level ()
+  *dbms-tx-isolation-level*)
+
+(defun dbms-abort-active-tx-on-conflict! ()
+  (if (dbms-tx-active-p)
+      (let ((tx-id (dbms-tx-state-tx-id *dbms-tx-state*)))
+        (dbms-lock-release-tx tx-id)
+        (setq *dbms-tx-state* (dbms-make-tx-state 'aborted
+                                                  (dbms-tx-state-read-set *dbms-tx-state*)
+                                                  (dbms-tx-state-write-set *dbms-tx-state*)
+                                                  tx-id))
+        (setq *dbms-tx-snapshot-catalog* '())
+        (setq *dbms-tx-snapshot-states* '())
+        (setq *dbms-tx-staged-catalog* '())
+        (setq *dbms-tx-staged-table-states* '())
+        (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
+        t)
+      nil))
 
 (defun dbms-number-in-list-p (n xs)
   (if (null xs)
@@ -1233,6 +1272,7 @@
         (setq *dbms-tx-staged-catalog* catalog)
         (setq *dbms-tx-staged-table-states* (if (dbms-error-p states) '() states))
         (setq *dbms-next-tx-id* (+ *dbms-next-tx-id* 1))
+        (setq *dbms-tx-isolation-level* *dbms-session-isolation-level*)
         (setq *dbms-tx-state* (dbms-make-tx-state 'active '() '() tx-id))
         (dbms-make-result-ok 'ok))))
 
@@ -1313,12 +1353,14 @@
                                                         (dbms-tx-state-write-set *dbms-tx-state*)
                                                         tx-id))
               (dbms-lock-release-tx tx-id)
+              (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
               (setq *dbms-tx-state* (dbms-tx-state-idle))
               (dbms-make-result-ok 'ok))))
         (setq *dbms-tx-snapshot-catalog* '())
         (setq *dbms-tx-snapshot-states* '())
         (setq *dbms-tx-staged-catalog* '())
         (setq *dbms-tx-staged-table-states* '())
+        (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
         result)
       (progn
         (setq *dbms-tx-state* (dbms-tx-state-idle))
@@ -1326,6 +1368,7 @@
         (setq *dbms-tx-snapshot-states* '())
         (setq *dbms-tx-staged-catalog* '())
         (setq *dbms-tx-staged-table-states* '())
+        (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
         (dbms-make-result-error 'dbms/tx-not-active "no active transaction" 'COMMIT))))
 
 (defun dbms-engine-rollback (_catalog _stmt)
@@ -1357,6 +1400,7 @@
                                                   (dbms-tx-state-write-set *dbms-tx-state*)
                                                   tx-id))
         (dbms-lock-release-tx tx-id)
+        (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
         (setq *dbms-tx-state* (dbms-tx-state-idle))
         (setq *dbms-tx-snapshot-catalog* '())
         (setq *dbms-tx-snapshot-states* '())
@@ -1473,7 +1517,11 @@
               (progn
                 (setq lock-res (dbms-lock-acquire (dbms-tx-state-tx-id *dbms-tx-state*) target mode))
                 (if (dbms-error-p lock-res)
-                    (setq result (dbms-make-result 'error lock-res))
+                    (progn
+                      (if (eq *dbms-tx-isolation-level* 'SERIALIZABLE)
+                          (dbms-abort-active-tx-on-conflict!)
+                          nil)
+                      (setq result (dbms-make-result 'error lock-res)))
                     nil))
               nil))
         nil)
@@ -1501,6 +1549,7 @@
     ;; READ COMMITTED: release shared read locks at statement boundary.
     (if (and (dbms-tx-active-p)
              (eq kind 'select)
+             (eq *dbms-tx-isolation-level* 'READ-COMMITTED)
              (not (string= target "")))
         (dbms-lock-release-shared-on-table (dbms-tx-state-tx-id *dbms-tx-state*) target)
         nil)
