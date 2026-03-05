@@ -155,6 +155,21 @@
     (setq *dbms-lock-table* out)
     t))
 
+(defun dbms-lock-release-shared-on-table (txid table-name)
+  (let ((entry (dbms-lock-find-entry table-name *dbms-lock-table*)))
+    (if (null entry)
+        t
+        (if (eq (second entry) 'S)
+            (let ((holders (third entry))
+                  (new-holders '()))
+              (setq new-holders (dbms-lock-remove-txid-from-holders txid holders))
+              (if (null new-holders)
+                  (setq *dbms-lock-table* (dbms-lock-remove-entry table-name *dbms-lock-table*))
+                  (setq *dbms-lock-table* (dbms-lock-put-entry table-name 'S new-holders *dbms-lock-table*)))
+              t)
+            ;; X lock is held by this tx (or someone else); keep it for tx boundary.
+            t))))
+
 (defun dbms-stmt-lock-mode (kind)
   (if (eq kind 'select)
       'S
@@ -1482,6 +1497,12 @@
     (if (and (dbms-result-p result)
              (not (eq (second result) 'error)))
         (dbms-tx-record-statement! stmt)
+        nil)
+    ;; READ COMMITTED: release shared read locks at statement boundary.
+    (if (and (dbms-tx-active-p)
+             (eq kind 'select)
+             (not (string= target "")))
+        (dbms-lock-release-shared-on-table (dbms-tx-state-tx-id *dbms-tx-state*) target)
         nil)
     result))))
 

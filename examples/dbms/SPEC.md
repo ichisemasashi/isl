@@ -480,6 +480,16 @@ lock mode:
 debug API:
 - lock table の snapshot を取得できる API を提供する
 
+### 14.7.9 READ COMMITTED（P2-002）
+`P2-001` の lock manager を前提に、最小分離レベル `READ COMMITTED` を提供する。
+
+規約:
+- `SELECT` により取得した `S` lock は statement 終了時に解放する
+- `INSERT/UPDATE/DELETE/DDL` の `X` lock は tx 終了（`COMMIT/ROLLBACK`）まで保持する
+- 他 tx が `X` lock を保持中の table への `SELECT` は `dbms/lock-conflict` で失敗させる
+
+これにより dirty read（未コミット更新の読取り）を防止する。
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト
