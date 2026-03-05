@@ -238,3 +238,88 @@
 
 (defun dbms-tx-state-idle ()
   (dbms-make-tx-state 'idle '() '() 0))
+
+;; ------------------------------------------------------------------
+;; B+Tree page format (P3-001)
+;; ------------------------------------------------------------------
+
+(defglobal *dbms-btree-page-size* 4096)
+(defglobal *dbms-btree-page-header-size* 64)
+(defglobal *dbms-btree-leaf-entry-size* 24)
+(defglobal *dbms-btree-internal-entry-size* 16)
+
+(defun dbms-positive-int-p (n)
+  (and (numberp n) (> n 0)))
+
+(defun dbms-nonnegative-int-p (n)
+  (and (numberp n) (>= n 0)))
+
+(defun dbms-btree-page-header-p (v)
+  ;; (dbms-btree-page-header <page-id> <lsn> <checksum> <free-start> <free-end> <flags>)
+  (and (dbms-tagged-p v 'dbms-btree-page-header)
+       (= (length v) 7)
+       (dbms-positive-int-p (second v))
+       (dbms-nonnegative-int-p (third v))
+       (dbms-nonnegative-int-p (fourth v))
+       (dbms-nonnegative-int-p (fifth v))
+       (dbms-nonnegative-int-p (first (cdr (cdr (cdr (cdr (cdr v)))))))
+       (listp (first (cdr (cdr (cdr (cdr (cdr (cdr v))))))))
+       (<= (fifth v) (first (cdr (cdr (cdr (cdr (cdr v)))))))
+       (<= (first (cdr (cdr (cdr (cdr (cdr v)))))) *dbms-btree-page-size*)))
+
+(defun dbms-make-btree-page-header (page-id lsn checksum free-start free-end flags)
+  (list 'dbms-btree-page-header page-id lsn checksum free-start free-end flags))
+
+(defun dbms-btree-leaf-entry-p (v)
+  ;; (dbms-btree-leaf-entry <key> <rid>)
+  (and (dbms-tagged-p v 'dbms-btree-leaf-entry)
+       (= (length v) 3)))
+
+(defun dbms-make-btree-leaf-entry (key rid)
+  (list 'dbms-btree-leaf-entry key rid))
+
+(defun dbms-btree-internal-entry-p (v)
+  ;; (dbms-btree-internal-entry <key> <child-page-id>)
+  (and (dbms-tagged-p v 'dbms-btree-internal-entry)
+       (= (length v) 3)
+       (dbms-positive-int-p (third v))))
+
+(defun dbms-make-btree-internal-entry (key child-page-id)
+  (list 'dbms-btree-internal-entry key child-page-id))
+
+(defun dbms-btree-page-entry-list-valid-p (kind entries)
+  (if (null entries)
+      t
+      (if (eq kind 'leaf)
+          (and (dbms-btree-leaf-entry-p (car entries))
+               (dbms-btree-page-entry-list-valid-p kind (cdr entries)))
+          (and (eq kind 'internal)
+               (dbms-btree-internal-entry-p (car entries))
+               (dbms-btree-page-entry-list-valid-p kind (cdr entries))))))
+
+(defun dbms-btree-page-p (v)
+  ;; (dbms-btree-page <header> <kind> <entries> <leftmost-child> <right-sibling>)
+  (and (dbms-tagged-p v 'dbms-btree-page)
+       (= (length v) 6)
+       (dbms-btree-page-header-p (second v))
+       (or (eq (third v) 'leaf) (eq (third v) 'internal))
+       (listp (fourth v))
+       (dbms-btree-page-entry-list-valid-p (third v) (fourth v))
+       (if (eq (third v) 'leaf)
+           (null (fifth v))
+           (dbms-positive-int-p (fifth v)))
+       (if (null (first (cdr (cdr (cdr (cdr (cdr v)))))))
+           t
+           (dbms-positive-int-p (first (cdr (cdr (cdr (cdr (cdr v))))))))))
+
+(defun dbms-make-btree-page (header kind entries leftmost-child right-sibling)
+  (list 'dbms-btree-page header kind entries leftmost-child right-sibling))
+
+(defun dbms-btree-page-capacity-estimate (kind)
+  (if (eq kind 'leaf)
+      (truncate (/ (- *dbms-btree-page-size* *dbms-btree-page-header-size*)
+                   *dbms-btree-leaf-entry-size*))
+      (if (eq kind 'internal)
+          (truncate (/ (- *dbms-btree-page-size* *dbms-btree-page-header-size*)
+                       *dbms-btree-internal-entry-size*))
+          0)))

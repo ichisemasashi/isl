@@ -516,6 +516,64 @@ victim ポリシー（現行実装）:
 完了条件:
 - deadlock シナリオで有限時間内に少なくとも 1 tx が abort されること
 
+### 14.7.12 B+Tree ページフォーマット（P3-001）
+index 実体実装（P3-002）に先行して、ページ形式を固定する。
+
+#### 14.7.12.1 定数
+- page size: `4096` bytes
+- header size: `64` bytes
+- leaf entry size（見積り）: `24` bytes
+- internal entry size（見積り）: `16` bytes
+
+#### 14.7.12.2 ヘッダ形式
+S式表現:
+- `(dbms-btree-page-header <page-id> <lsn> <checksum> <free-start> <free-end> <flags>)`
+
+制約:
+- `page-id > 0`
+- `lsn >= 0`
+- `checksum >= 0`
+- `0 <= free-start <= free-end <= page-size`
+- `flags` は list
+
+#### 14.7.12.3 ページ形式
+S式表現:
+- `(dbms-btree-page <header> <kind> <entries> <leftmost-child> <right-sibling>)`
+
+`kind`:
+- `leaf`
+- `internal`
+
+entry:
+- leaf: `(dbms-btree-leaf-entry <key> <rid>)`
+- internal: `(dbms-btree-internal-entry <key> <child-page-id>)`
+
+制約:
+- leaf page:
+  - `leftmost-child` は `NIL`
+  - `entries` は leaf-entry のみ
+  - `right-sibling` は `NIL` または page-id
+- internal page:
+  - `leftmost-child` は page-id 必須
+  - `entries` は internal-entry のみ
+  - `right-sibling` は `NIL` または page-id
+
+#### 14.7.12.4 split/merge 規約（固定）
+- split:
+  - overflow 時、中央値で `left/right` へ分割
+  - leaf split は右ページ最小キーを親へ昇格
+  - internal split は中央値キーを親へ昇格し、中央値キー自体は子に残さない
+- merge/redistribute:
+  - underflow 時、隣接 sibling から再分配を優先
+  - 再分配不可時に merge
+  - root が空に縮退した場合は子を新 root とする
+
+#### 14.7.12.5 テスト可能性契約
+- 表現コンストラクタとバリデータを提供し、以下を自動テスト可能にする:
+  - header/page の妥当性判定
+  - leaf/internal entry 型判定
+  - capacity 見積り（正値）
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト
