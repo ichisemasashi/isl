@@ -884,7 +884,6 @@
                                       (not (dbms-error-p simple-from-r))
                                       (not (dbms-error-p simple-where-r))
                                       (not (dbms-error-p simple-order-r))
-                                      (null limit-tok)
                                       (not (dbms-token-list-contains-keyword-p from-toks "JOIN")))))
                 (if mvp-simple
                     (dbms-parser-ok
@@ -893,7 +892,8 @@
                       (list (list "columns" (dbms-parser-ok-value simple-list-r))
                             (list "table" (dbms-parser-ok-value simple-from-r))
                             (list "where" (dbms-parser-ok-value simple-where-r))
-                            (list "order-by" (dbms-parser-ok-value simple-order-r))))
+                            (list "order-by" (dbms-parser-ok-value simple-order-r))
+                            (list "limit" (if (null limit-tok) '() (fourth limit-tok)))))
                      rest)
                     (dbms-parser-ok
                      (dbms-make-stmt
