@@ -13,6 +13,8 @@
 (defglobal *dbms-tx-snapshot-states* '())
 (defglobal *dbms-tx-staged-catalog* '())
 (defglobal *dbms-tx-staged-table-states* '())
+;; lock entry: (<table-name> <mode:S|X> <holders:(txid ...)>)
+(defglobal *dbms-lock-table* '())
 
 (defun dbms-engine-init ()
   (let ((recovered (dbms-storage-recover-from-wal))
@@ -37,10 +39,149 @@
   (setq *dbms-tx-snapshot-states* '())
   (setq *dbms-tx-staged-catalog* '())
   (setq *dbms-tx-staged-table-states* '())
+  (setq *dbms-lock-table* '())
   *dbms-tx-state*)
 
 (defun dbms-tx-active-p ()
   (eq (dbms-tx-state-status *dbms-tx-state*) 'active))
+
+(defun dbms-lock-table-reset! ()
+  (setq *dbms-lock-table* '())
+  *dbms-lock-table*)
+
+(defun dbms-lock-table-snapshot ()
+  *dbms-lock-table*)
+
+(defun dbms-number-in-list-p (n xs)
+  (if (null xs)
+      nil
+      (if (= n (car xs))
+          t
+          (dbms-number-in-list-p n (cdr xs)))))
+
+(defun dbms-lock-find-entry (table-name entries)
+  (if (null entries)
+      '()
+      (let ((e (car entries)))
+        (if (string= (first e) table-name)
+            e
+            (dbms-lock-find-entry table-name (cdr entries))))))
+
+(defun dbms-lock-put-entry (table-name mode holders entries)
+  (if (null entries)
+      (list (list table-name mode holders))
+      (let ((e (car entries)))
+        (if (string= (first e) table-name)
+            (cons (list table-name mode holders) (cdr entries))
+            (cons e (dbms-lock-put-entry table-name mode holders (cdr entries)))))))
+
+(defun dbms-lock-remove-entry (table-name entries)
+  (if (null entries)
+      '()
+      (let ((e (car entries)))
+        (if (string= (first e) table-name)
+            (dbms-lock-remove-entry table-name (cdr entries))
+            (cons e (dbms-lock-remove-entry table-name (cdr entries)))))))
+
+(defun dbms-lock-remove-txid-from-holders (txid holders)
+  (if (null holders)
+      '()
+      (if (= txid (car holders))
+          (dbms-lock-remove-txid-from-holders txid (cdr holders))
+          (cons (car holders) (dbms-lock-remove-txid-from-holders txid (cdr holders))))))
+
+(defun dbms-lock-holders-only-tx-p (txid holders)
+  (if (null holders)
+      nil
+      (let ((ok t)
+            (rest holders))
+        (while (and ok (not (null rest)))
+          (if (= txid (car rest))
+              nil
+              (setq ok nil))
+          (setq rest (cdr rest)))
+        ok)))
+
+(defun dbms-lock-acquire (txid table-name mode)
+  (if (or (not (numberp txid)) (<= txid 0))
+      (dbms-make-error 'dbms/invalid-representation "lock acquire requires txid>0" txid)
+      (if (or (null table-name) (not (stringp table-name)) (string= table-name ""))
+          (dbms-make-error 'dbms/invalid-representation "lock acquire requires table-name" table-name)
+          (let ((entry (dbms-lock-find-entry table-name *dbms-lock-table*)))
+            (if (null entry)
+                (progn
+                  (setq *dbms-lock-table* (dbms-lock-put-entry table-name mode (list txid) *dbms-lock-table*))
+                  t)
+                (let ((cur-mode (second entry))
+                      (holders (third entry)))
+                  (cond
+                   ((eq mode 'S)
+                    (if (eq cur-mode 'S)
+                        (progn
+                          (if (dbms-number-in-list-p txid holders)
+                              nil
+                              (setq holders (append holders (list txid))))
+                          (setq *dbms-lock-table* (dbms-lock-put-entry table-name 'S holders *dbms-lock-table*))
+                          t)
+                        (if (dbms-number-in-list-p txid holders)
+                            t
+                            (dbms-make-error 'dbms/lock-conflict "S lock blocked by X lock" (list table-name txid holders)))))
+                   ((eq mode 'X)
+                    (if (eq cur-mode 'X)
+                        (if (dbms-number-in-list-p txid holders)
+                            t
+                            (dbms-make-error 'dbms/lock-conflict "X lock held by other tx" (list table-name txid holders)))
+                        (if (dbms-lock-holders-only-tx-p txid holders)
+                            (progn
+                              (setq *dbms-lock-table* (dbms-lock-put-entry table-name 'X (list txid) *dbms-lock-table*))
+                              t)
+                            (dbms-make-error 'dbms/lock-conflict "X lock blocked by shared holders" (list table-name txid holders)))))
+                   (t
+                    (dbms-make-error 'dbms/invalid-representation "lock mode must be S or X" mode)))))))))
+
+(defun dbms-lock-release-tx (txid)
+  (let ((entries *dbms-lock-table*)
+        (out '()))
+    (while (not (null entries))
+      (let* ((e (car entries))
+             (table-name (first e))
+             (mode (second e))
+             (holders (third e))
+             (new-holders (dbms-lock-remove-txid-from-holders txid holders)))
+        (if (null new-holders)
+            nil
+            (setq out (append out (list (list table-name mode new-holders)))))
+        (setq entries (cdr entries))))
+    (setq *dbms-lock-table* out)
+    t))
+
+(defun dbms-stmt-lock-mode (kind)
+  (if (eq kind 'select)
+      'S
+      (if (or (eq kind 'insert)
+              (eq kind 'update)
+              (eq kind 'delete)
+              (eq kind 'create-table)
+              (eq kind 'create-table-wiki)
+              (eq kind 'create-index)
+              (eq kind 'alter-table))
+          'X
+          '())))
+
+(defun dbms-stmt-lock-target (stmt)
+  (let* ((kind (second stmt))
+         (table-name (dbms-stmt-table-name stmt)))
+    (if (and (stringp table-name) (not (string= table-name "")))
+        table-name
+        (if (or (eq kind 'create-table)
+                (eq kind 'create-table-wiki)
+                (eq kind 'create-index)
+                (eq kind 'alter-table))
+            "__catalog__"
+            ""))))
+
+(defun dbms-engine-lock-table-debug ()
+  (dbms-lock-table-snapshot))
 
 (defun dbms-find-staged-table-state-pair (table-name staged-states)
   (if (null staged-states)
@@ -1149,12 +1290,14 @@
                                                         (dbms-tx-state-read-set *dbms-tx-state*)
                                                         (dbms-tx-state-write-set *dbms-tx-state*)
                                                         tx-id))
+              (dbms-lock-release-tx tx-id)
               (dbms-make-result 'error failed))
             (progn
               (setq *dbms-tx-state* (dbms-make-tx-state 'committed
                                                         (dbms-tx-state-read-set *dbms-tx-state*)
                                                         (dbms-tx-state-write-set *dbms-tx-state*)
                                                         tx-id))
+              (dbms-lock-release-tx tx-id)
               (setq *dbms-tx-state* (dbms-tx-state-idle))
               (dbms-make-result-ok 'ok))))
         (setq *dbms-tx-snapshot-catalog* '())
@@ -1198,6 +1341,7 @@
                                                   (dbms-tx-state-read-set *dbms-tx-state*)
                                                   (dbms-tx-state-write-set *dbms-tx-state*)
                                                   tx-id))
+        (dbms-lock-release-tx tx-id)
         (setq *dbms-tx-state* (dbms-tx-state-idle))
         (setq *dbms-tx-snapshot-catalog* '())
         (setq *dbms-tx-snapshot-states* '())
@@ -1301,7 +1445,26 @@
 
 (defun dbms-engine-dispatch (catalog stmt)
   (let ((kind (second stmt))
+        (mode '())
+        (target "")
+        (lock-res '())
         (result '()))
+    (if (dbms-tx-active-p)
+        (progn
+          (setq mode (dbms-stmt-lock-mode kind))
+          (setq target (dbms-stmt-lock-target stmt))
+          (if (and (not (null mode))
+                   (not (string= target "")))
+              (progn
+                (setq lock-res (dbms-lock-acquire (dbms-tx-state-tx-id *dbms-tx-state*) target mode))
+                (if (dbms-error-p lock-res)
+                    (setq result (dbms-make-result 'error lock-res))
+                    nil))
+              nil))
+        nil)
+    (if (and (dbms-result-p result) (eq (second result) 'error))
+        result
+        (progn
     (setq result
     (cond
      ((eq kind 'begin) (dbms-engine-begin catalog stmt))
@@ -1320,7 +1483,7 @@
              (not (eq (second result) 'error)))
         (dbms-tx-record-statement! stmt)
         nil)
-    result))
+    result))))
 
 (defun dbms-exec-sql (catalog sql-text)
   (let ((ast (dbms-parse-sql sql-text))

@@ -460,6 +460,26 @@ redo 対象 op:
 実装ではテスト専用 failpoint（環境変数）を利用して
 「WAL 永続化済みだが data file 未反映」のクラッシュ窓を決定的に再現してよい。
 
+### 14.7.8 table lock manager（P2-001）
+最小同時実行制御として table lock を導入する。
+
+lock mode:
+- `S`（shared）: `SELECT`
+- `X`（exclusive）: `INSERT/UPDATE/DELETE/DDL`
+
+互換性:
+- `S` と `S` は両立可
+- `X` は他 tx の `S/X` と両立不可
+- 同一 tx の `S -> X` は、当該 table の holder が自 tx のみの場合に限り upgrade 可
+
+挙動:
+- tx 実行中の statement 先頭で必要 lock を取得する
+- 競合時は待機せず即時 `dbms/lock-conflict` を返す
+- `COMMIT` / `ROLLBACK` で当該 tx の lock を解放する
+
+debug API:
+- lock table の snapshot を取得できる API を提供する
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト

@@ -17,7 +17,8 @@
     dbms/no-input
     dbms/invalid-representation
     dbms/tx-already-active
-    dbms/tx-not-active))
+    dbms/tx-not-active
+    dbms/lock-conflict))
 
 (defun dbms-member-eq (x xs)
   (if (null xs)
