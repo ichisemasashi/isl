@@ -695,4 +695,13 @@ DBMS 置換時は等価ワークフローを提供する:
 - 未許可時は `dbms/permission-denied` を返し、実行を拒否する。
 
 ### 18.4 監査（最小）
-- 権限拒否イベントを `audit.lspdata` へ記録する（timestamp/user/action/object/result/detail）。
+- 監査レコード形式: `(dbms-audit-record <ts> <user> <action> <object> <result> <detail>)`
+- 最低限、以下を記録する:
+  - 権限拒否（`result=DENY`）
+  - DDL 実行成功（`action=DDL`）
+  - 権限変更実行成功（`action=PRIVILEGE`）
+  - tx abort（`action=TX-ABORT`, `result=ABORT`）
+- 現行ログは `audit.lspdata` に保持する。
+- ローテーション:
+  - 環境変数 `DBMS_AUDIT_MAX_ENTRIES` を上限として現行ログ件数を制限する。
+  - 上限超過分は `audit.archive.<seq>.lspdata` へ退避する。

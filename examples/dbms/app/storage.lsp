@@ -4,6 +4,7 @@
 (load "./examples/dbms/app/repr.lsp")
 
 (defglobal *dbms-storage-tmp-seq* 0)
+(defglobal *dbms-audit-archive-seq* 0)
 
 (defun dbms-storage-root ()
   (let ((v (getenv "DBMS_STORAGE_ROOT")))
@@ -28,6 +29,13 @@
 
 (defun dbms-storage-audit-path ()
   (string-append (dbms-storage-root) "/audit.lspdata"))
+
+(defun dbms-storage-audit-archive-path (seq)
+  (string-append (dbms-storage-root) "/audit.archive." (format nil "~A" seq) ".lspdata"))
+
+(defun dbms-storage-next-audit-archive-path ()
+  (setq *dbms-audit-archive-seq* (+ *dbms-audit-archive-seq* 1))
+  (dbms-storage-audit-archive-path *dbms-audit-archive-seq*))
 
 (defun dbms-storage-shell-quote (s)
   (let ((i 0)
@@ -75,6 +83,50 @@
                   (setq out (append out (list v)))
                   (setq v (read s)))))
           out))))
+
+(defun dbms-storage-digits-only-p (s)
+  (let ((i 0)
+        (n (length s))
+        (ok t))
+    (if (= n 0)
+        nil
+        (progn
+          (while (and ok (< i n))
+            (let ((ch (substring s i (+ i 1))))
+              (if (null (string-index ch "0123456789"))
+                  (setq ok nil)
+                  nil))
+            (setq i (+ i 1)))
+          ok))))
+
+(defun dbms-storage-parse-nonnegative-int (s)
+  (let ((i 0)
+        (n (length s))
+        (acc 0))
+    (while (< i n)
+      (let ((p (string-index (substring s i (+ i 1)) "0123456789")))
+        (setq acc (+ (* acc 10) p)))
+      (setq i (+ i 1)))
+    acc))
+
+(defun dbms-storage-audit-max-entries ()
+  (let ((v (getenv "DBMS_AUDIT_MAX_ENTRIES")))
+    (if (and (stringp v)
+             (not (string= v ""))
+             (dbms-storage-digits-only-p v))
+        (let ((n (dbms-storage-parse-nonnegative-int v)))
+          (if (<= n 0) 1 n))
+        10000)))
+
+(defun dbms-storage-list-take (xs n)
+  (if (or (<= n 0) (null xs))
+      '()
+      (cons (car xs) (dbms-storage-list-take (cdr xs) (- n 1)))))
+
+(defun dbms-storage-list-drop (xs n)
+  (if (or (<= n 0) (null xs))
+      xs
+      (dbms-storage-list-drop (cdr xs) (- n 1))))
 
 (defun dbms-wal-record-p (v)
   (and (listp v)
@@ -179,8 +231,19 @@
     (if (listp raw) raw '())))
 
 (defun dbms-storage-append-audit-record (record)
-  (let ((entries (dbms-storage-load-audit-log)))
-    (dbms-storage-atomic-replace (dbms-storage-audit-path) (append entries (list record)))))
+  (let* ((entries (dbms-storage-load-audit-log))
+         (merged (append entries (list record)))
+         (max-entries (dbms-storage-audit-max-entries)))
+    (if (> (length merged) max-entries)
+        (let* ((overflow (- (length merged) max-entries))
+               (archived (dbms-storage-list-take merged overflow))
+               (kept (dbms-storage-list-drop merged overflow))
+               (archive-path (dbms-storage-next-audit-archive-path))
+               (saved-archive (dbms-storage-atomic-replace archive-path archived)))
+          (if (dbms-error-p saved-archive)
+              saved-archive
+              (dbms-storage-atomic-replace (dbms-storage-audit-path) kept)))
+        (dbms-storage-atomic-replace (dbms-storage-audit-path) merged))))
 
 (defun dbms-storage-wal-committed-txids (records)
   (let ((begun '())

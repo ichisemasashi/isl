@@ -204,6 +204,48 @@
                       detail)))
     (dbms-storage-append-audit-record record)))
 
+(defun dbms-stmt-audit-object (stmt)
+  (let* ((kind (second stmt))
+         (payload (third stmt)))
+    (if (or (eq kind 'create-table) (eq kind 'create-table-wiki))
+        (dbms-table-def-name payload)
+        (let ((table-name (dbms-assoc-get payload "table")))
+          (if (and (stringp table-name) (not (string= table-name "")))
+              table-name
+              "__catalog__")))))
+
+(defun dbms-stmt-audit-action (stmt)
+  (let ((kind (second stmt)))
+    (if (or (eq kind 'create-table)
+            (eq kind 'create-table-wiki)
+            (eq kind 'create-index)
+            (eq kind 'alter-table))
+        'DDL
+        (if (or (eq kind 'create-user)
+                (eq kind 'create-role)
+                (eq kind 'grant-priv)
+                (eq kind 'revoke-priv)
+                (eq kind 'grant-role)
+                (eq kind 'revoke-role)
+                (eq kind 'set-role))
+            'PRIVILEGE
+            '()))))
+
+(defun dbms-engine-audit-statement-success (stmt)
+  (let ((action (dbms-stmt-audit-action stmt)))
+    (if (null action)
+        nil
+        (dbms-engine-audit-log 'OK
+                               action
+                               (dbms-stmt-audit-object stmt)
+                               stmt))))
+
+(defun dbms-engine-audit-tx-abort (tx-id reason detail)
+  (dbms-engine-audit-log 'ABORT
+                         'TX-ABORT
+                         (format nil "~A" tx-id)
+                         (list reason detail)))
+
 (defun dbms-auth-user-principals (auth user)
   (let ((out (list user))
         (members (dbms-auth-meta-memberships auth)))
@@ -305,6 +347,7 @@
 (defun dbms-abort-active-tx-on-conflict! ()
   (if (dbms-tx-active-p)
       (let ((tx-id (dbms-tx-state-tx-id *dbms-tx-state*)))
+        (dbms-engine-audit-tx-abort tx-id 'lock-conflict (list *dbms-lock-table* *dbms-wait-for-graph*))
         (dbms-lock-release-tx tx-id)
         (dbms-wfg-clear-tx tx-id)
         (setq *dbms-tx-state* (dbms-make-tx-state 'aborted
@@ -2826,6 +2869,7 @@
         (setq result
               (if (dbms-error-p failed)
             (progn
+              (dbms-engine-audit-tx-abort tx-id 'commit-failed failed)
               (setq *dbms-tx-state* (dbms-make-tx-state 'aborted
                                                         (dbms-tx-state-read-set *dbms-tx-state*)
                                                         (dbms-tx-state-write-set *dbms-tx-state*)
@@ -2894,6 +2938,7 @@
                                                   (dbms-tx-state-read-set *dbms-tx-state*)
                                                   (dbms-tx-state-write-set *dbms-tx-state*)
                                                   tx-id))
+        (dbms-engine-audit-tx-abort tx-id 'rollback (if (dbms-error-p failed) failed 'ok))
         (dbms-lock-release-tx tx-id)
         (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
         (setq *dbms-tx-state* (dbms-tx-state-idle))
@@ -3066,7 +3111,9 @@
                        (t (dbms-make-result-error 'dbms/not-implemented "statement not implemented" kind))))
                 (if (and (dbms-result-p result)
                          (not (eq (second result) 'error)))
-                    (dbms-tx-record-statement! stmt)
+                    (progn
+                      (dbms-tx-record-statement! stmt)
+                      (dbms-engine-audit-statement-success stmt))
                     nil)
                 ;; READ COMMITTED: release shared read locks at statement boundary.
                 (if (and (dbms-tx-active-p)
