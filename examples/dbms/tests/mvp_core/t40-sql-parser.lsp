@@ -30,6 +30,11 @@
          (ast-delete (dbms-parse-sql "DELETE FROM pages WHERE id != 2;"))
          (ast-alter-not-valid (dbms-parse-sql "ALTER TABLE pages ADD CONSTRAINT chk_title CHECK (title != '') NOT VALID;"))
          (ast-validate (dbms-parse-sql "ALTER TABLE pages VALIDATE CONSTRAINT chk_title;"))
+         (ast-create-user (dbms-parse-sql "CREATE USER alice;"))
+         (ast-create-role (dbms-parse-sql "CREATE ROLE editor;"))
+         (ast-grant (dbms-parse-sql "GRANT SELECT, UPDATE ON pages TO editor;"))
+         (ast-revoke (dbms-parse-sql "REVOKE UPDATE ON pages FROM editor;"))
+         (ast-set-role (dbms-parse-sql "SET ROLE editor;"))
          (err (dbms-parse-sql "SELECT FROM pages;")))
 
     (assert-true "create parses" (dbms-ast-p ast-create))
@@ -78,6 +83,27 @@
     (assert-true "alter validate constraint parses" (dbms-ast-p ast-validate))
     (assert-true "alter validate action"
                  (string= (payload-get (stmt-payload (first-stmt ast-validate)) "action") "VALIDATE-CONSTRAINT"))
+
+    (assert-true "create user parses" (dbms-ast-p ast-create-user))
+    (assert-true "create user kind" (eq (stmt-kind (first-stmt ast-create-user)) 'create-user))
+    (assert-true "create user name"
+                 (string= (payload-get (stmt-payload (first-stmt ast-create-user)) "name") "alice"))
+
+    (assert-true "create role parses" (dbms-ast-p ast-create-role))
+    (assert-true "create role kind" (eq (stmt-kind (first-stmt ast-create-role)) 'create-role))
+    (assert-true "create role name"
+                 (string= (payload-get (stmt-payload (first-stmt ast-create-role)) "name") "editor"))
+
+    (assert-true "grant parses" (dbms-ast-p ast-grant))
+    (assert-true "grant kind" (eq (stmt-kind (first-stmt ast-grant)) 'grant-priv))
+    (assert-true "grant object"
+                 (string= (payload-get (stmt-payload (first-stmt ast-grant)) "object") "pages"))
+
+    (assert-true "revoke parses" (dbms-ast-p ast-revoke))
+    (assert-true "revoke kind" (eq (stmt-kind (first-stmt ast-revoke)) 'revoke-priv))
+
+    (assert-true "set role parses" (dbms-ast-p ast-set-role))
+    (assert-true "set role kind" (eq (stmt-kind (first-stmt ast-set-role)) 'set-role))
 
     (assert-true "invalid SQL parse error" (dbms-error-p err))
     (assert-true "invalid SQL error code" (eq (dbms-error-code err) 'dbms/parse-error))

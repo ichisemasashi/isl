@@ -669,3 +669,30 @@ DBMS 置換時は等価ワークフローを提供する:
 - `catalog.lsp` と `storage.lsp` は 17.2, 17.3 の形式を返す。
 - `engine.lsp` は常に `dbms-result` を返す。
 - `main.lsp` は `dbms-result` をそのまま出力し、CLI整形は後続ステップで追加する。
+
+## 18. P4-005 認証・ロール・権限
+最小運用要件として users/roles/grants のメタを永続化し、statement 実行前に object-level 権限検証を行う。
+
+### 18.1 管理SQL
+- `CREATE USER <name>`
+- `CREATE ROLE <name>`
+- `GRANT ROLE <role> TO <user>`
+- `REVOKE ROLE <role> FROM <user>`
+- `GRANT <priv-list> ON [TABLE] <object> TO <grantee>`
+- `REVOKE <priv-list> ON [TABLE] <object> FROM <grantee>`
+- `SET ROLE <role>`
+
+`<priv-list>`: `SELECT/INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/INDEX/ANALYZE/VACUUM/ALL`
+
+### 18.2 永続メタ
+- `auth.lspdata`: `(dbms-auth-meta <users> <roles> <memberships> <grants>)`
+  - `<memberships>`: `(<user> <role>)` のリスト
+  - `<grants>`: `(<grantee> <object> <privilege>)` のリスト
+- 初期ブートストラップ時に `admin` ユーザ/ロールと `("admin" "*" ALL)` を必ず存在させる。
+
+### 18.3 権限判定
+- statement 実行前に required privilege を決定し、現在ユーザ（+ 付与済みロール）に対して照合する。
+- 未許可時は `dbms/permission-denied` を返し、実行を拒否する。
+
+### 18.4 監査（最小）
+- 権限拒否イベントを `audit.lspdata` へ記録する（timestamp/user/action/object/result/detail）。

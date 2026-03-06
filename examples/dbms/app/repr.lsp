@@ -19,7 +19,12 @@
     dbms/tx-already-active
     dbms/tx-not-active
     dbms/lock-conflict
-    dbms/deadlock-detected))
+    dbms/deadlock-detected
+    dbms/permission-denied
+    dbms/duplicate-user
+    dbms/duplicate-role
+    dbms/user-not-found
+    dbms/role-not-found))
 
 (defun dbms-member-eq (x xs)
   (if (null xs)
@@ -238,6 +243,50 @@
 
 (defun dbms-tx-state-idle ()
   (dbms-make-tx-state 'idle '() '() 0))
+
+;; auth-meta:
+;; (dbms-auth-meta <users> <roles> <memberships> <grants>)
+;; users: ("alice" ...)
+;; roles: ("editor" ...)
+;; memberships: (("alice" "editor") ...)
+;; grants: (("editor" "pages" SELECT) ("editor" "*" ALL) ...)
+(defun dbms-make-auth-meta (users roles memberships grants)
+  (list 'dbms-auth-meta users roles memberships grants))
+
+(defun dbms-auth-meta-p (v)
+  (and (dbms-tagged-p v 'dbms-auth-meta)
+       (= (length v) 5)
+       (listp (second v))
+       (listp (third v))
+       (listp (fourth v))
+       (listp (fifth v))))
+
+(defun dbms-auth-meta-users (auth)
+  (if (dbms-auth-meta-p auth)
+      (second auth)
+      '()))
+
+(defun dbms-auth-meta-roles (auth)
+  (if (dbms-auth-meta-p auth)
+      (third auth)
+      '()))
+
+(defun dbms-auth-meta-memberships (auth)
+  (if (dbms-auth-meta-p auth)
+      (fourth auth)
+      '()))
+
+(defun dbms-auth-meta-grants (auth)
+  (if (dbms-auth-meta-p auth)
+      (fifth auth)
+      '()))
+
+(defun dbms-auth-empty ()
+  (dbms-make-auth-meta
+   (list "admin")
+   (list "admin")
+   (list (list "admin" "admin"))
+   (list (list "admin" "*" 'ALL))))
 
 ;; ------------------------------------------------------------------
 ;; B+Tree page format (P3-001)

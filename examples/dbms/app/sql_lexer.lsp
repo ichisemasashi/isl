@@ -11,7 +11,8 @@
     "ALTER" "ADD" "DROP" "COLUMN" "CONSTRAINT" "CHECK" "FOREIGN" "REFERENCES"
     "INDEX" "IF" "EXISTS" "ON" "CONFLICT" "DO" "NOTHING" "RETURNING" "CASCADE"
     "WITH" "AS" "LIMIT" "JOIN" "INNER" "AND" "OR" "IS" "IN" "DEFAULT"
-    "BEGIN" "COMMIT" "ROLLBACK" "ANALYZE" "EXPLAIN" "VACUUM" "VALIDATE" "VALID"))
+    "BEGIN" "COMMIT" "ROLLBACK" "ANALYZE" "EXPLAIN" "VACUUM" "VALIDATE" "VALID"
+    "USER" "ROLE" "GRANT" "REVOKE" "ALL" "TO"))
 
 (defglobal *dbms-sql-operator-2ch* '("!=" "<=" ">=" "<>"))
 (defglobal *dbms-sql-operator-1ch* '("=" "<" ">" "+" "-" "*" "/" "%"))

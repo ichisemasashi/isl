@@ -783,6 +783,128 @@
                                    (dbms-parser-ok-rest r-name))))))
                       (dbms-parser-error "ALTER TABLE supports DROP CONSTRAINT / ADD CONSTRAINT / ADD COLUMN / VALIDATE CONSTRAINT" rest))))))))
 
+(defun dbms-parse-privilege-token (tok)
+  (if (null tok)
+      '()
+      (let ((kw (dbms-token-keyword-upper-or-empty tok)))
+        (cond
+         ((string= kw "SELECT") 'SELECT)
+         ((string= kw "INSERT") 'INSERT)
+         ((string= kw "UPDATE") 'UPDATE)
+         ((string= kw "DELETE") 'DELETE)
+         ((string= kw "CREATE") 'CREATE)
+         ((string= kw "ALTER") 'ALTER)
+         ((string= kw "DROP") 'DROP)
+         ((string= kw "INDEX") 'INDEX)
+         ((string= kw "ANALYZE") 'ANALYZE)
+         ((string= kw "VACUUM") 'VACUUM)
+         ((string= kw "ALL") 'ALL)
+         (t '())))))
+
+(defun dbms-parse-privilege-list (tokens)
+  (let ((rest tokens)
+        (out '())
+        (done nil)
+        (failed '()))
+    (while (and (not done) (not (dbms-error-p failed)))
+      (if (null rest)
+          (setq failed (dbms-parser-error "expected privilege list" 'eof))
+          (let ((p (dbms-parse-privilege-token (car rest))))
+            (if (null p)
+                (setq failed (dbms-parser-error "unsupported privilege keyword" (dbms-sql-token-lexeme (car rest))))
+                (progn
+                  (setq out (append out (list p)))
+                  (setq rest (cdr rest))
+                  (if (and (not (null rest)) (dbms-token-is-symbol-p (car rest) ","))
+                      (setq rest (cdr rest))
+                      (setq done t)))))))
+    (if (dbms-error-p failed)
+        failed
+        (dbms-parser-ok out rest))))
+
+(defun dbms-parse-grant-object (tokens)
+  (let ((rest tokens))
+    (if (and (not (null rest)) (dbms-token-is-keyword-p (car rest) "TABLE"))
+        (setq rest (cdr rest))
+        nil)
+    (if (null rest)
+        (dbms-parser-error "expected object after ON" 'eof)
+        (if (and (dbms-token-is-operator-p (car rest) "*"))
+            (dbms-parser-ok "*" (cdr rest))
+            (if (dbms-token-is-keyword-p (car rest) "CATALOG")
+                (dbms-parser-ok "__catalog__" (cdr rest))
+                (let ((r-name (dbms-expect-identifier rest)))
+                  (if (dbms-error-p r-name)
+                      r-name
+                      (dbms-parser-ok (dbms-parser-ok-value r-name) (dbms-parser-ok-rest r-name)))))))))
+
+(defun dbms-parse-grant (tokens)
+  (if (and (not (null tokens)) (dbms-token-is-keyword-p (car tokens) "ROLE"))
+      (let* ((r-role (dbms-expect-identifier (cdr tokens)))
+             (r-to (if (dbms-error-p r-role) r-role (dbms-expect-keyword (dbms-parser-ok-rest r-role) "TO")))
+             (r-grantee (if (dbms-error-p r-to) r-to (dbms-expect-identifier (dbms-parser-ok-rest r-to)))))
+        (if (dbms-error-p r-grantee)
+            r-grantee
+            (dbms-parser-ok
+             (dbms-make-stmt
+              'grant-role
+              (list (list "role" (dbms-parser-ok-value r-role))
+                    (list "grantee" (dbms-parser-ok-value r-grantee))))
+             (dbms-parser-ok-rest r-grantee))))
+      (let* ((r-privs (dbms-parse-privilege-list tokens))
+             (r-on (if (dbms-error-p r-privs) r-privs (dbms-expect-keyword (dbms-parser-ok-rest r-privs) "ON")))
+             (r-object (if (dbms-error-p r-on) r-on (dbms-parse-grant-object (dbms-parser-ok-rest r-on))))
+             (r-to (if (dbms-error-p r-object) r-object (dbms-expect-keyword (dbms-parser-ok-rest r-object) "TO")))
+             (r-grantee (if (dbms-error-p r-to) r-to (dbms-expect-identifier (dbms-parser-ok-rest r-to)))))
+        (if (dbms-error-p r-grantee)
+            r-grantee
+            (dbms-parser-ok
+             (dbms-make-stmt
+              'grant-priv
+              (list (list "privileges" (dbms-parser-ok-value r-privs))
+                    (list "object" (dbms-parser-ok-value r-object))
+                    (list "grantee" (dbms-parser-ok-value r-grantee))))
+             (dbms-parser-ok-rest r-grantee))))))
+
+(defun dbms-parse-revoke (tokens)
+  (if (and (not (null tokens)) (dbms-token-is-keyword-p (car tokens) "ROLE"))
+      (let* ((r-role (dbms-expect-identifier (cdr tokens)))
+             (r-from (if (dbms-error-p r-role) r-role (dbms-expect-keyword (dbms-parser-ok-rest r-role) "FROM")))
+             (r-grantee (if (dbms-error-p r-from) r-from (dbms-expect-identifier (dbms-parser-ok-rest r-from)))))
+        (if (dbms-error-p r-grantee)
+            r-grantee
+            (dbms-parser-ok
+             (dbms-make-stmt
+              'revoke-role
+              (list (list "role" (dbms-parser-ok-value r-role))
+                    (list "grantee" (dbms-parser-ok-value r-grantee))))
+             (dbms-parser-ok-rest r-grantee))))
+      (let* ((r-privs (dbms-parse-privilege-list tokens))
+             (r-on (if (dbms-error-p r-privs) r-privs (dbms-expect-keyword (dbms-parser-ok-rest r-privs) "ON")))
+             (r-object (if (dbms-error-p r-on) r-on (dbms-parse-grant-object (dbms-parser-ok-rest r-on))))
+             (r-from (if (dbms-error-p r-object) r-object (dbms-expect-keyword (dbms-parser-ok-rest r-object) "FROM")))
+             (r-grantee (if (dbms-error-p r-from) r-from (dbms-expect-identifier (dbms-parser-ok-rest r-from)))))
+        (if (dbms-error-p r-grantee)
+            r-grantee
+            (dbms-parser-ok
+             (dbms-make-stmt
+              'revoke-priv
+              (list (list "privileges" (dbms-parser-ok-value r-privs))
+                    (list "object" (dbms-parser-ok-value r-object))
+                    (list "grantee" (dbms-parser-ok-value r-grantee))))
+             (dbms-parser-ok-rest r-grantee))))))
+
+(defun dbms-parse-set (tokens)
+  (let* ((r-role (dbms-expect-keyword tokens "ROLE"))
+         (r-name (if (dbms-error-p r-role) r-role (dbms-expect-identifier (dbms-parser-ok-rest r-role)))))
+    (if (dbms-error-p r-name)
+        r-name
+        (dbms-parser-ok
+         (dbms-make-stmt
+          'set-role
+          (list (list "role" (dbms-parser-ok-value r-name))))
+         (dbms-parser-ok-rest r-name)))))
+
 (defun dbms-parse-insert (tokens)
   (let ((r-table (dbms-expect-identifier tokens)))
     (if (dbms-error-p r-table)
@@ -1139,17 +1261,40 @@
                                 (dbms-parser-ok-rest r-inner)))))
          ((dbms-token-is-keyword-p tok "CREATE")
           (if (null (cdr tokens))
-              (dbms-parser-error "CREATE requires TABLE or INDEX" 'eof)
-              (if (dbms-token-is-keyword-p (second tokens) "TABLE")
-                  (dbms-parse-create-table (cdr (cdr tokens)))
-                  (if (dbms-token-is-keyword-p (second tokens) "INDEX")
-                      (dbms-parse-create-index (cdr (cdr tokens)))
-                      (dbms-parser-error "CREATE supports TABLE or INDEX" (second tokens))))))
+              (dbms-parser-error "CREATE requires TABLE/INDEX/USER/ROLE" 'eof)
+              (let ((head (second tokens)))
+                (cond
+                 ((dbms-token-is-keyword-p head "TABLE")
+                  (dbms-parse-create-table (cdr (cdr tokens))))
+                 ((dbms-token-is-keyword-p head "INDEX")
+                  (dbms-parse-create-index (cdr (cdr tokens))))
+                 ((dbms-token-is-keyword-p head "USER")
+                  (let ((r-name (dbms-expect-identifier (cdr (cdr tokens)))))
+                    (if (dbms-error-p r-name)
+                        r-name
+                        (dbms-parser-ok
+                         (dbms-make-stmt 'create-user (list (list "name" (dbms-parser-ok-value r-name))))
+                         (dbms-parser-ok-rest r-name)))))
+                 ((dbms-token-is-keyword-p head "ROLE")
+                  (let ((r-name (dbms-expect-identifier (cdr (cdr tokens)))))
+                    (if (dbms-error-p r-name)
+                        r-name
+                        (dbms-parser-ok
+                         (dbms-make-stmt 'create-role (list (list "name" (dbms-parser-ok-value r-name))))
+                         (dbms-parser-ok-rest r-name)))))
+                 (t
+                  (dbms-parser-error "CREATE supports TABLE/INDEX/USER/ROLE" head))))))
          ((dbms-token-is-keyword-p tok "INSERT")
           (let ((r-into (dbms-expect-keyword (cdr tokens) "INTO")))
             (if (dbms-error-p r-into)
                 r-into
                 (dbms-parse-insert (dbms-parser-ok-rest r-into)))))
+         ((dbms-token-is-keyword-p tok "GRANT")
+          (dbms-parse-grant (cdr tokens)))
+         ((dbms-token-is-keyword-p tok "REVOKE")
+          (dbms-parse-revoke (cdr tokens)))
+         ((dbms-token-is-keyword-p tok "SET")
+          (dbms-parse-set (cdr tokens)))
          ((dbms-token-is-keyword-p tok "SELECT")
           (dbms-parse-select (cdr tokens)))
          ((dbms-token-is-keyword-p tok "UPDATE")

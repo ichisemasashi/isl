@@ -23,6 +23,12 @@
 (defun dbms-storage-wal-path ()
   (string-append (dbms-storage-root) "/wal.log"))
 
+(defun dbms-storage-auth-path ()
+  (string-append (dbms-storage-root) "/auth.lspdata"))
+
+(defun dbms-storage-audit-path ()
+  (string-append (dbms-storage-root) "/audit.lspdata"))
+
 (defun dbms-storage-shell-quote (s)
   (let ((i 0)
         (n (length s))
@@ -157,6 +163,25 @@
                     (let ((psaved (dbms-storage-save-table-pages table-name (third table-state))))
                       (if (dbms-error-p psaved) psaved saved))))))))
 
+(defun dbms-storage-load-auth-meta ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-auth-path))))
+    (if (dbms-auth-meta-p raw)
+        raw
+        (dbms-auth-empty))))
+
+(defun dbms-storage-save-auth-meta (auth)
+  (if (dbms-auth-meta-p auth)
+      (dbms-storage-atomic-replace (dbms-storage-auth-path) auth)
+      (dbms-make-error 'dbms/invalid-representation "auth must be dbms-auth-meta" auth)))
+
+(defun dbms-storage-load-audit-log ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-audit-path))))
+    (if (listp raw) raw '())))
+
+(defun dbms-storage-append-audit-record (record)
+  (let ((entries (dbms-storage-load-audit-log)))
+    (dbms-storage-atomic-replace (dbms-storage-audit-path) (append entries (list record)))))
+
 (defun dbms-storage-wal-committed-txids (records)
   (let ((begun '())
         (committed '()))
@@ -191,7 +216,13 @@
                      (dbms-table-state-p (second payload)))
                 (dbms-storage-save-table-state (first payload) (second payload))
                 (dbms-make-error 'dbms/invalid-representation "invalid WAL table payload" payload))
-            (dbms-make-error 'dbms/invalid-representation "unsupported WAL data op" op)))))
+            (if (eq op 'auth-replace)
+                (if (and (listp payload)
+                         (not (null payload))
+                         (dbms-auth-meta-p (first payload)))
+                    (dbms-storage-save-auth-meta (first payload))
+                    (dbms-make-error 'dbms/invalid-representation "invalid WAL auth payload" payload))
+                (dbms-make-error 'dbms/invalid-representation "unsupported WAL data op" op))))))
 
 (defun dbms-storage-recover-from-wal ()
   (let* ((records (dbms-storage-load-wal-records))
