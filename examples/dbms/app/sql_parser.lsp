@@ -692,6 +692,18 @@
                         (dbms-parse-add-foreign-key-constraint table-name cname (dbms-parser-ok-rest r-key))))
                   (dbms-parser-error "ADD CONSTRAINT supports CHECK or FOREIGN KEY" rest)))))))
 
+(defun dbms-parse-add-column (table-name tokens)
+  (let ((r-col (dbms-parse-column-def tokens)))
+    (if (dbms-error-p r-col)
+        r-col
+        (dbms-parser-ok
+         (dbms-make-stmt
+          'alter-table
+          (list (list "table" table-name)
+                (list "action" "ADD-COLUMN")
+                (list "column-def" (dbms-parser-ok-value r-col))))
+         (dbms-parser-ok-rest r-col)))))
+
 (defun dbms-parse-alter-table (tokens)
   (let ((r-table (dbms-expect-identifier tokens)))
     (if (dbms-error-p r-table)
@@ -724,11 +736,16 @@
                                     (list "constraint-name" (dbms-parser-ok-value r-name))))
                              (dbms-parser-ok-rest r-name)))))))
               (if (and (not (null rest)) (dbms-token-is-keyword-p (first rest) "ADD"))
-                  (let ((r-constraint (dbms-expect-keyword (cdr rest) "CONSTRAINT")))
-                    (if (dbms-error-p r-constraint)
-                        r-constraint
-                        (dbms-parse-add-constraint table-name (dbms-parser-ok-rest r-constraint))))
-                  (dbms-parser-error "ALTER TABLE supports DROP/ADD CONSTRAINT" rest)))))))
+                  (let ((after-add (cdr rest)))
+                    (if (and (not (null after-add)) (dbms-token-is-keyword-p (first after-add) "CONSTRAINT"))
+                        (let ((r-constraint (dbms-expect-keyword after-add "CONSTRAINT")))
+                          (if (dbms-error-p r-constraint)
+                              r-constraint
+                              (dbms-parse-add-constraint table-name (dbms-parser-ok-rest r-constraint))))
+                        (if (and (not (null after-add)) (dbms-token-is-keyword-p (first after-add) "COLUMN"))
+                            (dbms-parse-add-column table-name (cdr after-add))
+                            (dbms-parse-add-column table-name after-add))))
+                  (dbms-parser-error "ALTER TABLE supports DROP CONSTRAINT / ADD CONSTRAINT / ADD COLUMN" rest)))))))
 
 (defun dbms-parse-insert (tokens)
   (let ((r-table (dbms-expect-identifier tokens)))
