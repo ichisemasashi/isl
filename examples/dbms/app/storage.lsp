@@ -421,6 +421,15 @@
       (append (dbms-page-row-list-from-slots (third (dbms-page-pair-page (car pages))))
               (dbms-page-file-row-list (cdr pages)))))
 
+(defun dbms-page-empty-p (page)
+  (= (dbms-count-used-slots (third page)) 0))
+
+(defun dbms-page-file-empty-page-count (pages)
+  (if (null pages)
+      0
+      (+ (if (dbms-page-empty-p (dbms-page-pair-page (car pages))) 1 0)
+         (dbms-page-file-empty-page-count (cdr pages)))))
+
 (defun dbms-max-number-list (xs cur)
   (if (null xs)
       cur
@@ -517,14 +526,46 @@
       (setq rest (cdr rest)))
     (dbms-make-table-state table-name rows (+ max-rid 1))))
 
-(defun dbms-storage-table-pages-stats (table-name)
-  (let* ((pf (dbms-storage-load-table-pages-file table-name))
-         (pages (dbms-data-page-file-pages pf))
-         (free-pages (dbms-data-page-file-free-pages pf)))
-    (list (list "page-count" (length pages))
+(defun dbms-storage-table-pages-stats-from-file (pf)
+  (let* ((pages (dbms-data-page-file-pages pf))
+         (free-pages (dbms-data-page-file-free-pages pf))
+         (page-count (length pages))
+         (row-count (length (dbms-page-file-row-list pages)))
+         (empty-page-count (dbms-page-file-empty-page-count pages))
+         (slot-capacity *dbms-data-page-slot-capacity*)
+         (total-slot-count (* page-count slot-capacity))
+         (used-slot-count row-count)
+         (free-slot-count (- total-slot-count used-slot-count))
+         (dead-tuple-count (* empty-page-count slot-capacity))
+         (fragmentation-ratio (if (= page-count 0) 0 (/ empty-page-count page-count))))
+    (list (list "page-count" page-count)
           (list "free-page-count" (length free-pages))
+          (list "empty-page-count" empty-page-count)
           (list "next-page-id" (dbms-data-page-file-next-page-id pf))
-          (list "row-count" (length (dbms-page-file-row-list pages))))))
+          (list "row-count" row-count)
+          (list "slot-capacity" slot-capacity)
+          (list "total-slot-count" total-slot-count)
+          (list "used-slot-count" used-slot-count)
+          (list "free-slot-count" free-slot-count)
+          (list "dead-tuple-count" dead-tuple-count)
+          (list "fragmentation-ratio" fragmentation-ratio))))
+
+(defun dbms-storage-table-pages-stats (table-name)
+  (dbms-storage-table-pages-stats-from-file (dbms-storage-load-table-pages-file table-name)))
+
+(defun dbms-storage-vacuum-table-pages (table-name)
+  (let* ((loaded (dbms-storage-load-table-pages-file table-name))
+         (before (dbms-storage-table-pages-stats-from-file loaded))
+         (rows (dbms-page-file-row-list (dbms-data-page-file-pages loaded)))
+         ;; Compaction builds from a fresh file so empty historical pages are dropped.
+         (compacted (dbms-data-page-file-repack-with-rows (dbms-storage-new-page-file) rows))
+         (saved (dbms-storage-save-table-pages-file table-name compacted))
+         (after (dbms-storage-table-pages-stats-from-file compacted)))
+    (if (dbms-error-p saved)
+        saved
+        (list (list "table" table-name)
+              (list "before" before)
+              (list "after" after)))))
 
 (defun dbms-storage-load-table-rows (table-name)
   (if (or (null table-name) (string= table-name ""))

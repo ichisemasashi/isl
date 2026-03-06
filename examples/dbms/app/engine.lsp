@@ -317,7 +317,8 @@
               (eq kind 'create-table-wiki)
               (eq kind 'create-index)
               (eq kind 'alter-table)
-              (eq kind 'analyze))
+              (eq kind 'analyze)
+              (eq kind 'vacuum))
           'X
           '())))
 
@@ -330,7 +331,8 @@
                 (eq kind 'create-table-wiki)
                 (eq kind 'create-index)
                 (eq kind 'alter-table)
-                (eq kind 'analyze))
+                (eq kind 'analyze)
+                (eq kind 'vacuum))
             "__catalog__"
             ""))))
 
@@ -784,7 +786,8 @@
       (eq kind 'create-table-wiki)
       (eq kind 'create-index)
       (eq kind 'alter-table)
-      (eq kind 'analyze)))
+      (eq kind 'analyze)
+      (eq kind 'vacuum)))
 
 (defun dbms-stmt-kind-read-p (kind)
   (or (eq kind 'select)
@@ -1556,6 +1559,49 @@
           (if (dbms-error-p saved)
               (dbms-make-result 'error saved)
               (dbms-make-result-ok 'ok))))))
+
+(defun dbms-engine-vacuum-report-row (report)
+  (let* ((table-name (dbms-assoc-get report "table"))
+         (before (dbms-assoc-get report "before"))
+         (after (dbms-assoc-get report "after"))
+         (before-frag (dbms-assoc-get before "fragmentation-ratio"))
+         (after-frag (dbms-assoc-get after "fragmentation-ratio"))
+         (before-empty (dbms-assoc-get before "empty-page-count"))
+         (after-empty (dbms-assoc-get after "empty-page-count"))
+         (before-dead (dbms-assoc-get before "dead-tuple-count"))
+         (after-dead (dbms-assoc-get after "dead-tuple-count")))
+    (list (list table-name
+                before-frag
+                after-frag
+                (- before-empty after-empty)
+                (- before-dead after-dead)))))
+
+(defun dbms-engine-vacuum (catalog stmt)
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/not-implemented "VACUUM in active transaction is not supported" 'VACUUM)
+      (let* ((payload (third stmt))
+             (target (dbms-assoc-get payload "table"))
+             (table-names (if (or (null target) (not (stringp target)) (string= target ""))
+                              (dbms-catalog-table-names catalog)
+                              (list target)))
+             (rest table-names)
+             (failed '())
+             (rows '()))
+        (while (and (null failed) (not (null rest)))
+          (let ((name (car rest))
+                (table-def (dbms-catalog-find-table catalog (car rest))))
+            (if (null table-def)
+                (setq failed (dbms-make-error 'dbms/table-not-found "table not found" name))
+                (let ((report (dbms-storage-vacuum-table-pages name)))
+                  (if (dbms-error-p report)
+                      (setq failed report)
+                      (setq rows (append rows (dbms-engine-vacuum-report-row report)))))))
+          (setq rest (cdr rest)))
+        (if (dbms-error-p failed)
+            (dbms-make-result 'error failed)
+            (dbms-make-result-rows
+             '("table" "before-frag" "after-frag" "reclaimed-pages" "reclaimed-dead-tuples")
+             rows)))))
 
 (defun dbms-explain-rows-for-select (table-name scan-col idx-entry plan-details where-pred order-by limit-n)
   (list (list "target-table" table-name)
@@ -2354,6 +2400,7 @@
      ((eq kind 'create-table-wiki) (dbms-engine-create-table-wiki catalog stmt))
      ((eq kind 'create-index) (dbms-engine-create-index catalog stmt))
      ((eq kind 'analyze) (dbms-engine-analyze catalog stmt))
+     ((eq kind 'vacuum) (dbms-engine-vacuum catalog stmt))
      ((eq kind 'explain) (dbms-engine-explain catalog stmt))
      ((eq kind 'alter-table) (dbms-engine-alter-table catalog stmt))
      ((eq kind 'insert) (dbms-engine-insert catalog stmt))

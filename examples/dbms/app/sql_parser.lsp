@@ -1070,6 +1070,14 @@
                     r-table
                     (dbms-parser-ok (dbms-make-stmt 'analyze (list (list "table" (dbms-parser-ok-value r-table))))
                                     (dbms-parser-ok-rest r-table))))))
+         ((dbms-token-is-keyword-p tok "VACUUM")
+          (if (null (cdr tokens))
+              (dbms-parser-ok (dbms-make-stmt 'vacuum (list (list "table" '()))) '())
+              (let ((r-table (dbms-expect-identifier (cdr tokens))))
+                (if (dbms-error-p r-table)
+                    r-table
+                    (dbms-parser-ok (dbms-make-stmt 'vacuum (list (list "table" (dbms-parser-ok-value r-table))))
+                                    (dbms-parser-ok-rest r-table))))))
          ((dbms-token-is-keyword-p tok "EXPLAIN")
           (let ((r-inner (dbms-parse-statement (cdr tokens))))
             (if (dbms-error-p r-inner)
