@@ -17,6 +17,9 @@
 (defun dbms-storage-table-path (table-name)
   (string-append (dbms-storage-root) "/table_" table-name ".lspdata"))
 
+(defun dbms-storage-table-pages-path (table-name)
+  (string-append (dbms-storage-root) "/table_" table-name ".pages.lspdata"))
+
 (defun dbms-storage-wal-path ()
   (string-append (dbms-storage-root) "/wal.log"))
 
@@ -148,7 +151,11 @@
           (dbms-make-error 'dbms/invalid-representation "table-state must be dbms-table-state" table-state)
           (if (not (string= (second table-state) table-name))
               (dbms-make-error 'dbms/invalid-representation "table-state name mismatch" (list table-name table-state))
-              (dbms-storage-atomic-replace (dbms-storage-table-path table-name) table-state)))))
+              (let ((saved (dbms-storage-atomic-replace (dbms-storage-table-path table-name) table-state)))
+                (if (dbms-error-p saved)
+                    saved
+                    (let ((psaved (dbms-storage-save-table-pages table-name (third table-state))))
+                      (if (dbms-error-p psaved) psaved saved))))))))
 
 (defun dbms-storage-wal-committed-txids (records)
   (let ((begun '())
@@ -243,22 +250,308 @@
       (dbms-storage-atomic-replace (dbms-storage-catalog-path) catalog)
       (dbms-make-error 'dbms/invalid-representation "catalog must be dbms-catalog" catalog)))
 
+;; ------------------------------------------------------------------
+;; P4-001: data page storage
+;; ------------------------------------------------------------------
+
+(defglobal *dbms-data-page-size* 4096)
+(defglobal *dbms-data-page-slot-capacity* 64)
+
+(defun dbms-data-page-header-p (v)
+  ;; (dbms-data-page-header <page-id> <lsn> <checksum> <free-space> <flags>)
+  (and (listp v)
+       (= (length v) 6)
+       (eq (first v) 'dbms-data-page-header)
+       (numberp (second v))
+       (> (second v) 0)
+       (numberp (third v))
+       (>= (third v) 0)
+       (numberp (fourth v))
+       (>= (fourth v) 0)
+       (numberp (fifth v))
+       (>= (fifth v) 0)
+       (listp (dbms-sixth v))))
+
+(defun dbms-make-data-page-header (page-id lsn checksum free-space flags)
+  (list 'dbms-data-page-header page-id lsn checksum free-space flags))
+
+(defun dbms-data-page-p (v)
+  ;; (dbms-data-page <header> <slots>)
+  (and (listp v)
+       (= (length v) 3)
+       (eq (first v) 'dbms-data-page)
+       (dbms-data-page-header-p (second v))
+       (listp (third v))))
+
+(defun dbms-make-data-page (header slots)
+  (list 'dbms-data-page header slots))
+
+(defun dbms-data-page-file-p (v)
+  ;; (dbms-data-page-file <version> <page-size> <slot-capacity> <next-page-id> <free-pages> <pages>)
+  (and (listp v)
+       (= (length v) 7)
+       (eq (first v) 'dbms-data-page-file)
+       (numberp (second v))
+       (numberp (third v))
+       (numberp (fourth v))
+       (numberp (fifth v))
+       (> (fifth v) 0)
+       (listp (dbms-sixth v))
+       (listp (dbms-seventh v))))
+
+(defun dbms-make-data-page-file (version page-size slot-capacity next-page-id free-pages pages)
+  (list 'dbms-data-page-file version page-size slot-capacity next-page-id free-pages pages))
+
+(defun dbms-data-page-file-next-page-id (pf) (fifth pf))
+(defun dbms-data-page-file-free-pages (pf) (dbms-sixth pf))
+(defun dbms-data-page-file-pages (pf) (dbms-seventh pf))
+
+(defun dbms-empty-slot-list (n)
+  (if (<= n 0)
+      '()
+      (cons '() (dbms-empty-slot-list (- n 1)))))
+
+(defun dbms-data-page-empty (page-id)
+  (dbms-make-data-page (dbms-make-data-page-header page-id 0 0 *dbms-data-page-slot-capacity* '(free))
+                       (dbms-empty-slot-list *dbms-data-page-slot-capacity*)))
+
+(defun dbms-storage-new-page-file ()
+  (dbms-make-data-page-file 1
+                            *dbms-data-page-size*
+                            *dbms-data-page-slot-capacity*
+                            1
+                            '()
+                            '()))
+
+(defun dbms-page-pair-page-id (p) (first p))
+(defun dbms-page-pair-page (p) (second p))
+
+(defun dbms-find-page-pair (pages page-id)
+  (if (null pages)
+      '()
+      (if (= (dbms-page-pair-page-id (car pages)) page-id)
+          (car pages)
+          (dbms-find-page-pair (cdr pages) page-id))))
+
+(defun dbms-put-page-pair (pages page-id page)
+  (if (null pages)
+      (list (list page-id page))
+      (let ((h (car pages)))
+        (if (= (dbms-page-pair-page-id h) page-id)
+            (cons (list page-id page) (cdr pages))
+            (cons h (dbms-put-page-pair (cdr pages) page-id page))))))
+
+(defun dbms-list-contains-number-p (xs n)
+  (if (null xs)
+      nil
+      (if (= (car xs) n)
+          t
+          (dbms-list-contains-number-p (cdr xs) n))))
+
+(defun dbms-list-add-number-unique (xs n)
+  (if (dbms-list-contains-number-p xs n)
+      xs
+      (append xs (list n))))
+
+(defun dbms-list-remove-number (xs n)
+  (if (null xs)
+      '()
+      (if (= (car xs) n)
+          (dbms-list-remove-number (cdr xs) n)
+          (cons (car xs) (dbms-list-remove-number (cdr xs) n)))))
+
+(defun dbms-slot-free-p (slot)
+  (null slot))
+
+(defun dbms-count-free-slots (slots)
+  (if (null slots)
+      0
+      (+ (if (dbms-slot-free-p (car slots)) 1 0)
+         (dbms-count-free-slots (cdr slots)))))
+
+(defun dbms-count-used-slots (slots)
+  (- (length slots) (dbms-count-free-slots slots)))
+
+(defun dbms-page-checksum (slots)
+  ;; Lightweight deterministic checksum for corruption detection smoke checks.
+  (+ (* 31 (length slots))
+     (dbms-count-used-slots slots)))
+
+(defun dbms-list-set-nth (xs idx v)
+  (if (null xs)
+      '()
+      (if (= idx 0)
+          (cons v (cdr xs))
+          (cons (car xs) (dbms-list-set-nth (cdr xs) (- idx 1) v)))))
+
+(defun dbms-page-find-free-slot-index (slots idx)
+  (if (null slots)
+      -1
+      (if (dbms-slot-free-p (car slots))
+          idx
+          (dbms-page-find-free-slot-index (cdr slots) (+ idx 1)))))
+
+(defun dbms-page-put-row (page row)
+  (let* ((header (second page))
+         (slots (third page))
+         (free-idx (dbms-page-find-free-slot-index slots 0)))
+    (if (< free-idx 0)
+        '()
+        (let* ((new-slots (dbms-list-set-nth slots free-idx row))
+               (free-count (dbms-count-free-slots new-slots))
+               (flags (if (= free-count *dbms-data-page-slot-capacity*) '(free) '()))
+               (new-header (dbms-make-data-page-header (second header)
+                                                       (+ (third header) 1)
+                                                       (dbms-page-checksum new-slots)
+                                                       free-count
+                                                       flags)))
+          (dbms-make-data-page new-header new-slots)))))
+
+(defun dbms-page-row-list-from-slots (slots)
+  (if (null slots)
+      '()
+      (let ((rest (dbms-page-row-list-from-slots (cdr slots))))
+        (if (dbms-slot-free-p (car slots))
+            rest
+            (cons (car slots) rest)))))
+
+(defun dbms-page-file-row-list (pages)
+  (if (null pages)
+      '()
+      (append (dbms-page-row-list-from-slots (third (dbms-page-pair-page (car pages))))
+              (dbms-page-file-row-list (cdr pages)))))
+
+(defun dbms-max-number-list (xs cur)
+  (if (null xs)
+      cur
+      (dbms-max-number-list (cdr xs) (if (> (car xs) cur) (car xs) cur))))
+
+(defun dbms-page-file-page-id-list (pages)
+  (if (null pages)
+      '()
+      (cons (dbms-page-pair-page-id (car pages))
+            (dbms-page-file-page-id-list (cdr pages)))))
+
+(defun dbms-data-page-file-repack-with-rows (page-file rows)
+  (let ((pages (dbms-data-page-file-pages page-file))
+        (free-pages '())
+        (next-id (dbms-data-page-file-next-page-id page-file))
+        (rest rows))
+    ;; Clear existing pages.
+    (dolist (pair pages)
+      (let* ((page-id (dbms-page-pair-page-id pair))
+             (cleared (dbms-data-page-empty page-id)))
+        (setq pages (dbms-put-page-pair pages page-id cleared))
+        (setq free-pages (dbms-list-add-number-unique free-pages page-id))))
+    ;; Place rows, reusing free pages before allocating new pages.
+    (while (not (null rest))
+      (let ((placed nil)
+            (candidates free-pages))
+        (while (and (not placed) (not (null candidates)))
+          (let* ((pid (car candidates))
+                 (pair (dbms-find-page-pair pages pid))
+                 (page (if (null pair) '() (dbms-page-pair-page pair)))
+                 (next-page (if (null page) '() (dbms-page-put-row page (car rest)))))
+            (if (null next-page)
+                nil
+                (progn
+                  (setq pages (dbms-put-page-pair pages pid next-page))
+                  (setq placed t)
+                  (if (= (dbms-count-free-slots (third next-page)) 0)
+                      (setq free-pages (dbms-list-remove-number free-pages pid))
+                      (setq free-pages (dbms-list-add-number-unique free-pages pid))))))
+          (setq candidates (cdr candidates)))
+        (if (not placed)
+            (let* ((pid next-id)
+                   (fresh (dbms-data-page-empty pid))
+                   (used (dbms-page-put-row fresh (car rest))))
+              (setq pages (dbms-put-page-pair pages pid used))
+              (setq next-id (+ next-id 1))
+              (if (= (dbms-count-free-slots (third used)) 0)
+                  nil
+                  (setq free-pages (dbms-list-add-number-unique free-pages pid))))
+            nil))
+      (setq rest (cdr rest)))
+    ;; Recompute free page set from actual pages.
+    (setq free-pages '())
+    (dolist (pair pages)
+      (let* ((pid (dbms-page-pair-page-id pair))
+             (page (dbms-page-pair-page pair))
+             (free-count (dbms-count-free-slots (third page))))
+        (if (> free-count 0)
+            (setq free-pages (dbms-list-add-number-unique free-pages pid))
+            nil)))
+    (dbms-make-data-page-file 1
+                              *dbms-data-page-size*
+                              *dbms-data-page-slot-capacity*
+                              next-id
+                              free-pages
+                              pages)))
+
+(defun dbms-storage-load-table-pages-file (table-name)
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-table-pages-path table-name))))
+    (if (dbms-data-page-file-p raw)
+        raw
+        (dbms-storage-new-page-file))))
+
+(defun dbms-storage-save-table-pages-file (table-name page-file)
+  (if (dbms-data-page-file-p page-file)
+      (dbms-storage-atomic-replace (dbms-storage-table-pages-path table-name) page-file)
+      (dbms-make-error 'dbms/invalid-representation "page-file must be dbms-data-page-file" page-file)))
+
+(defun dbms-storage-save-table-pages (table-name rows)
+  (let* ((loaded (dbms-storage-load-table-pages-file table-name))
+         (repacked (dbms-data-page-file-repack-with-rows loaded rows)))
+    (dbms-storage-save-table-pages-file table-name repacked)))
+
+(defun dbms-storage-load-table-rows-from-pages (table-name)
+  (let* ((pf (dbms-storage-load-table-pages-file table-name))
+         (rows (dbms-page-file-row-list (dbms-data-page-file-pages pf)))
+         (max-rid 0)
+         (rest rows))
+    (while (not (null rest))
+      (let ((rid (second (car rest))))
+        (if (and (numberp rid) (> rid max-rid))
+            (setq max-rid rid)
+            nil))
+      (setq rest (cdr rest)))
+    (dbms-make-table-state table-name rows (+ max-rid 1))))
+
+(defun dbms-storage-table-pages-stats (table-name)
+  (let* ((pf (dbms-storage-load-table-pages-file table-name))
+         (pages (dbms-data-page-file-pages pf))
+         (free-pages (dbms-data-page-file-free-pages pf)))
+    (list (list "page-count" (length pages))
+          (list "free-page-count" (length free-pages))
+          (list "next-page-id" (dbms-data-page-file-next-page-id pf))
+          (list "row-count" (length (dbms-page-file-row-list pages))))))
+
 (defun dbms-storage-load-table-rows (table-name)
   (if (or (null table-name) (string= table-name ""))
       (dbms-make-error 'dbms/invalid-representation "table-name must be non-empty string" table-name)
-      (let* ((path (dbms-storage-table-path table-name))
-             (raw (dbms-storage-read-sexpr-file path)))
-        (if (null raw)
-            (dbms-make-table-state table-name '() 1)
-            (if (dbms-table-state-p raw)
-                raw
-                (dbms-make-table-state table-name '() 1))))))
+      (let* ((pages-path (dbms-storage-table-pages-path table-name))
+             (legacy-path (dbms-storage-table-path table-name))
+             (has-pages (not (null (probe-file pages-path))))
+             (raw (if has-pages
+                      (dbms-storage-load-table-rows-from-pages table-name)
+                      (dbms-storage-read-sexpr-file legacy-path))))
+        (if (dbms-table-state-p raw)
+            raw
+            (if (null raw)
+                (dbms-make-table-state table-name '() 1)
+                (if (dbms-table-state-p raw)
+                    raw
+                    (dbms-make-table-state table-name '() 1)))))))
 
 (defun dbms-storage-save-table-rows (table-name rows)
   (if (or (null table-name) (string= table-name ""))
       (dbms-make-error 'dbms/invalid-representation "table-name must be non-empty string" table-name)
       (let ((state (dbms-make-table-state table-name rows (+ (length rows) 1))))
-        (dbms-storage-atomic-replace (dbms-storage-table-path table-name) state))))
+        (let ((saved (dbms-storage-atomic-replace (dbms-storage-table-path table-name) state)))
+          (if (dbms-error-p saved)
+              saved
+              (let ((psaved (dbms-storage-save-table-pages table-name rows)))
+                (if (dbms-error-p psaved) psaved saved)))))))
 
 ;; ------------------------------------------------------------------
 ;; B+Tree index storage (P3-002)
