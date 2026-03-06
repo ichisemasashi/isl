@@ -28,6 +28,8 @@
          (ast-select (dbms-parse-sql "SELECT id, title FROM pages WHERE id >= 1 ORDER BY title DESC;"))
          (ast-update (dbms-parse-sql "UPDATE pages SET title='new', published=FALSE WHERE id = 1;"))
          (ast-delete (dbms-parse-sql "DELETE FROM pages WHERE id != 2;"))
+         (ast-alter-not-valid (dbms-parse-sql "ALTER TABLE pages ADD CONSTRAINT chk_title CHECK (title != '') NOT VALID;"))
+         (ast-validate (dbms-parse-sql "ALTER TABLE pages VALIDATE CONSTRAINT chk_title;"))
          (err (dbms-parse-sql "SELECT FROM pages;")))
 
     (assert-true "create parses" (dbms-ast-p ast-create))
@@ -65,6 +67,17 @@
     (assert-true "delete kind" (eq (stmt-kind (first-stmt ast-delete)) 'delete))
     (assert-true "delete where present"
                  (not (null (payload-get (stmt-payload (first-stmt ast-delete)) "where"))))
+
+    (assert-true "alter add constraint not valid parses" (dbms-ast-p ast-alter-not-valid))
+    (assert-true "alter add constraint kind" (eq (stmt-kind (first-stmt ast-alter-not-valid)) 'alter-table))
+    (assert-true "alter add constraint action"
+                 (string= (payload-get (stmt-payload (first-stmt ast-alter-not-valid)) "action") "ADD-CONSTRAINT"))
+    (assert-true "alter add constraint not-valid flag"
+                 (payload-get (stmt-payload (first-stmt ast-alter-not-valid)) "not-valid"))
+
+    (assert-true "alter validate constraint parses" (dbms-ast-p ast-validate))
+    (assert-true "alter validate action"
+                 (string= (payload-get (stmt-payload (first-stmt ast-validate)) "action") "VALIDATE-CONSTRAINT"))
 
     (assert-true "invalid SQL parse error" (dbms-error-p err))
     (assert-true "invalid SQL error code" (eq (dbms-error-code err) 'dbms/parse-error))
