@@ -26,6 +26,75 @@
 (defglobal *dbms-tx-isolation-level* 'READ-COMMITTED)
 (defglobal *dbms-session-user* "admin")
 (defglobal *dbms-session-active-role* "")
+(defglobal *dbms-metrics* '())
+(defglobal *dbms-catalog-cache* '())
+(defglobal *dbms-table-cache* '())
+
+(defun dbms-metrics-empty ()
+  (list 'dbms-metrics
+        (list (list "started-at" (get-universal-time))
+              (list "tx-committed" 0)
+              (list "tx-aborted" 0)
+              (list "lock-wait-events" 0)
+              (list "lock-conflicts" 0)
+              (list "deadlock-detected" 0)
+              (list "cache-hit" 0)
+              (list "cache-miss" 0)
+              (list "recovery-lag-records" 0)
+              (list "last-recovery-at" 0))))
+
+(defun dbms-metrics-p (v)
+  (and (listp v)
+       (= (length v) 2)
+       (eq (first v) 'dbms-metrics)
+       (listp (second v))))
+
+(defun dbms-metrics-pairs ()
+  (if (dbms-metrics-p *dbms-metrics*)
+      (second *dbms-metrics*)
+      (second (dbms-metrics-empty))))
+
+(defun dbms-metrics-get (name)
+  (let ((v (dbms-assoc-get (dbms-metrics-pairs) name)))
+    (if (numberp v) v 0)))
+
+(defun dbms-metrics-put! (name value)
+  (setq *dbms-metrics*
+        (list 'dbms-metrics
+              (dbms-assoc-put (dbms-metrics-pairs) name value)))
+  value)
+
+(defun dbms-metrics-inc! (name)
+  (dbms-metrics-put! name (+ (dbms-metrics-get name) 1)))
+
+(defun dbms-metrics-set-recovery-lag! (lag)
+  (let ((n (if (and (numberp lag) (>= lag 0)) lag 0)))
+    (dbms-metrics-put! "recovery-lag-records" n)
+    (dbms-metrics-put! "last-recovery-at" (get-universal-time))
+    n))
+
+(defun dbms-engine-reset-metrics! ()
+  (setq *dbms-metrics* (dbms-metrics-empty))
+  *dbms-metrics*)
+
+(defun dbms-engine-clear-read-cache! ()
+  (setq *dbms-catalog-cache* '())
+  (setq *dbms-table-cache* '())
+  'ok)
+
+(defun dbms-engine-cache-table-get (table-name)
+  (dbms-assoc-get *dbms-table-cache* table-name))
+
+(defun dbms-engine-cache-table-put! (table-name table-state)
+  (setq *dbms-table-cache* (dbms-assoc-put *dbms-table-cache* table-name table-state))
+  table-state)
+
+(defun dbms-engine-recovery-lag-from-report (recovered)
+  (if (and (listp recovered)
+           (eq (first recovered) 'dbms-recovery-report))
+      (let ((v (dbms-assoc-get (cdr recovered) "applied-data-record-count")))
+        (if (numberp v) v 0))
+      0))
 
 (defun dbms-engine-init ()
   (let ((recovered (dbms-storage-recover-from-wal))
@@ -34,12 +103,14 @@
         (auth '()))
     ;; Startup path: ensure tx runtime state is reset and txid monotonicity survives restart.
     (dbms-engine-reset-tx-state)
+    (dbms-engine-reset-metrics!)
+    (dbms-engine-clear-read-cache!)
     (if (> next-tx-id 1)
         (setq *dbms-next-tx-id* next-tx-id)
         nil)
     (if (dbms-error-p recovered)
         (format t "[dbms-recovery-warning] ~A~%" recovered)
-        nil)
+        (dbms-metrics-set-recovery-lag! (dbms-engine-recovery-lag-from-report recovered)))
     (setq auth (dbms-auth-ensure-bootstrap (dbms-storage-load-auth-meta)))
     (dbms-storage-save-auth-meta auth)
     (if (and (stringp session-user) (not (string= session-user "")))
@@ -348,6 +419,7 @@
   (if (dbms-tx-active-p)
       (let ((tx-id (dbms-tx-state-tx-id *dbms-tx-state*)))
         (dbms-engine-audit-tx-abort tx-id 'lock-conflict (list *dbms-lock-table* *dbms-wait-for-graph*))
+        (dbms-metrics-inc! "tx-aborted")
         (dbms-lock-release-tx tx-id)
         (dbms-wfg-clear-tx tx-id)
         (setq *dbms-tx-state* (dbms-make-tx-state 'aborted
@@ -479,9 +551,14 @@
 
 (defun dbms-lock-make-conflict-or-deadlock (txid table-name holders message)
   (dbms-wfg-add-edges txid holders)
+  (dbms-metrics-inc! "lock-wait-events")
   (if (dbms-wfg-deadlock-after-wait-p txid holders)
-      (dbms-make-error 'dbms/deadlock-detected "deadlock detected" (list table-name txid holders))
-      (dbms-make-error 'dbms/lock-conflict message (list table-name txid holders))))
+      (progn
+        (dbms-metrics-inc! "deadlock-detected")
+        (dbms-make-error 'dbms/deadlock-detected "deadlock detected" (list table-name txid holders)))
+      (progn
+        (dbms-metrics-inc! "lock-conflicts")
+        (dbms-make-error 'dbms/lock-conflict message (list table-name txid holders)))))
 
 (defun dbms-lock-holders-only-tx-p (txid holders)
   (if (null holders)
@@ -635,14 +712,29 @@
 (defun dbms-engine-current-catalog ()
   (if (and (dbms-tx-active-p) (dbms-catalog-p *dbms-tx-staged-catalog*))
       *dbms-tx-staged-catalog*
-      (dbms-catalog-load)))
+      (if (dbms-catalog-p *dbms-catalog-cache*)
+          (progn
+            (dbms-metrics-inc! "cache-hit")
+            *dbms-catalog-cache*)
+          (let ((loaded (dbms-catalog-load)))
+            (dbms-metrics-inc! "cache-miss")
+            (if (dbms-catalog-p loaded)
+                (setq *dbms-catalog-cache* loaded)
+                nil)
+            loaded))))
 
 (defun dbms-engine-save-catalog (catalog)
   (if (dbms-tx-active-p)
       (progn
         (setq *dbms-tx-staged-catalog* catalog)
         catalog)
-      (dbms-catalog-save catalog)))
+      (let ((saved (dbms-catalog-save catalog)))
+        (if (dbms-error-p saved)
+            saved
+            (progn
+              (setq *dbms-catalog-cache* catalog)
+              (setq *dbms-table-cache* '())
+              saved)))))
 
 (defun dbms-engine-load-table-rows (table-name)
   (if (dbms-tx-active-p)
@@ -656,7 +748,17 @@
                           (dbms-put-staged-table-state table-name state *dbms-tx-staged-table-states*))
                     state)))
             (second pair)))
-      (dbms-storage-load-table-rows table-name)))
+      (let ((cached (dbms-engine-cache-table-get table-name)))
+        (if (dbms-table-state-p cached)
+            (progn
+              (dbms-metrics-inc! "cache-hit")
+              cached)
+            (let ((loaded (dbms-storage-load-table-rows table-name)))
+              (dbms-metrics-inc! "cache-miss")
+              (if (dbms-table-state-p loaded)
+                  (dbms-engine-cache-table-put! table-name loaded)
+                  nil)
+              loaded)))))
 
 (defun dbms-engine-save-table-rows (table-name rows)
   (if (dbms-tx-active-p)
@@ -664,7 +766,13 @@
         (setq *dbms-tx-staged-table-states*
               (dbms-put-staged-table-state table-name state *dbms-tx-staged-table-states*))
         state)
-      (dbms-storage-save-table-rows table-name rows)))
+      (let ((saved (dbms-storage-save-table-rows table-name rows))
+            (state (dbms-make-table-state table-name rows (+ (length rows) 1))))
+        (if (dbms-error-p saved)
+            saved
+            (progn
+              (dbms-engine-cache-table-put! table-name state)
+              saved)))))
 
 (defun dbms-assoc-get (pairs key)
   (if (or (null pairs) (not (listp pairs)))
@@ -2870,6 +2978,7 @@
               (if (dbms-error-p failed)
             (progn
               (dbms-engine-audit-tx-abort tx-id 'commit-failed failed)
+              (dbms-metrics-inc! "tx-aborted")
               (setq *dbms-tx-state* (dbms-make-tx-state 'aborted
                                                         (dbms-tx-state-read-set *dbms-tx-state*)
                                                         (dbms-tx-state-write-set *dbms-tx-state*)
@@ -2877,6 +2986,7 @@
               (dbms-lock-release-tx tx-id)
               (dbms-make-result 'error failed))
             (progn
+              (dbms-metrics-inc! "tx-committed")
               (setq *dbms-tx-state* (dbms-make-tx-state 'committed
                                                         (dbms-tx-state-read-set *dbms-tx-state*)
                                                         (dbms-tx-state-write-set *dbms-tx-state*)
@@ -2892,6 +3002,7 @@
         (setq *dbms-tx-staged-table-states* '())
         (setq *dbms-tx-staged-auth* '())
         (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
+        (dbms-engine-clear-read-cache!)
         result)
       (progn
         (setq *dbms-tx-state* (dbms-tx-state-idle))
@@ -2938,6 +3049,7 @@
                                                   (dbms-tx-state-read-set *dbms-tx-state*)
                                                   (dbms-tx-state-write-set *dbms-tx-state*)
                                                   tx-id))
+        (dbms-metrics-inc! "tx-aborted")
         (dbms-engine-audit-tx-abort tx-id 'rollback (if (dbms-error-p failed) failed 'ok))
         (dbms-lock-release-tx tx-id)
         (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
@@ -2948,6 +3060,7 @@
         (setq *dbms-tx-staged-catalog* '())
         (setq *dbms-tx-staged-table-states* '())
         (setq *dbms-tx-staged-auth* '())
+        (dbms-engine-clear-read-cache!)
         (if (dbms-error-p failed)
             (dbms-make-result 'error failed)
             (dbms-make-result-ok 'ok)))
@@ -3035,7 +3148,53 @@
                                                   nil))))))))))
                     (if (dbms-error-p failed)
                         (dbms-make-result 'error failed)
-                        (dbms-make-result-ok dump-path)))))))))
+                        (progn
+                          (dbms-engine-clear-read-cache!)
+                          (dbms-make-result-ok dump-path))))))))))
+
+(defun dbms-admin-metrics-reset ()
+  (dbms-engine-reset-metrics!)
+  (dbms-engine-clear-read-cache!)
+  (dbms-make-result-ok 'ok))
+
+(defun dbms-admin-metrics ()
+  (let* ((started-at (dbms-metrics-get "started-at"))
+         (committed (dbms-metrics-get "tx-committed"))
+         (aborted (dbms-metrics-get "tx-aborted"))
+         (lock-waits (dbms-metrics-get "lock-wait-events"))
+         (lock-conflicts (dbms-metrics-get "lock-conflicts"))
+         (deadlocks (dbms-metrics-get "deadlock-detected"))
+         (cache-hit (dbms-metrics-get "cache-hit"))
+         (cache-miss (dbms-metrics-get "cache-miss"))
+         (recovery-lag (dbms-metrics-get "recovery-lag-records"))
+         (last-recovery-at (dbms-metrics-get "last-recovery-at"))
+         (elapsed (- (get-universal-time) started-at))
+         (tx-per-sec 0)
+         (total-cache 0)
+         (cache-hit-ratio 0))
+    (if (<= elapsed 0)
+        (setq elapsed 1)
+        nil)
+    (setq tx-per-sec (/ committed elapsed))
+    (setq total-cache (+ cache-hit cache-miss))
+    (if (> total-cache 0)
+        (setq cache-hit-ratio (/ cache-hit total-cache))
+        (setq cache-hit-ratio 0))
+    (dbms-make-result-rows
+     '("metric" "value")
+     (list (list "tx-per-sec" tx-per-sec)
+           (list "tx-committed" committed)
+           (list "tx-aborted" aborted)
+           (list "lock-wait-events" lock-waits)
+           (list "lock-conflicts" lock-conflicts)
+           (list "deadlock-detected" deadlocks)
+           (list "cache-hit" cache-hit)
+           (list "cache-miss" cache-miss)
+           (list "cache-hit-ratio" cache-hit-ratio)
+           (list "recovery-lag-records" recovery-lag)
+           (list "last-recovery-at" last-recovery-at)
+           (list "started-at" started-at)
+           (list "uptime-sec" elapsed)))))
 
 (defun dbms-admin-backup-create ()
   (if (dbms-tx-active-p)
@@ -3088,6 +3247,7 @@
                                                   (dbms-make-result 'error saved-wal)
                                                   (progn
                                                     (dbms-engine-reset-tx-state)
+                                                    (dbms-engine-clear-read-cache!)
                                                     (setq *dbms-next-tx-id* (+ (dbms-storage-wal-max-txid) 1))
                                                     (dbms-make-result-ok
                                                      (list generation-id

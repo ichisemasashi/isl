@@ -733,3 +733,35 @@ DBMS 置換時は等価ワークフローを提供する:
 ### 19.3 受け入れ基準
 - 世代作成後に追加変更を行い、`restore-pitr` で任意の `target-lsn` へ戻せる。
 - 復旧後データが `target-lsn` 時点の committed 状態と一致する。
+
+## 20. P4-008 メトリクス公開
+運用監視向けに DBMS 内部メトリクスを取得可能にする。
+
+### 20.1 公開API
+- `dbms-admin-metrics`
+  - `("metric" "value")` 形式の rows 結果を返す。
+- `dbms-admin-metrics-reset`
+  - メトリクスカウンタを初期化する（テスト/検証用途）。
+
+### 20.2 必須メトリクス
+- `tx-per-sec`
+- `lock-wait-events`
+- `cache-hit-ratio`
+- `recovery-lag-records`
+
+加えて運用解析のために、以下の生カウンタも返してよい:
+- `tx-committed`, `tx-aborted`
+- `lock-conflicts`, `deadlock-detected`
+- `cache-hit`, `cache-miss`
+
+### 20.3 計測点
+- tx:
+  - `COMMIT` 成功で committed を加算
+  - `ROLLBACK` / conflict abort / commit failure で aborted を加算
+- lock:
+  - lock 競合発生時に wait/conflict を加算
+  - deadlock 検出時に deadlock を加算
+- cache:
+  - catalog/table の read cache で hit/miss を加算
+- recovery:
+  - 起動 recovery で適用した data record 件数を `recovery-lag-records` として保持
