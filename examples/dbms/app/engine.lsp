@@ -652,6 +652,81 @@
                                                   (fourth bounds)
                                                   limit-n)))))))
 
+(defun dbms-table-stats-from-def (table-def)
+  (dbms-assoc-get (dbms-table-def-options table-def) "stats"))
+
+(defun dbms-stats-row-count (stats fallback-row-count)
+  (let ((n (dbms-assoc-get stats "row-count")))
+    (if (and (numberp n) (>= n 0))
+        n
+        fallback-row-count)))
+
+(defun dbms-stats-find-column-entry (col-stats col-name)
+  (if (null col-stats)
+      '()
+      (if (string= (dbms-assoc-get (car col-stats) "name") col-name)
+          (car col-stats)
+          (dbms-stats-find-column-entry (cdr col-stats) col-name))))
+
+(defun dbms-int-log2-ceil (n)
+  (let ((x (if (< n 1) 1 n))
+        (k 0)
+        (v 1))
+    (while (< v x)
+      (setq v (* v 2))
+      (setq k (+ k 1)))
+    k))
+
+(defun dbms-optimizer-estimate-selectivity (table-def scan-col eq-probe range-probe)
+  (let* ((stats (dbms-table-stats-from-def table-def))
+         (col-stats (dbms-assoc-get stats "columns"))
+         (entry (dbms-stats-find-column-entry col-stats scan-col))
+         (ndv (dbms-assoc-get entry "ndv")))
+    (if (not (null eq-probe))
+        (if (and (numberp ndv) (> ndv 0))
+            (/ 1 ndv)
+            0.1)
+        (if (not (null range-probe))
+            0.3
+            1.0))))
+
+(defun dbms-optimizer-choose-scan (table-def fallback-row-count can-use-index eq-probe range-probe order-col scan-col order-dir limit-n)
+  ;; Returns: "INDEX" | "SEQ"
+  (if (not can-use-index)
+      "SEQ"
+      (let* ((stats (dbms-table-stats-from-def table-def))
+             (row-count (dbms-stats-row-count stats fallback-row-count))
+             (sel (dbms-optimizer-estimate-selectivity table-def scan-col eq-probe range-probe))
+             (expected-rows (if (<= row-count 0) 0 (truncate (* row-count sel))))
+             (expected-rows (if (< expected-rows 1) 1 expected-rows))
+             (limit-effective (and (numberp limit-n) (> limit-n 0)
+                                   (or (null order-col)
+                                       (string= order-col "")
+                                       (and (string= order-col scan-col)
+                                            (eq order-dir 'ASC)))))
+             (rows-via-index (if limit-effective
+                                 (if (< limit-n expected-rows) limit-n expected-rows)
+                                 expected-rows))
+             (seq-base row-count)
+             (seq-sort (if (and (not (null order-col))
+                                (not (string= order-col ""))
+                                (> row-count 1))
+                           (* row-count (dbms-int-log2-ceil row-count))
+                           0))
+             (seq-cost (+ seq-base seq-sort))
+             (idx-seek (+ 1 (dbms-int-log2-ceil (if (> row-count 1) row-count 1))))
+             (idx-fetch rows-via-index)
+             (idx-sort (if (and (not (null order-col))
+                                (not (string= order-col ""))
+                                (not (string= order-col scan-col))
+                                (> rows-via-index 1))
+                           (* rows-via-index (dbms-int-log2-ceil rows-via-index))
+                           0))
+             (idx-cost (+ idx-seek idx-fetch idx-sort)))
+        (if (<= row-count 64)
+            "SEQ"
+            (if (< idx-cost seq-cost) "INDEX" "SEQ")))))
+
 (defun dbms-string-in-list-p (s xs)
   (if (null xs)
       nil
@@ -1608,15 +1683,25 @@
                                   (if (not (null range-probe))
                                       (dbms-probe-type-compatible-p table-cols (first range-probe) (fourth range-probe))
                                       t)))
-               (use-index (and (not (dbms-tx-active-p))
-                               (not (null idx-entry))
-                               (dbms-btree-index-p idx-data)
-                               probe-type-ok
-                               (or (null where-pred)
-                                   (and (not (null eq-probe))
-                                        (string= scan-col (first eq-probe)))
-                                   (and (not (null range-probe))
-                                        (string= scan-col (first range-probe))))))
+               (index-eligible (and (not (dbms-tx-active-p))
+                                    (not (null idx-entry))
+                                    (dbms-btree-index-p idx-data)
+                                    probe-type-ok
+                                    (or (null where-pred)
+                                        (and (not (null eq-probe))
+                                             (string= scan-col (first eq-probe)))
+                                        (and (not (null range-probe))
+                                             (string= scan-col (first range-probe))))))
+               (plan-choice (dbms-optimizer-choose-scan table-def
+                                                        (length all-rows)
+                                                        index-eligible
+                                                        eq-probe
+                                                        range-probe
+                                                        order-col
+                                                        scan-col
+                                                        order-dir
+                                                        limit-n))
+               (use-index (and index-eligible (string= plan-choice "INDEX")))
                (idx-rids (if use-index
                              (dbms-index-rids-for-where idx-data
                                                         where-pred
