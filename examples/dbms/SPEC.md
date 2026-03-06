@@ -765,3 +765,24 @@ DBMS 置換時は等価ワークフローを提供する:
   - catalog/table の read cache で hit/miss を加算
 - recovery:
   - 起動 recovery で適用した data record 件数を `recovery-lag-records` として保持
+
+## 21. P4-009 Runbook/障害手順書
+担当交代時でも復旧可能にするため、運用 Runbook を固定する。
+
+### 21.1 ドキュメント
+- `examples/dbms/RUNBOOK.md` を運用手順の正本とする。
+- 最低限、以下を含める:
+  - 障害分類（可用性/性能/権限）
+  - 一次切り分け手順
+  - 復旧手順（backup generation + PITR を含む）
+  - RTO/RPO 想定値
+
+### 21.2 演習可能性契約
+- Runbook の内容は `tests/prod` の drill で再現可能であること。
+- `examples/dbms/tests/prod/t220-runbook-drill.lsp` を標準 drill とし、以下を検証する:
+  - メトリクス取得（`tx/sec`, `lock wait`, `cache hit`, `recovery lag`）
+  - バックアップ作成と `restore-pitr` による復元
+  - 監査ログによる tx abort 確認
+
+### 21.3 受け入れ基準
+- Runbook のみを参照して drill テストが成功する。
