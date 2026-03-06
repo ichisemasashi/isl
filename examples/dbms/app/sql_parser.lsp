@@ -1070,6 +1070,12 @@
                     r-table
                     (dbms-parser-ok (dbms-make-stmt 'analyze (list (list "table" (dbms-parser-ok-value r-table))))
                                     (dbms-parser-ok-rest r-table))))))
+         ((dbms-token-is-keyword-p tok "EXPLAIN")
+          (let ((r-inner (dbms-parse-statement (cdr tokens))))
+            (if (dbms-error-p r-inner)
+                r-inner
+                (dbms-parser-ok (dbms-make-stmt 'explain (list (list "statement" (dbms-parser-ok-value r-inner))))
+                                (dbms-parser-ok-rest r-inner)))))
          ((dbms-token-is-keyword-p tok "CREATE")
           (if (null (cdr tokens))
               (dbms-parser-error "CREATE requires TABLE or INDEX" 'eof)

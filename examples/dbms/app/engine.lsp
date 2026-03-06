@@ -307,7 +307,8 @@
             t))))
 
 (defun dbms-stmt-lock-mode (kind)
-  (if (eq kind 'select)
+  (if (or (eq kind 'select)
+          (eq kind 'explain))
       'S
       (if (or (eq kind 'insert)
               (eq kind 'update)
@@ -691,9 +692,27 @@
             1.0))))
 
 (defun dbms-optimizer-choose-scan (table-def fallback-row-count can-use-index eq-probe range-probe order-col scan-col order-dir limit-n)
+  (dbms-assoc-get (dbms-optimizer-plan-details table-def
+                                               fallback-row-count
+                                               can-use-index
+                                               eq-probe
+                                               range-probe
+                                               order-col
+                                               scan-col
+                                               order-dir
+                                               limit-n)
+                  "scan-choice"))
+
+(defun dbms-optimizer-plan-details (table-def fallback-row-count can-use-index eq-probe range-probe order-col scan-col order-dir limit-n)
   ;; Returns: "INDEX" | "SEQ"
   (if (not can-use-index)
-      "SEQ"
+      (list (list "scan-choice" "SEQ")
+            (list "row-count" fallback-row-count)
+            (list "selectivity" 1.0)
+            (list "expected-rows" fallback-row-count)
+            (list "seq-cost" fallback-row-count)
+            (list "index-cost" 999999)
+            (list "reason" "index-not-eligible"))
       (let* ((stats (dbms-table-stats-from-def table-def))
              (row-count (dbms-stats-row-count stats fallback-row-count))
              (sel (dbms-optimizer-estimate-selectivity table-def scan-col eq-probe range-probe))
@@ -722,10 +741,23 @@
                                 (> rows-via-index 1))
                            (* rows-via-index (dbms-int-log2-ceil rows-via-index))
                            0))
-             (idx-cost (+ idx-seek idx-fetch idx-sort)))
-        (if (<= row-count 64)
-            "SEQ"
-            (if (< idx-cost seq-cost) "INDEX" "SEQ")))))
+             (idx-cost (+ idx-seek idx-fetch idx-sort))
+             (choice (if (<= row-count 64)
+                         "SEQ"
+                         (if (< idx-cost seq-cost) "INDEX" "SEQ"))))
+        (list (list "scan-choice" choice)
+              (list "row-count" row-count)
+              (list "selectivity" sel)
+              (list "expected-rows" expected-rows)
+              (list "rows-via-index" rows-via-index)
+              (list "seq-cost" seq-cost)
+              (list "index-cost" idx-cost)
+              (list "limit-effective" (if limit-effective "TRUE" "FALSE"))
+              (list "reason" (if (string= choice "INDEX")
+                                 "index-cost-lower"
+                                 (if (<= row-count 64)
+                                     "small-table-prefers-seq"
+                                     "seq-cost-lower")))))))
 
 (defun dbms-string-in-list-p (s xs)
   (if (null xs)
@@ -755,13 +787,23 @@
       (eq kind 'analyze)))
 
 (defun dbms-stmt-kind-read-p (kind)
-  (eq kind 'select))
+  (or (eq kind 'select)
+      (eq kind 'explain)))
 
 (defun dbms-stmt-table-name (stmt)
-  (let* ((payload (third stmt))
+  (let* ((kind (second stmt))
+         (payload (third stmt))
+         (inner (if (eq kind 'explain) (dbms-assoc-get payload "statement") '()))
+         (inner-name (if (and (dbms-stmt-p inner))
+                         (dbms-stmt-table-name inner)
+                         '()))
          (name-a (dbms-assoc-get payload "table"))
          (name-b (dbms-assoc-get payload "table-name")))
-    (if (null name-a) name-b name-a)))
+    (if (and (eq kind 'explain)
+             (stringp inner-name)
+             (not (string= inner-name "")))
+        inner-name
+        (if (null name-a) name-b name-a))))
 
 (defun dbms-tx-record-statement! (stmt)
   (if (eq (dbms-tx-state-status *dbms-tx-state*) 'active)
@@ -1515,6 +1557,83 @@
               (dbms-make-result 'error saved)
               (dbms-make-result-ok 'ok))))))
 
+(defun dbms-explain-rows-for-select (table-name scan-col idx-entry plan-details where-pred order-by limit-n)
+  (list (list "target-table" table-name)
+        (list "scan-column" scan-col)
+        (list "index-name" (if (null idx-entry) "N/A" (dbms-index-entry-name idx-entry)))
+        (list "where" (format nil "~A" where-pred))
+        (list "order-by" (format nil "~A" order-by))
+        (list "limit" (format nil "~A" limit-n))
+        (list "scan-choice" (dbms-assoc-get plan-details "scan-choice"))
+        (list "reason" (dbms-assoc-get plan-details "reason"))
+        (list "row-count" (dbms-assoc-get plan-details "row-count"))
+        (list "selectivity" (dbms-assoc-get plan-details "selectivity"))
+        (list "expected-rows" (dbms-assoc-get plan-details "expected-rows"))
+        (list "rows-via-index" (dbms-assoc-get plan-details "rows-via-index"))
+        (list "seq-cost" (dbms-assoc-get plan-details "seq-cost"))
+        (list "index-cost" (dbms-assoc-get plan-details "index-cost"))
+        (list "limit-effective" (dbms-assoc-get plan-details "limit-effective"))))
+
+(defun dbms-engine-explain-select (catalog stmt)
+  (let* ((payload (third stmt))
+         (table-name (dbms-assoc-get payload "table"))
+         (where-pred (dbms-assoc-get payload "where"))
+         (order-by (dbms-assoc-get payload "order-by"))
+         (limit-n (dbms-assoc-get payload "limit"))
+         (table-def (dbms-catalog-find-table catalog table-name)))
+    (if (null table-def)
+        (dbms-make-result-error 'dbms/table-not-found "table not found" table-name)
+        (let* ((state (dbms-engine-load-table-rows table-name))
+               (all-rows (third state))
+               (table-cols (dbms-table-def-columns table-def))
+               (eq-probe (dbms-predicate-simple-indexable-eq where-pred))
+               (range-probe (dbms-predicate-simple-indexable-range where-pred))
+               (order-col (if (null order-by) "" (first order-by)))
+               (order-dir (if (null order-by) 'ASC (second order-by)))
+               (scan-col (if (and (not (null range-probe)) (stringp (first range-probe)))
+                             (first range-probe)
+                             (if (and (not (null eq-probe)) (stringp (first eq-probe)))
+                                 (first eq-probe)
+                                 (if (null order-by) "" order-col))))
+               (idx-entry (if (or (dbms-tx-active-p) (string= scan-col ""))
+                              '()
+                              (dbms-table-find-index-by-column (dbms-table-indexes table-def) scan-col)))
+               (idx-data (if (null idx-entry)
+                             '()
+                             (dbms-storage-load-index table-name (dbms-index-entry-name idx-entry))))
+               (probe-type-ok (if (not (null eq-probe))
+                                  (dbms-probe-type-compatible-p table-cols (first eq-probe) (third eq-probe))
+                                  (if (not (null range-probe))
+                                      (dbms-probe-type-compatible-p table-cols (first range-probe) (fourth range-probe))
+                                      t)))
+               (index-eligible (and (not (dbms-tx-active-p))
+                                    (not (null idx-entry))
+                                    (dbms-btree-index-p idx-data)
+                                    probe-type-ok
+                                    (or (null where-pred)
+                                        (and (not (null eq-probe))
+                                             (string= scan-col (first eq-probe)))
+                                        (and (not (null range-probe))
+                                             (string= scan-col (first range-probe))))))
+               (plan-details (dbms-optimizer-plan-details table-def
+                                                          (length all-rows)
+                                                          index-eligible
+                                                          eq-probe
+                                                          range-probe
+                                                          order-col
+                                                          scan-col
+                                                          order-dir
+                                                          limit-n))
+               (rows (dbms-explain-rows-for-select table-name scan-col idx-entry plan-details where-pred order-by limit-n)))
+          (dbms-make-result-rows '("item" "value") rows)))))
+
+(defun dbms-engine-explain (catalog stmt)
+  (let* ((inner (dbms-assoc-get (third stmt) "statement"))
+         (kind (if (dbms-stmt-p inner) (second inner) '())))
+    (if (eq kind 'select)
+        (dbms-engine-explain-select catalog inner)
+        (dbms-make-result-error 'dbms/not-implemented "EXPLAIN supports SELECT only in P3-007" kind))))
+
 (defun dbms-engine-create-table (catalog stmt)
   (let* ((table-def (third stmt))
          (created (dbms-catalog-create-table catalog table-def)))
@@ -1692,15 +1811,16 @@
                                              (string= scan-col (first eq-probe)))
                                         (and (not (null range-probe))
                                              (string= scan-col (first range-probe))))))
-               (plan-choice (dbms-optimizer-choose-scan table-def
-                                                        (length all-rows)
-                                                        index-eligible
-                                                        eq-probe
-                                                        range-probe
-                                                        order-col
-                                                        scan-col
-                                                        order-dir
-                                                        limit-n))
+               (plan-details (dbms-optimizer-plan-details table-def
+                                                          (length all-rows)
+                                                          index-eligible
+                                                          eq-probe
+                                                          range-probe
+                                                          order-col
+                                                          scan-col
+                                                          order-dir
+                                                          limit-n))
+               (plan-choice (dbms-assoc-get plan-details "scan-choice"))
                (use-index (and index-eligible (string= plan-choice "INDEX")))
                (idx-rids (if use-index
                              (dbms-index-rids-for-where idx-data
@@ -2234,6 +2354,7 @@
      ((eq kind 'create-table-wiki) (dbms-engine-create-table-wiki catalog stmt))
      ((eq kind 'create-index) (dbms-engine-create-index catalog stmt))
      ((eq kind 'analyze) (dbms-engine-analyze catalog stmt))
+     ((eq kind 'explain) (dbms-engine-explain catalog stmt))
      ((eq kind 'alter-table) (dbms-engine-alter-table catalog stmt))
      ((eq kind 'insert) (dbms-engine-insert catalog stmt))
      ((eq kind 'select) (dbms-engine-select catalog stmt))
@@ -2246,7 +2367,8 @@
         nil)
     ;; READ COMMITTED: release shared read locks at statement boundary.
     (if (and (dbms-tx-active-p)
-             (eq kind 'select)
+             (or (eq kind 'select)
+                 (eq kind 'explain))
              (eq *dbms-tx-isolation-level* 'READ-COMMITTED)
              (not (string= target "")))
         (dbms-lock-release-shared-on-table (dbms-tx-state-tx-id *dbms-tx-state*) target)
