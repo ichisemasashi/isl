@@ -705,3 +705,31 @@ DBMS 置換時は等価ワークフローを提供する:
 - ローテーション:
   - 環境変数 `DBMS_AUDIT_MAX_ENTRIES` を上限として現行ログ件数を制限する。
   - 上限超過分は `audit.archive.<seq>.lspdata` へ退避する。
+
+## 19. P4-007 バックアップ世代管理 + PITR
+運用復旧を目的に、base backup と WAL archive による世代管理と時点復旧（PITR）を提供する。
+
+### 19.1 永続形式
+- バックアップディレクトリ: `<storage-root>/backups/`
+- 世代インデックス: `backups/index.lspdata`
+  - `(dbms-backup-index 1 <generations>)`
+- 世代エントリ:
+  - `(dbms-backup-generation <id> <created-at> <base-lsn> <max-lsn> <dump-path> <wal-path>)`
+- 世代実体:
+  - `backups/backup.<id>.dump.lspdata`
+  - `backups/backup.<id>.wal.lspdata`
+
+### 19.2 API 契約
+- `dbms-admin-backup-create`
+  - 現在の catalog/table 状態を base dump として保存し、同時点までの WAL を archive する。
+  - 成功時に生成された `dbms-backup-generation` を返す。
+- `dbms-admin-backup-list`
+  - 既存世代一覧（`<generations>`）を返す。
+- `dbms-admin-restore-pitr <generation-id> <target-lsn>`
+  - 対象 generation の dump を restore 後、archive WAL を `target-lsn` まで再生する。
+  - `target-lsn` は `[base-lsn, max-lsn]` の範囲でなければならない。
+  - 復旧完了後、`wal.log` は `target-lsn` までで切り詰める（再起動後の再適用で復旧点が進まないこと）。
+
+### 19.3 受け入れ基準
+- 世代作成後に追加変更を行い、`restore-pitr` で任意の `target-lsn` へ戻せる。
+- 復旧後データが `target-lsn` 時点の committed 状態と一致する。

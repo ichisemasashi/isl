@@ -5,6 +5,7 @@
 
 (defglobal *dbms-storage-tmp-seq* 0)
 (defglobal *dbms-audit-archive-seq* 0)
+(defglobal *dbms-backup-generation-seq* 0)
 
 (defun dbms-storage-root ()
   (let ((v (getenv "DBMS_STORAGE_ROOT")))
@@ -30,6 +31,18 @@
 (defun dbms-storage-audit-path ()
   (string-append (dbms-storage-root) "/audit.lspdata"))
 
+(defun dbms-storage-backup-root ()
+  (string-append (dbms-storage-root) "/backups"))
+
+(defun dbms-storage-backup-index-path ()
+  (string-append (dbms-storage-backup-root) "/index.lspdata"))
+
+(defun dbms-storage-backup-dump-path (generation-id)
+  (string-append (dbms-storage-backup-root) "/backup." generation-id ".dump.lspdata"))
+
+(defun dbms-storage-backup-wal-path (generation-id)
+  (string-append (dbms-storage-backup-root) "/backup." generation-id ".wal.lspdata"))
+
 (defun dbms-storage-audit-archive-path (seq)
   (string-append (dbms-storage-root) "/audit.archive." (format nil "~A" seq) ".lspdata"))
 
@@ -51,6 +64,9 @@
 
 (defun dbms-storage-ensure-root ()
   (= (system (string-append "mkdir -p " (dbms-storage-shell-quote (dbms-storage-root)))) 0))
+
+(defun dbms-storage-ensure-backup-root ()
+  (= (system (string-append "mkdir -p " (dbms-storage-shell-quote (dbms-storage-backup-root)))) 0))
 
 (defun dbms-storage-next-tmp-path (target-path)
   (setq *dbms-storage-tmp-seq* (+ *dbms-storage-tmp-seq* 1))
@@ -181,6 +197,9 @@
           nil))
     (+ mx 1)))
 
+(defun dbms-storage-wal-max-lsn ()
+  (- (dbms-storage-wal-next-lsn) 1))
+
 (defun dbms-storage-wal-append-record (txid kind op payload)
   (if (not (dbms-storage-ensure-root))
       (dbms-make-error 'dbms/not-implemented "failed to create storage root for WAL" (dbms-storage-root))
@@ -201,6 +220,147 @@
                 (if (dbms-error-p saved)
                     saved
                     record)))))))
+
+(defun dbms-backup-generation-p (v)
+  ;; (dbms-backup-generation <id> <created-at> <base-lsn> <max-lsn> <dump-path> <wal-path>)
+  (and (listp v)
+       (= (length v) 7)
+       (eq (first v) 'dbms-backup-generation)
+       (stringp (second v))
+       (numberp (third v))
+       (numberp (fourth v))
+       (numberp (fifth v))
+       (stringp (dbms-sixth v))
+       (stringp (dbms-seventh v))
+       (<= (fourth v) (fifth v))))
+
+(defun dbms-backup-generation-id (entry)
+  (if (dbms-backup-generation-p entry) (second entry) ""))
+
+(defun dbms-backup-generation-base-lsn (entry)
+  (if (dbms-backup-generation-p entry) (fourth entry) 0))
+
+(defun dbms-backup-generation-max-lsn (entry)
+  (if (dbms-backup-generation-p entry) (fifth entry) 0))
+
+(defun dbms-backup-generation-dump-path (entry)
+  (if (dbms-backup-generation-p entry) (dbms-sixth entry) ""))
+
+(defun dbms-backup-generation-wal-path (entry)
+  (if (dbms-backup-generation-p entry) (dbms-seventh entry) ""))
+
+(defun dbms-make-backup-generation (generation-id created-at base-lsn max-lsn dump-path wal-path)
+  (list 'dbms-backup-generation generation-id created-at base-lsn max-lsn dump-path wal-path))
+
+(defun dbms-backup-index-p (v)
+  ;; (dbms-backup-index <version> <generations>)
+  (and (listp v)
+       (= (length v) 3)
+       (eq (first v) 'dbms-backup-index)
+       (numberp (second v))
+       (listp (third v))))
+
+(defun dbms-storage-empty-backup-index ()
+  (list 'dbms-backup-index 1 '()))
+
+(defun dbms-storage-backup-index-generations (index)
+  (if (dbms-backup-index-p index)
+      (third index)
+      '()))
+
+(defun dbms-storage-load-backup-index ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-backup-index-path))))
+    (if (dbms-backup-index-p raw)
+        raw
+        (dbms-storage-empty-backup-index))))
+
+(defun dbms-storage-save-backup-index (index)
+  (if (not (dbms-backup-index-p index))
+      (dbms-make-error 'dbms/invalid-representation "backup index must be dbms-backup-index" index)
+      (if (not (dbms-storage-ensure-backup-root))
+          (dbms-make-error 'dbms/not-implemented "failed to create backup root" (dbms-storage-backup-root))
+          (dbms-storage-atomic-replace (dbms-storage-backup-index-path) index))))
+
+(defun dbms-storage-next-backup-generation-id ()
+  (setq *dbms-backup-generation-seq* (+ *dbms-backup-generation-seq* 1))
+  (string-append (format nil "~A" (get-universal-time))
+                 "-"
+                 (format nil "~A" *dbms-backup-generation-seq*)))
+
+(defun dbms-storage-create-backup-generation (dump-payload)
+  (if (not (dbms-storage-ensure-backup-root))
+      (dbms-make-error 'dbms/not-implemented "failed to create backup root" (dbms-storage-backup-root))
+      (let* ((generation-id (dbms-storage-next-backup-generation-id))
+             (created-at (get-universal-time))
+             (wal-records (dbms-storage-load-wal-records))
+             (max-lsn (dbms-storage-wal-max-lsn))
+             (dump-path (dbms-storage-backup-dump-path generation-id))
+             (wal-path (dbms-storage-backup-wal-path generation-id))
+             (entry (dbms-make-backup-generation generation-id
+                                                created-at
+                                                max-lsn
+                                                max-lsn
+                                                dump-path
+                                                wal-path))
+             (saved-dump (dbms-storage-atomic-replace dump-path dump-payload)))
+        (if (dbms-error-p saved-dump)
+            saved-dump
+            (let ((saved-wal (dbms-storage-atomic-replace wal-path wal-records)))
+              (if (dbms-error-p saved-wal)
+                  saved-wal
+                  (let* ((index (dbms-storage-load-backup-index))
+                         (next-index (list 'dbms-backup-index
+                                           (second index)
+                                           (append (dbms-storage-backup-index-generations index)
+                                                   (list entry))))
+                         (saved-index (dbms-storage-save-backup-index next-index)))
+                    (if (dbms-error-p saved-index)
+                        saved-index
+                        entry))))))))
+
+(defun dbms-storage-list-backup-generations ()
+  (dbms-storage-backup-index-generations (dbms-storage-load-backup-index)))
+
+(defun dbms-storage-find-backup-generation (generation-id)
+  (let ((rest (dbms-storage-list-backup-generations))
+        (found '()))
+    (while (and (null found) (not (null rest)))
+      (if (string= (dbms-backup-generation-id (car rest)) generation-id)
+          (setq found (car rest))
+          nil)
+      (setq rest (cdr rest)))
+    found))
+
+(defun dbms-storage-load-backup-wal-records (generation-id)
+  (let ((entry (dbms-storage-find-backup-generation generation-id)))
+    (if (null entry)
+        (dbms-make-error 'dbms/invalid-representation "backup generation not found" generation-id)
+        (let ((raw (dbms-storage-read-sexpr-file (dbms-backup-generation-wal-path entry)))
+              (out '())
+              (done nil))
+          (if (or (null raw) (not (listp raw)))
+              (setq raw '())
+              nil)
+          (while (and (not done) (not (null raw)))
+            (if (dbms-wal-record-p (car raw))
+                (progn
+                  (setq out (append out (list (car raw))))
+                  (setq raw (cdr raw)))
+                (setq done t)))
+          out))))
+
+(defun dbms-storage-save-wal-records (records)
+  (if (not (listp records))
+      (dbms-make-error 'dbms/invalid-representation "records must be list" records)
+      (let ((rest records)
+            (ok t))
+        (while (and ok (not (null rest)))
+          (if (dbms-wal-record-p (car rest))
+              (setq rest (cdr rest))
+              (setq ok nil)))
+        (if (not ok)
+            (dbms-make-error 'dbms/invalid-representation "records must contain dbms-wal-record only" records)
+            (dbms-storage-atomic-replace (dbms-storage-wal-path) records)))))
 
 (defun dbms-storage-save-table-state (table-name table-state)
   (if (or (null table-name) (string= table-name ""))
@@ -307,6 +467,37 @@
         (list 'dbms-recovery-report
               (list "committed-tx-count" (length committed))
               (list "applied-data-record-count" applied)))))
+
+(defun dbms-storage-replay-wal-records-up-to-lsn (records target-lsn)
+  (if (or (not (numberp target-lsn)) (< target-lsn 0))
+      (dbms-make-error 'dbms/invalid-representation "target-lsn must be non-negative number" target-lsn)
+      (let ((rest records)
+            (selected '())
+            (applied 0)
+            (failed '())
+            (committed '()))
+        (while (not (null rest))
+          (if (<= (dbms-wal-record-lsn (car rest)) target-lsn)
+              (setq selected (append selected (list (car rest))))
+              nil)
+          (setq rest (cdr rest)))
+        (setq committed (dbms-storage-wal-committed-txids selected))
+        (dolist (r selected)
+          (if (dbms-error-p failed)
+              nil
+              (if (and (eq (fourth r) 'data)
+                       (dbms-number-in-list-p (third r) committed))
+                  (let ((saved (dbms-storage-wal-apply-data-record r)))
+                    (if (dbms-error-p saved)
+                        (setq failed saved)
+                        (setq applied (+ applied 1))))
+                  nil)))
+        (if (dbms-error-p failed)
+            failed
+            (list 'dbms-recovery-report
+                  (list "target-lsn" target-lsn)
+                  (list "committed-tx-count" (length committed))
+                  (list "applied-data-record-count" applied))))))
 
 (defun dbms-storage-atomic-replace (target-path value)
   (if (not (dbms-storage-ensure-root))
