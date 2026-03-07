@@ -786,3 +786,20 @@ DBMS 置換時は等価ワークフローを提供する:
 
 ### 21.3 受け入れ基準
 - Runbook のみを参照して drill テストが成功する。
+
+## 22. ST-001 並行実行テストハーネス
+同時実行回帰の再現性を上げるため、固定ステップ実行のハーネスを提供する。
+
+### 22.1 ハーネス方針
+- `examples/dbms/tests/prod/helpers/concurrency_harness.lsp` を標準ハーネスとする。
+- 仮想セッションを txid で表現し、`lock acquire/release` をステップ実行する。
+- 失敗時は tx timeline（ステップ番号、操作、期待値/実測）を必ず出力する。
+
+### 22.2 固定シナリオ
+- dirty-read guard
+- lost-update guard
+- deadlock detection
+
+### 22.3 受け入れ基準
+- `examples/dbms/tests/prod/t230-concurrency-harness.lsp` が両経路で安定再現する。
+- 失敗時に timeline だけで原因切り分け可能な情報が出る。
