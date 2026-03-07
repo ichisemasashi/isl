@@ -3157,6 +3157,17 @@
   (dbms-engine-clear-read-cache!)
   (dbms-make-result-ok 'ok))
 
+(defun dbms-admin-checkpoint-info ()
+  (dbms-make-result-ok (dbms-storage-load-checkpoint-meta)))
+
+(defun dbms-admin-checkpoint-create ()
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot checkpoint while transaction is active" *dbms-tx-state*)
+      (let ((checkpoint (dbms-storage-create-checkpoint)))
+        (if (dbms-error-p checkpoint)
+            (dbms-make-result 'error checkpoint)
+            (dbms-make-result-ok checkpoint)))))
+
 (defun dbms-admin-metrics ()
   (let* ((started-at (dbms-metrics-get "started-at"))
          (committed (dbms-metrics-get "tx-committed"))

@@ -25,6 +25,9 @@
 (defun dbms-storage-wal-path ()
   (string-append (dbms-storage-root) "/wal.log"))
 
+(defun dbms-storage-checkpoint-path ()
+  (string-append (dbms-storage-root) "/checkpoint.lspdata"))
+
 (defun dbms-storage-auth-path ()
   (string-append (dbms-storage-root) "/auth.lspdata"))
 
@@ -144,6 +147,45 @@
       xs
       (dbms-storage-list-drop (cdr xs) (- n 1))))
 
+(defun dbms-checkpoint-meta-p (v)
+  ;; (dbms-checkpoint <version> <last-lsn> <created-at> <max-txid>)
+  (and (listp v)
+       (= (length v) 5)
+       (eq (first v) 'dbms-checkpoint)
+       (numberp (second v))
+       (numberp (third v))
+       (>= (third v) 0)
+       (numberp (fourth v))
+       (numberp (fifth v))
+       (>= (fifth v) 0)))
+
+(defun dbms-make-checkpoint-meta (version last-lsn created-at max-txid)
+  (list 'dbms-checkpoint version last-lsn created-at max-txid))
+
+(defun dbms-storage-empty-checkpoint-meta ()
+  (dbms-make-checkpoint-meta 1 0 0 0))
+
+(defun dbms-storage-load-checkpoint-meta ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-checkpoint-path))))
+    (if (dbms-checkpoint-meta-p raw)
+        raw
+        (dbms-storage-empty-checkpoint-meta))))
+
+(defun dbms-storage-save-checkpoint-meta (checkpoint)
+  (if (dbms-checkpoint-meta-p checkpoint)
+      (dbms-storage-atomic-replace (dbms-storage-checkpoint-path) checkpoint)
+      (dbms-make-error 'dbms/invalid-representation "checkpoint must be dbms-checkpoint" checkpoint)))
+
+(defun dbms-storage-checkpoint-last-lsn (checkpoint)
+  (if (dbms-checkpoint-meta-p checkpoint)
+      (third checkpoint)
+      0))
+
+(defun dbms-storage-checkpoint-max-txid (checkpoint)
+  (if (dbms-checkpoint-meta-p checkpoint)
+      (fifth checkpoint)
+      0))
+
 (defun dbms-wal-record-p (v)
   (and (listp v)
        (= (length v) 6)
@@ -181,7 +223,11 @@
 
 (defun dbms-storage-wal-max-txid ()
   (let ((records (dbms-storage-load-wal-records))
-        (mx 0))
+        (mx 0)
+        (checkpoint (dbms-storage-load-checkpoint-meta)))
+    (if (> (dbms-storage-checkpoint-max-txid checkpoint) mx)
+        (setq mx (dbms-storage-checkpoint-max-txid checkpoint))
+        nil)
     (dolist (r records)
       (if (> (third r) mx)
           (setq mx (third r))
@@ -362,6 +408,28 @@
             (dbms-make-error 'dbms/invalid-representation "records must contain dbms-wal-record only" records)
             (dbms-storage-atomic-replace (dbms-storage-wal-path) records)))))
 
+(defun dbms-storage-wal-records-after-lsn (records lsn)
+  (let ((rest records)
+        (out '()))
+    (while (not (null rest))
+      (if (> (dbms-wal-record-lsn (car rest)) lsn)
+          (setq out (append out (list (car rest))))
+          nil)
+      (setq rest (cdr rest)))
+    out))
+
+(defun dbms-storage-create-checkpoint ()
+  (let* ((last-lsn (dbms-storage-wal-max-lsn))
+         (max-txid (dbms-storage-wal-max-txid))
+         (checkpoint (dbms-make-checkpoint-meta 1
+                                                last-lsn
+                                                (get-universal-time)
+                                                max-txid))
+         (saved (dbms-storage-save-checkpoint-meta checkpoint)))
+    (if (dbms-error-p saved)
+        saved
+        checkpoint)))
+
 (defun dbms-storage-save-table-state (table-name table-state)
   (if (or (null table-name) (string= table-name ""))
       (dbms-make-error 'dbms/invalid-representation "table-name must be non-empty string" table-name)
@@ -448,7 +516,10 @@
                 (dbms-make-error 'dbms/invalid-representation "unsupported WAL data op" op))))))
 
 (defun dbms-storage-recover-from-wal ()
-  (let* ((records (dbms-storage-load-wal-records))
+  (let* ((all-records (dbms-storage-load-wal-records))
+         (checkpoint (dbms-storage-load-checkpoint-meta))
+         (checkpoint-lsn (dbms-storage-checkpoint-last-lsn checkpoint))
+         (records (dbms-storage-wal-records-after-lsn all-records checkpoint-lsn))
          (committed (dbms-storage-wal-committed-txids records))
          (applied 0)
          (failed '()))
@@ -465,6 +536,9 @@
     (if (dbms-error-p failed)
         failed
         (list 'dbms-recovery-report
+              (list "checkpoint-lsn" checkpoint-lsn)
+              (list "wal-total-record-count" (length all-records))
+              (list "wal-scanned-record-count" (length records))
               (list "committed-tx-count" (length committed))
               (list "applied-data-record-count" applied)))))
 

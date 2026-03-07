@@ -803,3 +803,31 @@ DBMS 置換時は等価ワークフローを提供する:
 ### 22.3 受け入れ基準
 - `examples/dbms/tests/prod/t230-concurrency-harness.lsp` が両経路で安定再現する。
 - 失敗時に timeline だけで原因切り分け可能な情報が出る。
+
+## 23. ST-002 WAL/復旧の運用安全化（checkpoint 基礎）
+recovery の運用安全性向上のため、checkpoint メタを導入する。
+
+### 23.1 永続形式
+- `checkpoint.lspdata`:
+  - `(dbms-checkpoint <version> <last-lsn> <created-at> <max-txid>)`
+- `<last-lsn>` は checkpoint 時点で整合確定済みの最大 LSN
+- `<max-txid>` は txid 単調増加維持に利用する
+
+### 23.2 API
+- `dbms-admin-checkpoint-create`
+  - active tx 中は拒否
+  - checkpoint メタを作成し返す
+- `dbms-admin-checkpoint-info`
+  - 現在の checkpoint メタを返す
+
+### 23.3 recovery 規約
+- 起動 recovery は `checkpoint.last-lsn` より後の WAL を対象にする。
+- recovery report は最低限以下を含む:
+  - `checkpoint-lsn`
+  - `wal-total-record-count`
+  - `wal-scanned-record-count`
+  - `applied-data-record-count`
+
+### 23.4 受け入れ基準
+- checkpoint 作成後の recovery で scan 開始位置が checkpoint 基準になる。
+- txid は checkpoint 後も再利用されない（単調増加）。
