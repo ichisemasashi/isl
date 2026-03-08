@@ -283,6 +283,9 @@
 (defun dbms-backup-generation-id (entry)
   (if (dbms-backup-generation-p entry) (second entry) ""))
 
+(defun dbms-backup-generation-created-at (entry)
+  (if (dbms-backup-generation-p entry) (third entry) 0))
+
 (defun dbms-backup-generation-base-lsn (entry)
   (if (dbms-backup-generation-p entry) (fourth entry) 0))
 
@@ -333,6 +336,98 @@
                  "-"
                  (format nil "~A" *dbms-backup-generation-seq*)))
 
+(defun dbms-storage-backup-retention-keep-count ()
+  (let ((v (getenv "DBMS_BACKUP_KEEP_COUNT")))
+    (if (and (stringp v)
+             (not (string= v ""))
+             (dbms-storage-digits-only-p v))
+        (dbms-storage-parse-nonnegative-int v)
+        0)))
+
+(defun dbms-storage-backup-retention-keep-days ()
+  (let ((v (getenv "DBMS_BACKUP_KEEP_DAYS")))
+    (if (and (stringp v)
+             (not (string= v ""))
+             (dbms-storage-digits-only-p v))
+        (dbms-storage-parse-nonnegative-int v)
+        0)))
+
+(defun dbms-storage-string-in-list-p (s xs)
+  (if (null xs)
+      nil
+      (if (string= s (car xs))
+          t
+          (dbms-storage-string-in-list-p s (cdr xs)))))
+
+(defun dbms-storage-string-list-add-unique (xs s)
+  (if (dbms-storage-string-in-list-p s xs)
+      xs
+      (append xs (list s))))
+
+(defun dbms-storage-backup-delete-generation-files (entry)
+  (let ((dump-path (dbms-backup-generation-dump-path entry))
+        (wal-path (dbms-backup-generation-wal-path entry)))
+    (if (not (null (probe-file dump-path)))
+        (system (string-append "rm -f " (dbms-storage-shell-quote dump-path)))
+        nil)
+    (if (not (null (probe-file wal-path)))
+        (system (string-append "rm -f " (dbms-storage-shell-quote wal-path)))
+        nil)
+    'ok))
+
+(defun dbms-storage-prune-backup-generations (keep-count keep-days)
+  (if (or (not (numberp keep-count))
+          (not (numberp keep-days))
+          (< keep-count 0)
+          (< keep-days 0))
+      (dbms-make-error 'dbms/invalid-representation "keep-count/keep-days must be non-negative numbers" (list keep-count keep-days))
+      (let* ((index (dbms-storage-load-backup-index))
+             (entries (dbms-storage-backup-index-generations index))
+             (total (length entries))
+             (overflow (if (and (> keep-count 0) (> total keep-count))
+                           (- total keep-count)
+                           0))
+             (cutoff (if (> keep-days 0)
+                         (- (get-universal-time) (* keep-days 86400))
+                         0))
+             (rest entries)
+             (i 0)
+             (delete-ids '())
+             (kept '())
+             (deleted 0))
+        (while (not (null rest))
+          (let* ((entry (car rest))
+                 (gid (dbms-backup-generation-id entry))
+                 (created-at (dbms-backup-generation-created-at entry))
+                 (delete-by-count (< i overflow))
+                 (delete-by-days (if (> keep-days 0)
+                                     (< created-at cutoff)
+                                     nil)))
+            (if (or delete-by-count delete-by-days)
+                (setq delete-ids (dbms-storage-string-list-add-unique delete-ids gid))
+                nil))
+          (setq i (+ i 1))
+          (setq rest (cdr rest)))
+        (setq rest entries)
+        (while (not (null rest))
+          (let* ((entry (car rest))
+                 (gid (dbms-backup-generation-id entry)))
+            (if (dbms-storage-string-in-list-p gid delete-ids)
+                (progn
+                  (dbms-storage-backup-delete-generation-files entry)
+                  (setq deleted (+ deleted 1)))
+                (setq kept (append kept (list entry)))))
+          (setq rest (cdr rest)))
+        (let* ((next-index (list 'dbms-backup-index (second index) kept))
+               (saved (dbms-storage-save-backup-index next-index)))
+          (if (dbms-error-p saved)
+              saved
+              (list 'dbms-backup-prune-report
+                    (list "before-count" total)
+                    (list "after-count" (length kept))
+                    (list "deleted-count" deleted)
+                    (list "deleted-ids" delete-ids)))))))
+
 (defun dbms-storage-create-backup-generation (dump-payload)
   (if (not (dbms-storage-ensure-backup-root))
       (dbms-make-error 'dbms/not-implemented "failed to create backup root" (dbms-storage-backup-root))
@@ -362,7 +457,12 @@
                          (saved-index (dbms-storage-save-backup-index next-index)))
                     (if (dbms-error-p saved-index)
                         saved-index
-                        entry))))))))
+                        (let ((pruned (dbms-storage-prune-backup-generations
+                                       (dbms-storage-backup-retention-keep-count)
+                                       (dbms-storage-backup-retention-keep-days))))
+                          (if (dbms-error-p pruned)
+                              pruned
+                              entry))))))))))
 
 (defun dbms-storage-list-backup-generations ()
   (dbms-storage-backup-index-generations (dbms-storage-load-backup-index)))

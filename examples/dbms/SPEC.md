@@ -831,3 +831,23 @@ recovery の運用安全性向上のため、checkpoint メタを導入する。
 ### 23.4 受け入れ基準
 - checkpoint 作成後の recovery で scan 開始位置が checkpoint 基準になる。
 - txid は checkpoint 後も再利用されない（単調増加）。
+
+## 24. ST-003 PITR 運用強化（世代保持ポリシー）
+バックアップ世代の増加を運用可能範囲に抑えるため、保持ポリシーと prune API を導入する。
+
+### 24.1 保持ポリシー
+- 環境変数:
+  - `DBMS_BACKUP_KEEP_COUNT`（非負整数、`0` は無制限）
+  - `DBMS_BACKUP_KEEP_DAYS`（非負整数日、`0` は日数制限なし）
+- `dbms-admin-backup-create` 成功後、保持ポリシーを自動適用して古い世代を prune する。
+
+### 24.2 管理API
+- `dbms-admin-backup-prune <keep-count> <keep-days>`
+  - 明示的に prune を実行する。
+  - 返却: `(dbms-backup-prune-report ...)`
+- prune 対象は index と実体ファイル（dump/wal）の両方から削除する。
+
+### 24.3 受け入れ基準
+- keep-count 超過時に最古世代から削除される。
+- keep-days 超過時に期限切れ世代が削除される。
+- 削除後に index とファイル実体が不一致にならない。

@@ -89,6 +89,8 @@
 ## 6. 定常運用
 - 日次:
   - `dbms-admin-backup-create` を実行
+  - 必要に応じて `dbms-admin-backup-prune <keep-count> <keep-days>` を実行
+  - 既定ポリシーは `DBMS_BACKUP_KEEP_COUNT` / `DBMS_BACKUP_KEEP_DAYS` で管理
   - 世代一覧を確認
   - 監査ログローテーション状態を確認
 - 週次:
@@ -109,4 +111,3 @@
 - 15分以内に `S1` 復旧不能
 - 同一障害が 24 時間で 2 回以上再発
 - 監査ログ欠損または改ざん疑い
-

@@ -3221,6 +3221,14 @@
 (defun dbms-admin-backup-list ()
   (dbms-make-result-ok (dbms-storage-list-backup-generations)))
 
+(defun dbms-admin-backup-prune (keep-count keep-days)
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot prune backup while transaction is active" *dbms-tx-state*)
+      (let ((report (dbms-storage-prune-backup-generations keep-count keep-days)))
+        (if (dbms-error-p report)
+            (dbms-make-result 'error report)
+            (dbms-make-result-ok report)))))
+
 (defun dbms-admin-restore-pitr (generation-id target-lsn)
   (if (or (null generation-id) (not (stringp generation-id)) (string= generation-id ""))
       (dbms-make-result-error 'dbms/invalid-representation "generation-id must be non-empty string" generation-id)
