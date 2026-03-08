@@ -516,6 +516,45 @@
         t
         nil)))
 
+(defun dbms-mvcc-enabled-p ()
+  (let ((v (getenv "DBMS_ENABLE_MVCC")))
+    (if (and (stringp v)
+             (or (string= v "1")
+                 (string= v "true")
+                 (string= v "TRUE")
+                 (string= v "on")
+                 (string= v "ON")))
+        t
+        nil)))
+
+(defun dbms-string-in-list-p (s xs)
+  (if (null xs)
+      nil
+      (if (string= s (car xs))
+          t
+          (dbms-string-in-list-p s (cdr xs)))))
+
+(defun dbms-mvcc-staged-states-keep-writes-only (staged-states write-set)
+  (if (null staged-states)
+      '()
+      (let* ((h (car staged-states))
+             (name (first h))
+             (rest (dbms-mvcc-staged-states-keep-writes-only (cdr staged-states) write-set)))
+        (if (dbms-string-in-list-p name write-set)
+            (cons h rest)
+            rest))))
+
+(defun dbms-mvcc-prepare-statement-snapshot! ()
+  ;; READ COMMITTED + MVCC: refresh read view per statement while preserving own writes.
+  (if (and (dbms-tx-active-p)
+           (dbms-mvcc-enabled-p)
+           (eq *dbms-tx-isolation-level* 'READ-COMMITTED))
+      (setq *dbms-tx-staged-table-states*
+            (dbms-mvcc-staged-states-keep-writes-only
+             *dbms-tx-staged-table-states*
+             (dbms-tx-state-write-set *dbms-tx-state*)))
+      nil))
+
 (defun dbms-lock-remove-txid-from-holders (txid holders)
   (if (null holders)
       '()
@@ -761,11 +800,16 @@
             t))))
 
 (defun dbms-stmt-lock-mode (kind)
-  (if (or (eq kind 'select)
-          (eq kind 'explain)
-          (eq kind 'update)
+  (if (or (eq kind 'update)
           (eq kind 'delete))
       'S
+      (if (or (eq kind 'select)
+              (eq kind 'explain))
+          (if (and (dbms-mvcc-enabled-p)
+                   (dbms-tx-active-p)
+                   (eq *dbms-tx-isolation-level* 'READ-COMMITTED))
+              '()
+              'S)
       (if (or (eq kind 'insert)
               (eq kind 'create-table)
               (eq kind 'create-table-wiki)
@@ -780,7 +824,7 @@
               (eq kind 'analyze)
               (eq kind 'vacuum))
           'X
-          '())))
+          '()))))
 
 (defun dbms-stmt-lock-target (stmt)
   (let* ((kind (second stmt))
@@ -1336,13 +1380,6 @@
                                  (if (<= row-count 64)
                                      "small-table-prefers-seq"
                                      "seq-cost-lower")))))))
-
-(defun dbms-string-in-list-p (s xs)
-  (if (null xs)
-      nil
-      (if (string= s (car xs))
-          t
-          (dbms-string-in-list-p s (cdr xs)))))
 
 (defun dbms-set-union-strings (xs ys)
   (let ((out xs)
@@ -3439,6 +3476,7 @@
         (lock-res '())
         (authz '())
         (result '()))
+    (dbms-mvcc-prepare-statement-snapshot!)
     (if (dbms-tx-active-p)
         (progn
           (setq mode (dbms-stmt-lock-mode kind))

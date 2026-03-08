@@ -534,6 +534,26 @@ row-key:
 - 環境変数 `DBMS_ENABLE_ROW_LOCKS=0` で SQL 実行経路の row lock 取得を無効化できる
 - 未設定または `1/true/on` の場合は有効
 
+### 14.7.11b MVCC ベース読み取り分離（MT-002）
+`READ COMMITTED` で read/write 干渉を減らすため、MVCC 読み取り規約を追加する。
+
+有効化:
+- 環境変数 `DBMS_ENABLE_MVCC=1|true|on` で有効
+- 未設定/その他値は無効（従来 lock 主体経路）
+
+可視性規約（READ COMMITTED + MVCC 有効時）:
+- `SELECT/EXPLAIN` は table `S` lock を取得しない（read lock elision）
+- statement 開始時に read snapshot を再評価する（statement snapshot）
+- ただし、同一 tx が既に書き込んだ table は tx 内 staged state を優先し、own-write を保持する
+- 未コミット他txの変更は可視化しない
+
+write conflict:
+- `UPDATE/DELETE` の競合判定は `MT-001` の row `X` lock を利用する
+- 同一 row-key の同時更新は `dbms/lock-conflict` または `dbms/deadlock-detected`
+
+SERIALIZABLE:
+- 本段階では既存の lock 保持規約を維持する（保守的実装）
+
 ### 14.7.12 B+Tree ページフォーマット（P3-001）
 index 実体実装（P3-002）に先行して、ページ形式を固定する。
 
