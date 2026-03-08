@@ -612,6 +612,34 @@ entry:
   - leaf/internal entry 型判定
   - capacity 見積り（正値）
 
+### 14.7.13 optimizer 強化（MT-003, JOIN/複合条件）
+`P3-006/P3-007` の最小 optimizer を拡張し、`select-wiki`（JOIN/複合条件）でも
+コスト比較ベースの計画選択情報を返せるようにする。
+
+規約:
+- `EXPLAIN SELECT ...` で inner statement が `select-wiki` の場合も成功し、`("item","value")` 形式で計画詳細を返す
+- `from` 句の table refs を基に、以下を算出する:
+  - `naive-order`（記述順）
+  - `optimized-order`（推定行数昇順）
+  - `chosen-order`（`join-cost` 比較で採用）
+- 推定行数は `ANALYZE` 統計の `row-count` を優先し、無い場合は実行時 row 件数を利用する
+- `where` の複合度を `where-complexity` として返し、`AND/OR/NOT/IN/IS` と比較演算子を反映する
+- 複合 `ORDER BY` は `order-by-items` として可視化する
+
+EXPLAIN 出力（select-wiki）必須キー:
+- `query-kind`
+- `tables`
+- `join-count`
+- `naive-order`
+- `optimized-order`
+- `chosen-order`
+- `join-cost-naive`
+- `join-cost-optimized`
+- `where-complexity`
+- `order-by-items`
+- `limit`
+- `optimizer-version`
+
 ### 14.8 互換・リライト境界
 許容:
 - PostgreSQL 固有機能回避のための、小規模な wiki 側 SQL リライト
