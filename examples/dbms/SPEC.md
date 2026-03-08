@@ -516,6 +516,24 @@ victim ポリシー（現行実装）:
 完了条件:
 - deadlock シナリオで有限時間内に少なくとも 1 tx が abort されること
 
+### 14.7.11a row lock 導入（MT-001, table lock から段階移行）
+`P2-001` の table lock を維持したまま、更新競合判定を row lock へ段階移行する。
+
+規約:
+- tx 実行中の `UPDATE` / `DELETE` は table `S` lock を取得した上で、実際に変更対象となる行ごとに row `X` lock を取得する
+- 同一 table の異なる row-key への `X` lock は両立可
+- 同一 row-key への `X` lock は競合し、`dbms/lock-conflict` もしくは `dbms/deadlock-detected` を返す
+- row lock 競合でも wait-for graph を共有し、cycle 検出は table lock と同一規約で動作する
+- row lock の解放は tx 境界（`COMMIT` / `ROLLBACK` / abort）で実施する
+
+row-key:
+- 初期実装では単一 primary key を row-key として使う
+- PK が無い/複合PKの table は row lock 対象外として table lock のみで保護する
+
+運用ロールバック導線:
+- 環境変数 `DBMS_ENABLE_ROW_LOCKS=0` で SQL 実行経路の row lock 取得を無効化できる
+- 未設定または `1/true/on` の場合は有効
+
 ### 14.7.12 B+Tree ページフォーマット（P3-001）
 index 実体実装（P3-002）に先行して、ページ形式を固定する。
 
