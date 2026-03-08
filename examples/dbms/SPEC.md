@@ -917,3 +917,46 @@ recovery の運用安全性向上のため、checkpoint メタを導入する。
 - keep-count 超過時に最古世代から削除される。
 - keep-days 超過時に期限切れ世代が削除される。
 - 削除後に index とファイル実体が不一致にならない。
+
+## 25. LT-001 レプリケーション（非同期→同期）
+単一ノード障害時の可用性向上のため、WAL shipping + follower apply + manual failover を提供する。
+
+### 25.1 永続メタ
+- `replication.lspdata`:
+  - `(dbms-repl-meta <version> <mode> <followers>)`
+- follower:
+  - `(dbms-repl-follower <id> <root> <last-shipped-lsn> <last-applied-lsn> <sync-state>)`
+- `<mode>`:
+  - `"ASYNC"` or `"SYNC"`
+
+### 25.2 管理API
+- `dbms-admin-replication-set-mode <"ASYNC"|"SYNC">`
+- `dbms-admin-replication-status`
+- `dbms-admin-replication-register-follower <id> <root>`
+  - follower root へ bootstrap dump を適用し、初回 WAL ship/apply を実行する
+- `dbms-admin-replication-ship`
+  - primary WAL/checkpoint を follower root へ配送する
+- `dbms-admin-replication-apply-follower <id>`
+  - follower root で WAL recovery を実行し追従させる
+- `dbms-admin-replication-failover <id>`
+  - manual failover として active storage root を follower root へ切替える
+
+### 25.3 複製規約
+- shipping は `wal.log` と `checkpoint.lspdata` を follower root へ配送する
+- apply は follower 側 `recover-from-wal` を利用し committed tx のみ反映する
+- ASYNC:
+  - ship 完了後に即時 ACK を返してよい（apply は後続）
+- SYNC:
+  - `sync-state` を `SYNC-PENDING-APPLY -> SYNC-ACK` で管理し、運用上 apply 完了を確認する
+
+### 25.4 Failover 規約
+- 自動フェイルオーバーは本範囲外
+- 手動 failover は次を実施:
+  1. 対象 follower へ最終 ship
+  2. follower apply
+  3. active root を follower root へ切替
+- 切替後は follower root を primary として起動し直す
+
+### 25.5 受け入れ基準
+- 同一 WAL stream に対して primary/follower の最終可視データが一致する
+- 両経路（`isl` / `islc-run`）で同一 replication 状態遷移になる

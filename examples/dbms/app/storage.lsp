@@ -46,6 +46,30 @@
 (defun dbms-storage-backup-wal-path (generation-id)
   (string-append (dbms-storage-backup-root) "/backup." generation-id ".wal.lspdata"))
 
+(defun dbms-storage-replication-path ()
+  (string-append (dbms-storage-root) "/replication.lspdata"))
+
+(defun dbms-storage-wal-path-for-root (root)
+  (string-append root "/wal.log"))
+
+(defun dbms-storage-checkpoint-path-for-root (root)
+  (string-append root "/checkpoint.lspdata"))
+
+(defun dbms-storage-catalog-path-for-root (root)
+  (string-append root "/catalog.lspdata"))
+
+(defun dbms-storage-table-path-for-root (root table-name)
+  (string-append root "/table_" table-name ".lspdata"))
+
+(defun dbms-storage-table-pages-path-for-root (root table-name)
+  (string-append root "/table_" table-name ".pages.lspdata"))
+
+(defun dbms-storage-auth-path-for-root (root)
+  (string-append root "/auth.lspdata"))
+
+(defun dbms-storage-audit-path-for-root (root)
+  (string-append root "/audit.lspdata"))
+
 (defun dbms-storage-audit-archive-path (seq)
   (string-append (dbms-storage-root) "/audit.archive." (format nil "~A" seq) ".lspdata"))
 
@@ -146,6 +170,148 @@
   (if (or (<= n 0) (null xs))
       xs
       (dbms-storage-list-drop (cdr xs) (- n 1))))
+
+;; ------------------------------------------------------------------
+;; LT-001: replication metadata + WAL shipping helpers
+;; ------------------------------------------------------------------
+
+(defun dbms-repl-follower-p (v)
+  ;; (dbms-repl-follower <id> <root> <last-shipped-lsn> <last-applied-lsn> <sync-state>)
+  (and (listp v)
+       (= (length v) 6)
+       (eq (first v) 'dbms-repl-follower)
+       (stringp (second v))
+       (stringp (third v))
+       (numberp (fourth v))
+       (numberp (fifth v))
+       (stringp (dbms-sixth v))))
+
+(defun dbms-make-repl-follower (follower-id follower-root last-shipped-lsn last-applied-lsn sync-state)
+  (list 'dbms-repl-follower follower-id follower-root last-shipped-lsn last-applied-lsn sync-state))
+
+(defun dbms-repl-follower-id (f)
+  (if (dbms-repl-follower-p f) (second f) ""))
+
+(defun dbms-repl-follower-root (f)
+  (if (dbms-repl-follower-p f) (third f) ""))
+
+(defun dbms-repl-meta-p (v)
+  ;; (dbms-repl-meta <version> <mode> <followers>)
+  (and (listp v)
+       (= (length v) 4)
+       (eq (first v) 'dbms-repl-meta)
+       (numberp (second v))
+       (stringp (third v))
+       (listp (fourth v))))
+
+(defun dbms-storage-empty-repl-meta ()
+  (list 'dbms-repl-meta 1 "ASYNC" '()))
+
+(defun dbms-storage-repl-mode (meta)
+  (if (dbms-repl-meta-p meta)
+      (third meta)
+      "ASYNC"))
+
+(defun dbms-storage-repl-followers (meta)
+  (if (dbms-repl-meta-p meta)
+      (fourth meta)
+      '()))
+
+(defun dbms-storage-load-repl-meta ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-replication-path))))
+    (if (dbms-repl-meta-p raw)
+        raw
+        (dbms-storage-empty-repl-meta))))
+
+(defun dbms-storage-save-repl-meta (meta)
+  (if (not (dbms-repl-meta-p meta))
+      (dbms-make-error 'dbms/invalid-representation "replication meta must be dbms-repl-meta" meta)
+      (dbms-storage-atomic-replace (dbms-storage-replication-path) meta)))
+
+(defun dbms-storage-repl-find-follower (followers follower-id)
+  (if (null followers)
+      '()
+      (if (and (dbms-repl-follower-p (car followers))
+               (string= (dbms-repl-follower-id (car followers)) follower-id))
+          (car followers)
+          (dbms-storage-repl-find-follower (cdr followers) follower-id))))
+
+(defun dbms-storage-repl-put-follower (followers follower)
+  (if (null followers)
+      (list follower)
+      (if (and (dbms-repl-follower-p (car followers))
+               (string= (dbms-repl-follower-id (car followers)) (dbms-repl-follower-id follower)))
+          (cons follower (cdr followers))
+          (cons (car followers) (dbms-storage-repl-put-follower (cdr followers) follower)))))
+
+(defun dbms-storage-repl-set-mode (mode)
+  (if (or (not (stringp mode))
+          (and (not (string= mode "ASYNC"))
+               (not (string= mode "SYNC"))))
+      (dbms-make-error 'dbms/invalid-representation "replication mode must be ASYNC or SYNC" mode)
+      (let* ((meta (dbms-storage-load-repl-meta))
+             (next (list 'dbms-repl-meta
+                         (second meta)
+                         mode
+                         (dbms-storage-repl-followers meta)))
+             (saved (dbms-storage-save-repl-meta next)))
+        (if (dbms-error-p saved) saved next))))
+
+(defun dbms-storage-repl-register-follower (follower-id follower-root)
+  (if (or (not (stringp follower-id)) (string= follower-id "")
+          (not (stringp follower-root)) (string= follower-root ""))
+      (dbms-make-error 'dbms/invalid-representation "follower-id/root must be non-empty string" (list follower-id follower-root))
+      (let* ((meta (dbms-storage-load-repl-meta))
+             (followers (dbms-storage-repl-followers meta))
+             (current (dbms-storage-repl-find-follower followers follower-id))
+             (nextf (if (dbms-repl-follower-p current)
+                        (dbms-make-repl-follower follower-id follower-root (fourth current) (fifth current) (dbms-sixth current))
+                        (dbms-make-repl-follower follower-id follower-root 0 0 "INIT")))
+             (next-followers (dbms-storage-repl-put-follower followers nextf))
+             (next (list 'dbms-repl-meta (second meta) (dbms-storage-repl-mode meta) next-followers))
+             (saved (dbms-storage-save-repl-meta next)))
+        (if (dbms-error-p saved) saved nextf))))
+
+(defun dbms-storage-repl-update-follower-progress (follower-id shipped-lsn applied-lsn sync-state)
+  (let* ((meta (dbms-storage-load-repl-meta))
+         (followers (dbms-storage-repl-followers meta))
+         (cur (dbms-storage-repl-find-follower followers follower-id)))
+    (if (null cur)
+        (dbms-make-error 'dbms/invalid-representation "follower not found" follower-id)
+        (let* ((nextf (dbms-make-repl-follower follower-id
+                                               (dbms-repl-follower-root cur)
+                                               shipped-lsn
+                                               applied-lsn
+                                               sync-state))
+               (next-followers (dbms-storage-repl-put-follower followers nextf))
+               (next (list 'dbms-repl-meta (second meta) (dbms-storage-repl-mode meta) next-followers))
+               (saved (dbms-storage-save-repl-meta next)))
+          (if (dbms-error-p saved) saved nextf)))))
+
+(defun dbms-storage-repl-ship-wal-to-root (target-root)
+  (if (or (not (stringp target-root)) (string= target-root ""))
+      (dbms-make-error 'dbms/invalid-representation "target-root must be non-empty string" target-root)
+      (let* ((mk-status (system (string-append "mkdir -p " (dbms-storage-shell-quote target-root))))
+             (records (dbms-storage-load-wal-records))
+             (checkpoint (dbms-storage-load-checkpoint-meta))
+             (saved-wal '())
+             (saved-checkpoint '())
+             (max-lsn (dbms-storage-wal-max-lsn)))
+        (if (not (= mk-status 0))
+            (dbms-make-error 'dbms/not-implemented "failed to create follower root" target-root)
+            (progn
+              (setq saved-wal (dbms-storage-atomic-replace (dbms-storage-wal-path-for-root target-root) records))
+              (if (dbms-error-p saved-wal)
+                  saved-wal
+                  (progn
+                    (setq saved-checkpoint
+                          (dbms-storage-atomic-replace (dbms-storage-checkpoint-path-for-root target-root) checkpoint))
+                    (if (dbms-error-p saved-checkpoint)
+                        saved-checkpoint
+                        (list 'dbms-repl-ship-report
+                              (list "target-root" target-root)
+                              (list "record-count" (length records))
+                              (list "max-lsn" max-lsn))))))))))
 
 (defun dbms-checkpoint-meta-p (v)
   ;; (dbms-checkpoint <version> <last-lsn> <created-at> <max-txid>)

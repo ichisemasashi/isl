@@ -111,3 +111,35 @@
 - 15分以内に `S1` 復旧不能
 - 同一障害が 24 時間で 2 回以上再発
 - 監査ログ欠損または改ざん疑い
+
+## 9. レプリケーション運用（LT-001）
+単一ノード障害に備え、manual failover 前提で follower を追従させる。
+
+### 9.1 初期セットアップ
+1. primary 起動後に follower root を決定
+2. `dbms-admin-replication-set-mode "ASYNC"` を設定
+3. `dbms-admin-replication-register-follower <id> <root>` を実行
+4. `dbms-admin-replication-status` で follower が登録されていることを確認
+
+### 9.2 定常同期
+- 非同期運用:
+  - `dbms-admin-replication-ship`
+  - `dbms-admin-replication-apply-follower <id>`（運用バッチ）
+- 同期運用:
+  - `dbms-admin-replication-set-mode "SYNC"`
+  - ship 後に `sync-state=SYNC-PENDING-APPLY` を確認
+  - apply 後に `sync-state=SYNC-ACK` を確認
+
+### 9.3 手動フェイルオーバー
+1. `dbms-admin-replication-failover <id>` を実行
+2. active root が follower root へ切替わったことを確認
+3. 代表 `SELECT` で整合を確認
+4. 旧 primary は停止し、split-brain を回避する
+
+### 9.4 演習
+- `examples/dbms/tests/prod/t290-replication.lsp` を実行して
+  - bootstrap
+  - async ship/apply
+  - sync state 遷移
+  - manual failover
+  を定期的に確認する
