@@ -950,7 +950,6 @@ recovery の運用安全性向上のため、checkpoint メタを導入する。
   - `sync-state` を `SYNC-PENDING-APPLY -> SYNC-ACK` で管理し、運用上 apply 完了を確認する
 
 ### 25.4 Failover 規約
-- 自動フェイルオーバーは本範囲外
 - 手動 failover は次を実施:
   1. 対象 follower へ最終 ship
   2. follower apply
@@ -960,3 +959,44 @@ recovery の運用安全性向上のため、checkpoint メタを導入する。
 ### 25.5 受け入れ基準
 - 同一 WAL stream に対して primary/follower の最終可視データが一致する
 - 両経路（`isl` / `islc-run`）で同一 replication 状態遷移になる
+
+## 26. LT-002 自動フェイルオーバー
+障害切替の人手依存を減らすため、health check + leader election + lease/fence による split-brain 防止を提供する。
+
+### 26.1 永続メタ
+- `failover.lspdata`:
+  - `(dbms-failover-meta <version> <enabled> <ttl-sec> <last-heartbeat-at> <lease-owner> <lease-until> <fence-epoch>)`
+- `<enabled>`:
+  - `t` で自動切替有効、`nil` で無効
+- `<lease-owner>`:
+  - 通常 `"primary"`、昇格後は follower id
+- `<fence-epoch>`:
+  - 昇格ごとに単調増加し、運用上の fencing 番号として扱う
+
+### 26.2 管理API
+- `dbms-admin-replication-auto-failover-enable <ttl-sec>`
+- `dbms-admin-replication-auto-failover-disable`
+- `dbms-admin-replication-heartbeat`
+  - primary の健全性を更新し lease を延長する
+- `dbms-admin-replication-auto-failover-status`
+  - failover/repl の複合状態を返す
+- `dbms-admin-replication-auto-failover-tick`
+  - 1回分の health 判定と昇格判定を実行
+  - primary 不健全かつ lease 期限切れ時に候補 follower を自動昇格する
+
+### 26.3 Health/Election 規約
+- health 判定:
+  - `now - last-heartbeat-at <= ttl-sec` かつ `now <= lease-until` を健全とみなす
+- election:
+  - follower の `last-applied-lsn` が最大の候補を選ぶ
+  - 同値時は follower id の辞書順最小を採用する（決定性確保）
+
+### 26.4 Split-brain 防止規約
+- 自動昇格は lease 期限切れ時のみ実行可能
+- 昇格時に `lease-owner` を follower id へ更新し、`fence-epoch` を増分
+- `lease-owner != "primary"` の間は追加の自動昇格を抑止する
+
+### 26.5 受け入れ基準
+- primary 障害注入時に自動昇格が成立し、読取整合が維持される
+- split-brain（重複昇格）が発生しない
+- 両経路（`isl` / `islc-run`）で同一昇格結果になる

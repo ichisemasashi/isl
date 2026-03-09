@@ -3636,6 +3636,50 @@
     (dbms-engine-restore-storage-root! old-root)
     r))
 
+(defun dbms-engine-now-sec ()
+  (get-universal-time))
+
+(defun dbms-engine-repl-elect-candidate (followers)
+  ;; Highest applied-lsn wins; tie-break by smaller follower-id for determinism.
+  (let ((best '()))
+    (dolist (f followers)
+      (if (dbms-repl-follower-p f)
+          (if (or (null best)
+                  (> (fifth f) (fifth best))
+                  (and (= (fifth f) (fifth best))
+                       (string< (dbms-repl-follower-id f) (dbms-repl-follower-id best))))
+              (setq best f)
+              nil)
+          nil))
+    best))
+
+(defun dbms-engine-failover-primary-healthy-p (failover-meta now-sec)
+  (let ((ttl (dbms-storage-failover-ttl-sec failover-meta))
+        (last-heartbeat (dbms-storage-failover-last-heartbeat-at failover-meta))
+        (lease-until (dbms-storage-failover-lease-until failover-meta))
+        (owner (dbms-storage-failover-lease-owner failover-meta)))
+    (and (string= owner "primary")
+         (<= (- now-sec last-heartbeat) ttl)
+         (<= now-sec lease-until))))
+
+(defun dbms-engine-write-promotion-failover-meta (candidate-root candidate-id now-sec)
+  (let* ((cur (dbms-storage-load-failover-meta))
+         (next (list 'dbms-failover-meta
+                     (second cur)
+                     (dbms-storage-failover-enabled-p cur)
+                     (dbms-storage-failover-ttl-sec cur)
+                     now-sec
+                     candidate-id
+                     (+ now-sec (dbms-storage-failover-ttl-sec cur))
+                     (+ (dbms-storage-failover-fence-epoch cur) 1)))
+         (saved-cur (dbms-storage-save-failover-meta next)))
+    (if (dbms-error-p saved-cur)
+        saved-cur
+        (let ((saved-new (dbms-storage-atomic-replace (dbms-storage-failover-path-for-root candidate-root) next)))
+          (if (dbms-error-p saved-new)
+              saved-new
+              next)))))
+
 (defun dbms-admin-replication-set-mode (mode)
   (if (dbms-tx-active-p)
       (dbms-make-result-error 'dbms/tx-already-active "cannot change replication mode while transaction is active" mode)
@@ -3765,13 +3809,115 @@
                   (dbms-make-result 'error ship)
                   (if (dbms-error-p applied)
                       (dbms-make-result 'error applied)
-                      (progn
-                        (dbms-engine-restore-storage-root! new-root)
-                        (dbms-engine-init)
-                        (dbms-make-result-ok (list (list "old-root" old-root)
-                                                   (list "new-root" new-root)
-                                                   (list "follower-id" follower-id)
-                                                   (list "mode" (dbms-storage-repl-mode meta))))))))))))
+                      (let ((meta-saved (dbms-engine-write-promotion-failover-meta new-root follower-id (dbms-engine-now-sec))))
+                        (if (dbms-error-p meta-saved)
+                            (dbms-make-result 'error meta-saved)
+                            (progn
+                              (dbms-engine-restore-storage-root! new-root)
+                              (dbms-engine-init)
+                              (dbms-make-result-ok (list (list "old-root" old-root)
+                                                         (list "new-root" new-root)
+                                                         (list "follower-id" follower-id)
+                                                         (list "mode" (dbms-storage-repl-mode meta))
+                                                         (list "fence-epoch" (dbms-storage-failover-fence-epoch meta-saved))))))))))))))
+
+(defun dbms-admin-replication-auto-failover-enable (ttl-sec)
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot enable auto failover while transaction is active" ttl-sec)
+      (let* ((cur (dbms-storage-load-failover-meta))
+             (ttl (if (and (numberp ttl-sec) (> ttl-sec 0)) ttl-sec (dbms-storage-failover-ttl-sec cur)))
+             (now-sec (dbms-engine-now-sec))
+             (next (list 'dbms-failover-meta
+                         (second cur)
+                         t
+                         ttl
+                         now-sec
+                         "primary"
+                         (+ now-sec ttl)
+                         (dbms-storage-failover-fence-epoch cur)))
+             (saved (dbms-storage-save-failover-meta next)))
+        (if (dbms-error-p saved)
+            (dbms-make-result 'error saved)
+            (dbms-make-result-ok next)))))
+
+(defun dbms-admin-replication-auto-failover-disable ()
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot disable auto failover while transaction is active" *dbms-tx-state*)
+      (let* ((cur (dbms-storage-load-failover-meta))
+             (next (list 'dbms-failover-meta
+                         (second cur)
+                         nil
+                         (dbms-storage-failover-ttl-sec cur)
+                         (dbms-storage-failover-last-heartbeat-at cur)
+                         (dbms-storage-failover-lease-owner cur)
+                         (dbms-storage-failover-lease-until cur)
+                         (dbms-storage-failover-fence-epoch cur)))
+             (saved (dbms-storage-save-failover-meta next)))
+        (if (dbms-error-p saved)
+            (dbms-make-result 'error saved)
+            (dbms-make-result-ok next)))))
+
+(defun dbms-admin-replication-heartbeat ()
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot heartbeat while transaction is active" *dbms-tx-state*)
+      (let* ((cur (dbms-storage-load-failover-meta))
+             (ttl (dbms-storage-failover-ttl-sec cur))
+             (now-sec (dbms-engine-now-sec))
+             (next (list 'dbms-failover-meta
+                         (second cur)
+                         (dbms-storage-failover-enabled-p cur)
+                         ttl
+                         now-sec
+                         "primary"
+                         (+ now-sec ttl)
+                         (dbms-storage-failover-fence-epoch cur)))
+             (saved (dbms-storage-save-failover-meta next)))
+        (if (dbms-error-p saved)
+            (dbms-make-result 'error saved)
+            (dbms-make-result-ok next)))))
+
+(defun dbms-admin-replication-auto-failover-status ()
+  (dbms-make-result-ok
+   (list (list "failover" (dbms-storage-load-failover-meta))
+         (list "replication" (dbms-storage-load-repl-meta)))))
+
+(defun dbms-admin-replication-auto-failover-tick ()
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot run auto failover tick while transaction is active" *dbms-tx-state*)
+      (let* ((failover-meta (dbms-storage-load-failover-meta))
+             (now-sec (dbms-engine-now-sec))
+             (enabled (dbms-storage-failover-enabled-p failover-meta))
+             (owner (dbms-storage-failover-lease-owner failover-meta)))
+        (if (null enabled)
+            (dbms-make-result-ok (list (list "action" "SKIP") (list "reason" "DISABLED")))
+            (if (not (string= owner "primary"))
+                (dbms-make-result-ok (list (list "action" "SKIP") (list "reason" "ALREADY_PROMOTED") (list "lease-owner" owner)))
+                (if (dbms-engine-failover-primary-healthy-p failover-meta now-sec)
+                    (dbms-make-result-ok (list (list "action" "SKIP") (list "reason" "PRIMARY_HEALTHY")))
+                    (let* ((repl-meta (dbms-storage-load-repl-meta))
+                           (candidate (dbms-engine-repl-elect-candidate (dbms-storage-repl-followers repl-meta))))
+                      (if (null candidate)
+                          (dbms-make-result-error 'dbms/not-implemented "auto failover requires at least one follower" candidate)
+                          (if (> (dbms-storage-failover-lease-until failover-meta) now-sec)
+                              (dbms-make-result-error 'dbms/lock-conflict "promotion lease is not expired" failover-meta)
+                              (let* ((candidate-id (dbms-repl-follower-id candidate))
+                                     (candidate-root (dbms-repl-follower-root candidate))
+                                     (applied (dbms-engine-run-recovery-on-root candidate-root))
+                                     (meta-saved (if (dbms-error-p applied)
+                                                     applied
+                                                     (dbms-engine-write-promotion-failover-meta candidate-root candidate-id now-sec))))
+                                (if (dbms-error-p applied)
+                                    (dbms-make-result 'error applied)
+                                    (if (dbms-error-p meta-saved)
+                                        (dbms-make-result 'error meta-saved)
+                                        (progn
+                                          (dbms-engine-restore-storage-root! candidate-root)
+                                          (dbms-engine-init)
+                                          (dbms-make-result-ok
+                                           (list (list "action" "PROMOTE")
+                                                 (list "follower-id" candidate-id)
+                                                 (list "new-root" candidate-root)
+                                                 (list "fence-epoch" (dbms-storage-failover-fence-epoch meta-saved)))))))))))))))))
 
 ;; Wiki admin compatibility wrappers:
 ;; ("ok" <path>) | ("error" <message>)

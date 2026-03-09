@@ -143,3 +143,33 @@
   - sync state 遷移
   - manual failover
   を定期的に確認する
+
+## 10. 自動フェイルオーバー運用（LT-002）
+primary 障害時の切替を自動化する。通常は heartbeat を定期実行し、監視側で tick を回す。
+
+### 10.1 有効化
+1. `dbms-admin-replication-auto-failover-enable <ttl-sec>`
+2. `dbms-admin-replication-heartbeat` を primary 側で周期実行（`ttl-sec/2` 目安）
+3. `dbms-admin-replication-auto-failover-status` で `lease-owner="primary"` を確認
+
+### 10.2 監視/昇格
+1. 監視側で `dbms-admin-replication-auto-failover-tick` を周期実行
+2. `PRIMARY_HEALTHY` は継続監視
+3. heartbeat 欠落かつ lease 期限切れで `action=PROMOTE` を確認
+4. `fence-epoch` の増分と active root 切替を確認
+
+### 10.3 split-brain 回避
+- 昇格後は `lease-owner != "primary"` になるため追加昇格は抑止される
+- 旧 primary の再参加前に自動切替を `disable` し、運用者判断で再構成する
+
+### 10.4 手動ロールバック
+1. `dbms-admin-replication-auto-failover-disable`
+2. LT-001 の manual failover 手順に戻す
+
+### 10.5 演習
+- `examples/dbms/tests/prod/t300-auto-failover.lsp` を実行して
+  - health 判定
+  - election 決定性
+  - 自動昇格
+  - split-brain 抑止
+  を定期的に確認する

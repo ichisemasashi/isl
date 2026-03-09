@@ -49,6 +49,12 @@
 (defun dbms-storage-replication-path ()
   (string-append (dbms-storage-root) "/replication.lspdata"))
 
+(defun dbms-storage-failover-path ()
+  (string-append (dbms-storage-root) "/failover.lspdata"))
+
+(defun dbms-storage-failover-path-for-root (root)
+  (string-append root "/failover.lspdata"))
+
 (defun dbms-storage-wal-path-for-root (root)
   (string-append root "/wal.log"))
 
@@ -312,6 +318,82 @@
                               (list "target-root" target-root)
                               (list "record-count" (length records))
                               (list "max-lsn" max-lsn))))))))))
+
+;; ------------------------------------------------------------------
+;; LT-002: auto failover metadata helpers
+;; ------------------------------------------------------------------
+
+(defun dbms-failover-meta-p (v)
+  ;; (dbms-failover-meta <version> <enabled> <ttl-sec> <last-heartbeat-at> <lease-owner> <lease-until> <fence-epoch>)
+  (and (listp v)
+       (= (length v) 8)
+       (eq (first v) 'dbms-failover-meta)
+       (numberp (second v))
+       (or (eq (third v) t) (null (third v)))
+       (numberp (fourth v))
+       (numberp (fifth v))
+       (stringp (dbms-sixth v))
+       (numberp (dbms-seventh v))
+       (numberp (dbms-eighth v))))
+
+(defun dbms-storage-empty-failover-meta ()
+  (list 'dbms-failover-meta 1 nil 30 0 "primary" 0 0))
+
+(defun dbms-storage-load-failover-meta ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-failover-path))))
+    (if (dbms-failover-meta-p raw)
+        raw
+        (dbms-storage-empty-failover-meta))))
+
+(defun dbms-storage-save-failover-meta (meta)
+  (if (not (dbms-failover-meta-p meta))
+      (dbms-make-error 'dbms/invalid-representation "failover meta must be dbms-failover-meta" meta)
+      (dbms-storage-atomic-replace (dbms-storage-failover-path) meta)))
+
+(defun dbms-storage-failover-enabled-p (meta)
+  (if (dbms-failover-meta-p meta)
+      (third meta)
+      nil))
+
+(defun dbms-storage-failover-ttl-sec (meta)
+  (if (dbms-failover-meta-p meta)
+      (fourth meta)
+      30))
+
+(defun dbms-storage-failover-last-heartbeat-at (meta)
+  (if (dbms-failover-meta-p meta)
+      (fifth meta)
+      0))
+
+(defun dbms-storage-failover-lease-owner (meta)
+  (if (dbms-failover-meta-p meta)
+      (dbms-sixth meta)
+      ""))
+
+(defun dbms-storage-failover-lease-until (meta)
+  (if (dbms-failover-meta-p meta)
+      (dbms-seventh meta)
+      0))
+
+(defun dbms-storage-failover-fence-epoch (meta)
+  (if (dbms-failover-meta-p meta)
+      (dbms-eighth meta)
+      0))
+
+(defun dbms-storage-failover-upsert (enabled ttl-sec heartbeat-at lease-owner lease-until fence-epoch)
+  (let* ((cur (dbms-storage-load-failover-meta))
+         (next (list 'dbms-failover-meta
+                     (second cur)
+                     (if (or (eq enabled t) (null enabled)) enabled nil)
+                     (if (and (numberp ttl-sec) (> ttl-sec 0)) ttl-sec (dbms-storage-failover-ttl-sec cur))
+                     (if (and (numberp heartbeat-at) (>= heartbeat-at 0)) heartbeat-at (dbms-storage-failover-last-heartbeat-at cur))
+                     (if (and (stringp lease-owner) (not (string= lease-owner "")))
+                         lease-owner
+                         (dbms-storage-failover-lease-owner cur))
+                     (if (and (numberp lease-until) (>= lease-until 0)) lease-until (dbms-storage-failover-lease-until cur))
+                     (if (and (numberp fence-epoch) (>= fence-epoch 0)) fence-epoch (dbms-storage-failover-fence-epoch cur))))
+         (saved (dbms-storage-save-failover-meta next)))
+    (if (dbms-error-p saved) saved next)))
 
 (defun dbms-checkpoint-meta-p (v)
   ;; (dbms-checkpoint <version> <last-lsn> <created-at> <max-txid>)
@@ -1231,6 +1313,9 @@
 
 (defun dbms-seventh (xs)
   (first (cdr (cdr (cdr (cdr (cdr (cdr xs))))))))
+
+(defun dbms-eighth (xs)
+  (first (cdr (cdr (cdr (cdr (cdr (cdr (cdr xs)))))))))
 
 (defun dbms-btree-index-p (v)
   ;; (dbms-btree-index <table> <index> <column> <root-page-id> <next-page-id> <pages>)
