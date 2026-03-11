@@ -1000,3 +1000,41 @@ recovery の運用安全性向上のため、checkpoint メタを導入する。
 - primary 障害注入時に自動昇格が成立し、読取整合が維持される
 - split-brain（重複昇格）が発生しない
 - 両経路（`isl` / `islc-run`）で同一昇格結果になる
+
+## 27. LT-003 ストレージ保守の高度化
+長期運用での断片化・統計劣化を抑えるため、自動保守（autovacuum / auto analyze / compaction scheduler）を提供する。
+
+### 27.1 永続メタ
+- `maintenance.lspdata`:
+  - `(dbms-maint-meta <version> <enabled> <vacuum-frag-threshold> <analyze-interval-sec> <vacuum-interval-sec> <corruption-check-interval-sec> <last-corruption-check-at> <max-vacuum-tables-per-tick> <table-states>)`
+- table-state:
+  - `(dbms-maint-table <table-name> <last-analyze-at> <last-vacuum-at> <last-frag-ratio> <last-row-count>)`
+
+### 27.2 管理API
+- `dbms-admin-maintenance-configure <enabled> <vacuum-frag-threshold> <analyze-interval-sec> <vacuum-interval-sec> <corruption-check-interval-sec> <max-vacuum-tables-per-tick>`
+- `dbms-admin-maintenance-status`
+- `dbms-admin-maintenance-tick`
+
+### 27.3 スケジューラ規約
+- `tick` は次順序で実行する:
+  1. 破損検知（interval 到達時）
+  2. compaction 候補選定（`fragmentation-ratio` 降順）
+  3. 上位 `max-vacuum-tables-per-tick` 件を vacuum
+  4. analyze 必要判定テーブルを analyze
+- analyze 必要判定:
+  - 統計未作成、または `analyze-interval-sec` 超過、または行数変化が有意な場合。
+
+### 27.4 破損検知時の方針
+- チェック対象:
+  - page checksum 不一致
+  - header free-space と実slot free数の不一致
+  - slot-capacity 不一致 / page-pair 不正
+- 破損検知時:
+  - `action=ERROR-DETECTED` を返す
+  - 自動保守を自動無効化（`enabled=nil`）
+  - 運用者は手動復旧（backup/restore, pitr, 再起動検証）へ移行する
+
+### 27.5 受け入れ基準
+- 手動介入なしで断片化/統計劣化を抑制できる。
+- 破損検知時に保守が自動停止し、誤った自動修復を行わない。
+- 両経路（`isl` / `islc-run`）で起動条件・結果が一致する。

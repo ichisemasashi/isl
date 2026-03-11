@@ -3580,6 +3580,231 @@
                                                            report)))))))))))))))))))
 
 ;; ------------------------------------------------------------------
+;; LT-003: storage maintenance automation
+;; ------------------------------------------------------------------
+
+(defun dbms-engine-maint-now-sec ()
+  (get-universal-time))
+
+(defun dbms-engine-maint-abs (n)
+  (if (< n 0) (- 0 n) n))
+
+(defun dbms-engine-maint-table-stats-present-p (table-def)
+  (let* ((opts (dbms-table-def-options table-def))
+         (stats (dbms-assoc-get opts "stats")))
+    (not (null stats))))
+
+(defun dbms-engine-maint-upsert-table-state (states table-name analyze-at vacuum-at frag-ratio row-count)
+  (let* ((cur (dbms-storage-maint-find-table-state states table-name))
+         (next (dbms-make-maint-table-state
+                table-name
+                (if (and (numberp analyze-at) (>= analyze-at 0))
+                    analyze-at
+                    (if (dbms-maint-table-state-p cur) (third cur) 0))
+                (if (and (numberp vacuum-at) (>= vacuum-at 0))
+                    vacuum-at
+                    (if (dbms-maint-table-state-p cur) (fourth cur) 0))
+                (if (and (numberp frag-ratio) (>= frag-ratio 0))
+                    frag-ratio
+                    (if (dbms-maint-table-state-p cur) (fifth cur) 0))
+                (if (and (numberp row-count) (>= row-count 0))
+                    row-count
+                    (if (dbms-maint-table-state-p cur) (dbms-sixth cur) 0)))))
+    (dbms-storage-maint-put-table-state states next)))
+
+(defun dbms-engine-maint-candidate-frag (c)
+  (second c))
+
+(defun dbms-engine-maint-candidate-table (c)
+  (first c))
+
+(defun dbms-engine-maint-insert-vacuum-candidate (candidate sorted)
+  (if (null sorted)
+      (list candidate)
+      (let ((head (car sorted))
+            (cfrag (dbms-engine-maint-candidate-frag candidate))
+            (hfrag (dbms-engine-maint-candidate-frag (car sorted)))
+            (ctable (dbms-engine-maint-candidate-table candidate))
+            (htable (dbms-engine-maint-candidate-table (car sorted))))
+        (if (or (> cfrag hfrag)
+                (and (= cfrag hfrag) (string< ctable htable)))
+            (cons candidate sorted)
+            (cons head (dbms-engine-maint-insert-vacuum-candidate candidate (cdr sorted)))))))
+
+(defun dbms-engine-maint-sort-vacuum-candidates (candidates)
+  (let ((rest candidates)
+        (sorted '()))
+    (while (not (null rest))
+      (setq sorted (dbms-engine-maint-insert-vacuum-candidate (car rest) sorted))
+      (setq rest (cdr rest)))
+    sorted))
+
+(defun dbms-engine-maint-row-change-significant-p (old-count new-count)
+  (let ((oldn (if (and (numberp old-count) (>= old-count 0)) old-count 0))
+        (newn (if (and (numberp new-count) (>= new-count 0)) new-count 0)))
+    (if (= oldn 0)
+        (> newn 0)
+        (let* ((diff (dbms-engine-maint-abs (- newn oldn)))
+               (ratio-threshold (/ oldn 5))
+               (min-threshold (if (> ratio-threshold 10) ratio-threshold 10)))
+          (>= diff min-threshold)))))
+
+(defun dbms-engine-maint-should-vacuum-p (table-state frag-ratio now-sec frag-threshold vacuum-interval-sec)
+  (if (< frag-ratio frag-threshold)
+      nil
+      (let ((last-vacuum (if (dbms-maint-table-state-p table-state) (fourth table-state) 0)))
+        (>= (- now-sec last-vacuum) vacuum-interval-sec))))
+
+(defun dbms-engine-maint-should-analyze-p (table-state has-stats now-sec analyze-interval-sec row-count)
+  (if (not has-stats)
+      t
+      (let ((last-analyze (if (dbms-maint-table-state-p table-state) (third table-state) 0))
+            (prev-row-count (if (dbms-maint-table-state-p table-state) (dbms-sixth table-state) 0)))
+        (or (>= (- now-sec last-analyze) analyze-interval-sec)
+            (dbms-engine-maint-row-change-significant-p prev-row-count row-count)))))
+
+(defun dbms-engine-maint-build-meta (meta enabled last-corruption-check-at table-states)
+  (list 'dbms-maint-meta
+        (second meta)
+        enabled
+        (dbms-storage-maint-vacuum-frag-threshold meta)
+        (dbms-storage-maint-analyze-interval-sec meta)
+        (dbms-storage-maint-vacuum-interval-sec meta)
+        (dbms-storage-maint-corruption-check-interval-sec meta)
+        last-corruption-check-at
+        (dbms-storage-maint-max-vacuum-tables-per-tick meta)
+        table-states))
+
+(defun dbms-admin-maintenance-configure (enabled vacuum-frag-threshold analyze-interval-sec vacuum-interval-sec corruption-check-interval-sec max-vacuum-tables-per-tick)
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot configure maintenance while transaction is active" *dbms-tx-state*)
+      (let ((saved (dbms-storage-maint-configure enabled
+                                                 vacuum-frag-threshold
+                                                 analyze-interval-sec
+                                                 vacuum-interval-sec
+                                                 corruption-check-interval-sec
+                                                 max-vacuum-tables-per-tick)))
+        (if (dbms-error-p saved)
+            (dbms-make-result 'error saved)
+            (dbms-make-result-ok saved)))))
+
+(defun dbms-admin-maintenance-status ()
+  (dbms-make-result-ok (dbms-storage-load-maint-meta)))
+
+(defun dbms-admin-maintenance-tick ()
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot run maintenance while transaction is active" *dbms-tx-state*)
+      (let* ((meta (dbms-storage-load-maint-meta))
+             (now-sec (dbms-engine-maint-now-sec))
+             (enabled (dbms-storage-maint-enabled-p meta)))
+        (if (null enabled)
+            (dbms-make-result-ok (list (list "action" "SKIP") (list "reason" "DISABLED")))
+            (let* ((catalog (dbms-catalog-load))
+                   (table-names (dbms-catalog-table-names catalog))
+                   (table-states (dbms-storage-maint-table-states meta))
+                   (vacuum-candidates '())
+                   (analyze-targets '())
+                   (vacuumed '())
+                   (analyzed '())
+                   (failed '())
+                   (last-corruption-check-at (dbms-storage-maint-last-corruption-check-at meta))
+                   (check-interval (dbms-storage-maint-corruption-check-interval-sec meta))
+                   (need-corruption-check (>= (- now-sec last-corruption-check-at) check-interval))
+                   (corruption-errors '()))
+              (if need-corruption-check
+                  (progn
+                    (setq corruption-errors (dbms-storage-check-catalog-integrity catalog))
+                    (setq last-corruption-check-at now-sec))
+                  nil)
+              (if (not (null corruption-errors))
+                  (let* ((disabled-meta (dbms-engine-maint-build-meta meta nil last-corruption-check-at table-states))
+                         (saved-disabled (dbms-storage-save-maint-meta disabled-meta)))
+                    (if (dbms-error-p saved-disabled)
+                        (dbms-make-result 'error saved-disabled)
+                        (dbms-make-result-ok
+                         (list (list "action" "ERROR-DETECTED")
+                               (list "reason" "CORRUPTION_DETECTED")
+                               (list "error-count" (length corruption-errors))
+                               (list "errors" corruption-errors)))))
+                  (progn
+                    (dolist (name table-names)
+                      (if (dbms-error-p failed)
+                          nil
+                          (let* ((table-def (dbms-catalog-find-table catalog name))
+                                 (page-stats (dbms-storage-table-pages-stats name))
+                                 (frag (dbms-assoc-get page-stats "fragmentation-ratio"))
+                                 (row-count (dbms-assoc-get page-stats "row-count"))
+                                 (table-state (dbms-storage-maint-find-table-state table-states name))
+                                 (has-stats (if (null table-def) nil (dbms-engine-maint-table-stats-present-p table-def))))
+                            (if (null table-def)
+                                (setq failed (dbms-make-error 'dbms/table-not-found "table not found" name))
+                                (progn
+                                  (setq table-states
+                                        (dbms-engine-maint-upsert-table-state table-states name -1 -1 frag row-count))
+                                  (if (dbms-engine-maint-should-vacuum-p table-state
+                                                                         frag
+                                                                         now-sec
+                                                                         (dbms-storage-maint-vacuum-frag-threshold meta)
+                                                                         (dbms-storage-maint-vacuum-interval-sec meta))
+                                      (setq vacuum-candidates (append vacuum-candidates (list (list name frag row-count))))
+                                      nil)
+                                  (if (dbms-engine-maint-should-analyze-p table-state
+                                                                          has-stats
+                                                                          now-sec
+                                                                          (dbms-storage-maint-analyze-interval-sec meta)
+                                                                          row-count)
+                                      (setq analyze-targets (append analyze-targets (list name)))
+                                      nil))))))
+                    (if (dbms-error-p failed)
+                        (dbms-make-result 'error failed)
+                        (progn
+                          (let* ((sorted-vacuum (dbms-engine-maint-sort-vacuum-candidates vacuum-candidates))
+                                 (picked (dbms-storage-list-take sorted-vacuum
+                                                                 (dbms-storage-maint-max-vacuum-tables-per-tick meta))))
+                            (dolist (candidate picked)
+                              (if (dbms-error-p failed)
+                                  nil
+                                  (let* ((name (first candidate))
+                                         (report (dbms-storage-vacuum-table-pages name))
+                                         (after (if (dbms-error-p report) '() (dbms-assoc-get report "after")))
+                                         (after-frag (if (dbms-error-p report) 0 (dbms-assoc-get after "fragmentation-ratio")))
+                                         (after-rows (if (dbms-error-p report) 0 (dbms-assoc-get after "row-count"))))
+                                    (if (dbms-error-p report)
+                                        (setq failed report)
+                                        (progn
+                                          (setq vacuumed (append vacuumed (list report)))
+                                          (setq table-states
+                                                (dbms-engine-maint-upsert-table-state table-states name -1 now-sec after-frag after-rows)))))))
+                            (dolist (name analyze-targets)
+                              (if (dbms-error-p failed)
+                                  nil
+                                  (let* ((stmt (dbms-make-stmt 'analyze (list (list "table" name))))
+                                         (result (dbms-engine-analyze catalog stmt)))
+                                    (if (and (dbms-result-p result) (eq (second result) 'ok))
+                                        (progn
+                                          (setq analyzed (append analyzed (list name)))
+                                          (let* ((latest-stats (dbms-storage-table-pages-stats name))
+                                                 (latest-row-count (dbms-assoc-get latest-stats "row-count"))
+                                                 (latest-frag (dbms-assoc-get latest-stats "fragmentation-ratio")))
+                                            (setq table-states
+                                                  (dbms-engine-maint-upsert-table-state table-states name now-sec -1 latest-frag latest-row-count))
+                                            (setq catalog (dbms-catalog-load))))
+                                        (setq failed (if (dbms-result-p result)
+                                                         (third result)
+                                                         (dbms-make-error 'dbms/not-implemented "analyze failed in maintenance tick" name)))))))
+                          (if (dbms-error-p failed)
+                              (dbms-make-result 'error failed)
+                              (let* ((next-meta (dbms-engine-maint-build-meta meta t last-corruption-check-at table-states))
+                                     (saved (dbms-storage-save-maint-meta next-meta)))
+                                (if (dbms-error-p saved)
+                                    (dbms-make-result 'error saved)
+                                    (dbms-make-result-ok
+                                     (list (list "action" "MAINTAINED")
+                                           (list "vacuumed-count" (length vacuumed))
+                                           (list "analyzed-count" (length analyzed))
+                                           (list "vacuumed" vacuumed)
+                                           (list "analyzed" analyzed))))))))))))))))
+;; ------------------------------------------------------------------
 ;; LT-001: replication admin APIs
 ;; ------------------------------------------------------------------
 

@@ -55,6 +55,9 @@
 (defun dbms-storage-failover-path-for-root (root)
   (string-append root "/failover.lspdata"))
 
+(defun dbms-storage-maintenance-path ()
+  (string-append (dbms-storage-root) "/maintenance.lspdata"))
+
 (defun dbms-storage-wal-path-for-root (root)
   (string-append root "/wal.log"))
 
@@ -394,6 +397,229 @@
                      (if (and (numberp fence-epoch) (>= fence-epoch 0)) fence-epoch (dbms-storage-failover-fence-epoch cur))))
          (saved (dbms-storage-save-failover-meta next)))
     (if (dbms-error-p saved) saved next)))
+
+;; ------------------------------------------------------------------
+;; LT-003: storage maintenance metadata + corruption check helpers
+;; ------------------------------------------------------------------
+
+(defun dbms-maint-table-state-p (v)
+  ;; (dbms-maint-table <name> <last-analyze-at> <last-vacuum-at> <last-frag-ratio> <last-row-count>)
+  (and (listp v)
+       (= (length v) 6)
+       (eq (first v) 'dbms-maint-table)
+       (stringp (second v))
+       (numberp (third v))
+       (numberp (fourth v))
+       (numberp (fifth v))
+       (numberp (dbms-sixth v))))
+
+(defun dbms-make-maint-table-state (table-name last-analyze-at last-vacuum-at last-frag-ratio last-row-count)
+  (list 'dbms-maint-table table-name last-analyze-at last-vacuum-at last-frag-ratio last-row-count))
+
+(defun dbms-maint-table-name (ts)
+  (if (dbms-maint-table-state-p ts) (second ts) ""))
+
+(defun dbms-maint-meta-p (v)
+  ;; (dbms-maint-meta <version> <enabled> <vacuum-frag-threshold> <analyze-interval-sec> <vacuum-interval-sec>
+  ;;                 <corruption-check-interval-sec> <last-corruption-check-at> <max-vacuum-tables-per-tick> <table-states>)
+  (and (listp v)
+       (= (length v) 10)
+       (eq (first v) 'dbms-maint-meta)
+       (numberp (second v))
+       (or (eq (third v) t) (null (third v)))
+       (numberp (fourth v))
+       (numberp (fifth v))
+       (numberp (dbms-sixth v))
+       (numberp (dbms-seventh v))
+       (numberp (dbms-eighth v))
+       (numberp (dbms-ninth v))
+       (listp (dbms-tenth v))))
+
+(defun dbms-storage-empty-maint-meta ()
+  (list 'dbms-maint-meta 1 nil 0.25 3600 1800 900 0 2 '()))
+
+(defun dbms-storage-load-maint-meta ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-maintenance-path))))
+    (if (dbms-maint-meta-p raw)
+        raw
+        (dbms-storage-empty-maint-meta))))
+
+(defun dbms-storage-save-maint-meta (meta)
+  (if (not (dbms-maint-meta-p meta))
+      (dbms-make-error 'dbms/invalid-representation "maintenance meta must be dbms-maint-meta" meta)
+      (dbms-storage-atomic-replace (dbms-storage-maintenance-path) meta)))
+
+(defun dbms-storage-maint-enabled-p (meta)
+  (if (dbms-maint-meta-p meta) (third meta) nil))
+
+(defun dbms-storage-maint-vacuum-frag-threshold (meta)
+  (if (dbms-maint-meta-p meta) (fourth meta) 0.25))
+
+(defun dbms-storage-maint-analyze-interval-sec (meta)
+  (if (dbms-maint-meta-p meta) (fifth meta) 3600))
+
+(defun dbms-storage-maint-vacuum-interval-sec (meta)
+  (if (dbms-maint-meta-p meta) (dbms-sixth meta) 1800))
+
+(defun dbms-storage-maint-corruption-check-interval-sec (meta)
+  (if (dbms-maint-meta-p meta) (dbms-seventh meta) 900))
+
+(defun dbms-storage-maint-last-corruption-check-at (meta)
+  (if (dbms-maint-meta-p meta) (dbms-eighth meta) 0))
+
+(defun dbms-storage-maint-max-vacuum-tables-per-tick (meta)
+  (if (dbms-maint-meta-p meta) (dbms-ninth meta) 2))
+
+(defun dbms-storage-maint-table-states (meta)
+  (if (dbms-maint-meta-p meta) (dbms-tenth meta) '()))
+
+(defun dbms-storage-maint-find-table-state (table-states table-name)
+  (if (null table-states)
+      '()
+      (if (and (dbms-maint-table-state-p (car table-states))
+               (string= (dbms-maint-table-name (car table-states)) table-name))
+          (car table-states)
+          (dbms-storage-maint-find-table-state (cdr table-states) table-name))))
+
+(defun dbms-storage-maint-put-table-state (table-states state)
+  (if (null table-states)
+      (list state)
+      (if (and (dbms-maint-table-state-p (car table-states))
+               (string= (dbms-maint-table-name (car table-states))
+                        (dbms-maint-table-name state)))
+          (cons state (cdr table-states))
+          (cons (car table-states)
+                (dbms-storage-maint-put-table-state (cdr table-states) state)))))
+
+(defun dbms-storage-maint-configure (enabled vacuum-frag-threshold analyze-interval-sec vacuum-interval-sec corruption-check-interval-sec max-vacuum-tables-per-tick)
+  (let* ((cur (dbms-storage-load-maint-meta))
+         (next (list 'dbms-maint-meta
+                     (second cur)
+                     (if (or (eq enabled t) (null enabled)) enabled nil)
+                     (if (and (numberp vacuum-frag-threshold)
+                              (>= vacuum-frag-threshold 0)
+                              (<= vacuum-frag-threshold 1))
+                         vacuum-frag-threshold
+                         (dbms-storage-maint-vacuum-frag-threshold cur))
+                     (if (and (numberp analyze-interval-sec) (> analyze-interval-sec 0))
+                         analyze-interval-sec
+                         (dbms-storage-maint-analyze-interval-sec cur))
+                     (if (and (numberp vacuum-interval-sec) (> vacuum-interval-sec 0))
+                         vacuum-interval-sec
+                         (dbms-storage-maint-vacuum-interval-sec cur))
+                     (if (and (numberp corruption-check-interval-sec) (> corruption-check-interval-sec 0))
+                         corruption-check-interval-sec
+                         (dbms-storage-maint-corruption-check-interval-sec cur))
+                     (dbms-storage-maint-last-corruption-check-at cur)
+                     (if (and (numberp max-vacuum-tables-per-tick) (> max-vacuum-tables-per-tick 0))
+                         max-vacuum-tables-per-tick
+                         (dbms-storage-maint-max-vacuum-tables-per-tick cur))
+                     (dbms-storage-maint-table-states cur)))
+         (saved (dbms-storage-save-maint-meta next)))
+    (if (dbms-error-p saved) saved next)))
+
+(defun dbms-storage-maint-touch-table-state (table-name now-sec last-analyze-at last-vacuum-at last-frag-ratio last-row-count)
+  (let* ((meta (dbms-storage-load-maint-meta))
+         (states (dbms-storage-maint-table-states meta))
+         (cur (dbms-storage-maint-find-table-state states table-name))
+         (next-state (dbms-make-maint-table-state table-name
+                                                  (if (and (numberp last-analyze-at) (>= last-analyze-at 0))
+                                                      last-analyze-at
+                                                      (if (dbms-maint-table-state-p cur) (third cur) 0))
+                                                  (if (and (numberp last-vacuum-at) (>= last-vacuum-at 0))
+                                                      last-vacuum-at
+                                                      (if (dbms-maint-table-state-p cur) (fourth cur) 0))
+                                                  (if (and (numberp last-frag-ratio) (>= last-frag-ratio 0))
+                                                      last-frag-ratio
+                                                      (if (dbms-maint-table-state-p cur) (fifth cur) 0))
+                                                  (if (and (numberp last-row-count) (>= last-row-count 0))
+                                                      last-row-count
+                                                      (if (dbms-maint-table-state-p cur) (dbms-sixth cur) 0))))
+         (next-states (dbms-storage-maint-put-table-state states next-state))
+         (next (list 'dbms-maint-meta
+                     (second meta)
+                     (dbms-storage-maint-enabled-p meta)
+                     (dbms-storage-maint-vacuum-frag-threshold meta)
+                     (dbms-storage-maint-analyze-interval-sec meta)
+                     (dbms-storage-maint-vacuum-interval-sec meta)
+                     (dbms-storage-maint-corruption-check-interval-sec meta)
+                     (if (and (numberp now-sec) (>= now-sec 0))
+                         now-sec
+                         (dbms-storage-maint-last-corruption-check-at meta))
+                     (dbms-storage-maint-max-vacuum-tables-per-tick meta)
+                     next-states))
+         (saved (dbms-storage-save-maint-meta next)))
+    (if (dbms-error-p saved) saved next)))
+
+(defun dbms-storage-maint-set-last-corruption-check-at (now-sec)
+  (let* ((meta (dbms-storage-load-maint-meta))
+         (next (list 'dbms-maint-meta
+                     (second meta)
+                     (dbms-storage-maint-enabled-p meta)
+                     (dbms-storage-maint-vacuum-frag-threshold meta)
+                     (dbms-storage-maint-analyze-interval-sec meta)
+                     (dbms-storage-maint-vacuum-interval-sec meta)
+                     (dbms-storage-maint-corruption-check-interval-sec meta)
+                     (if (and (numberp now-sec) (>= now-sec 0)) now-sec (dbms-storage-maint-last-corruption-check-at meta))
+                     (dbms-storage-maint-max-vacuum-tables-per-tick meta)
+                     (dbms-storage-maint-table-states meta)))
+         (saved (dbms-storage-save-maint-meta next)))
+    (if (dbms-error-p saved) saved next)))
+
+(defun dbms-storage-page-corruption-errors (table-name page-id page slot-capacity)
+  (let* ((header (second page))
+         (slots (third page))
+         (expected-checksum (dbms-page-checksum slots))
+         (actual-checksum (fourth header))
+         (expected-free (dbms-count-free-slots slots))
+         (actual-free (fifth header))
+         (errors '()))
+    (if (not (= (length slots) slot-capacity))
+        (setq errors (append errors (list (list "table" table-name)
+                                          (list "page-id" page-id)
+                                          (list "kind" "SLOT_CAPACITY_MISMATCH")
+                                          (list "expected" slot-capacity)
+                                          (list "actual" (length slots))))))
+    (if (not (= expected-checksum actual-checksum))
+        (setq errors (append errors (list (list "table" table-name)
+                                          (list "page-id" page-id)
+                                          (list "kind" "CHECKSUM_MISMATCH")
+                                          (list "expected" expected-checksum)
+                                          (list "actual" actual-checksum)))))
+    (if (not (= expected-free actual-free))
+        (setq errors (append errors (list (list "table" table-name)
+                                          (list "page-id" page-id)
+                                          (list "kind" "FREE_SPACE_MISMATCH")
+                                          (list "expected" expected-free)
+                                          (list "actual" actual-free)))))
+    errors))
+
+(defun dbms-storage-check-table-page-integrity (table-name)
+  (let ((pf (dbms-storage-load-table-pages-file table-name)))
+    (if (not (dbms-data-page-file-p pf))
+        (list (list "table" table-name)
+              (list "kind" "PAGE_FILE_INVALID"))
+        (let* ((slot-capacity (fourth pf))
+               (errors '()))
+          (dolist (pair (dbms-data-page-file-pages pf))
+            (if (and (listp pair) (= (length pair) 2) (dbms-data-page-p (second pair)))
+                (setq errors (append errors
+                                     (dbms-storage-page-corruption-errors table-name
+                                                                          (first pair)
+                                                                          (second pair)
+                                                                          slot-capacity)))
+                (setq errors (append errors
+                                     (list (list (list "table" table-name)
+                                                 (list "page-id" (if (and (listp pair) (not (null pair))) (first pair) -1))
+                                                 (list "kind" "PAGE_PAIR_INVALID")))))))
+          errors))))
+
+(defun dbms-storage-check-catalog-integrity (catalog)
+  (let ((tables (dbms-catalog-table-names catalog))
+        (errors '()))
+    (dolist (name tables)
+      (setq errors (append errors (dbms-storage-check-table-page-integrity name))))
+    errors))
 
 (defun dbms-checkpoint-meta-p (v)
   ;; (dbms-checkpoint <version> <last-lsn> <created-at> <max-txid>)
@@ -1019,8 +1245,13 @@
       (cons '() (dbms-empty-slot-list (- n 1)))))
 
 (defun dbms-data-page-empty (page-id)
-  (dbms-make-data-page (dbms-make-data-page-header page-id 0 0 *dbms-data-page-slot-capacity* '(free))
-                       (dbms-empty-slot-list *dbms-data-page-slot-capacity*)))
+  (let ((slots (dbms-empty-slot-list *dbms-data-page-slot-capacity*)))
+    (dbms-make-data-page (dbms-make-data-page-header page-id
+                                                     0
+                                                     (dbms-page-checksum slots)
+                                                     *dbms-data-page-slot-capacity*
+                                                     '(free))
+                         slots)))
 
 (defun dbms-storage-new-page-file ()
   (dbms-make-data-page-file 1
@@ -1316,6 +1547,12 @@
 
 (defun dbms-eighth (xs)
   (first (cdr (cdr (cdr (cdr (cdr (cdr (cdr xs)))))))))
+
+(defun dbms-ninth (xs)
+  (first (cdr (cdr (cdr (cdr (cdr (cdr (cdr (cdr xs))))))))))
+
+(defun dbms-tenth (xs)
+  (first (cdr (cdr (cdr (cdr (cdr (cdr (cdr (cdr (cdr xs)))))))))))
 
 (defun dbms-btree-index-p (v)
   ;; (dbms-btree-index <table> <index> <column> <root-page-id> <next-page-id> <pages>)
