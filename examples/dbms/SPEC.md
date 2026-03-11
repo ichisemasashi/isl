@@ -1038,3 +1038,48 @@ recovery の運用安全性向上のため、checkpoint メタを導入する。
 - 手動介入なしで断片化/統計劣化を抑制できる。
 - 破損検知時に保守が自動停止し、誤った自動修復を行わない。
 - 両経路（`isl` / `islc-run`）で起動条件・結果が一致する。
+
+## 28. LT-004 セキュリティ強化（認証・通信・監査耐改ざん）
+認証情報の平文依存を避け、通信保護ポリシーと監査ログ改ざん検知を導入する。
+
+### 28.1 Security メタ
+- `security.lspdata`:
+  - `(dbms-security-meta <version> <kdf-spec> <credentials> <tls-mode> <cert-path> <key-path> <ca-path> <audit-key>)`
+- credential:
+  - `(dbms-credential <user> <salt> <rounds> <digest>)`
+- `<kdf-spec>`:
+  - 現行は `"KDF-V1-32"` とし、salted iterative hash を用いる
+- `<tls-mode>`:
+  - `"DISABLED"` or `"REQUIRED"`
+
+### 28.2 管理API
+- `dbms-admin-security-set-password <user> <password>`
+- `dbms-admin-security-configure-tls <mode> <cert-path> <key-path> <ca-path>`
+- `dbms-admin-security-status`
+- `dbms-admin-security-authenticate <user> <password> <transport> <tls-enabled>`
+- `dbms-admin-audit-verify-integrity`
+
+### 28.3 認証規約
+- password は `security.lspdata` に credential として保存する
+- digest は平文を直接保存せず、salt + iterative hash で生成する
+- bootstrap admin は初期 credential を持つ。運用開始後に rotate を必須とする
+- user が存在しても credential 未設定、または password 不一致時は `dbms/authentication-failed`
+
+### 28.4 TLS ポリシー規約
+- DBMS 自身は TLS 終端実装を持たず、ここでは「TLS 必須ポリシー」を管理する
+- `tls-mode="REQUIRED"` の場合、`transport != "LOCAL"` かつ `tls-enabled=nil` の認証は `dbms/tls-required`
+- 実運用では DBMS 前段の transport/webserver/proxy 側 TLS 終端と組み合わせる
+
+### 28.5 監査耐改ざん規約
+- audit record は chain hash 付きで保存する:
+  - legacy: `(dbms-audit-record <ts> <user> <action> <object> <result> <detail>)`
+  - signed: `(dbms-audit-record <ts> <user> <action> <object> <result> <detail> <prev-hash> <entry-hash>)`
+- `entry-hash` は `audit-key + prev-hash + record-body` から導出する
+- archive/current を跨いで chain を維持し、`dbms-admin-audit-verify-integrity` で検証する
+- chain 不整合、hash 不一致、archive 境界不整合は `dbms/audit-tamper-detected`
+
+### 28.6 受け入れ基準
+- credential digest が平文ではなく、一致/不一致判定が安定する
+- TLS required policy 下で非TLS remote auth が拒否される
+- audit 改ざん時に integrity verify が失敗する
+- 両経路（`isl` / `islc-run`）で認証・監査結果が一致する

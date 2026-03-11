@@ -24,7 +24,10 @@
     dbms/duplicate-user
     dbms/duplicate-role
     dbms/user-not-found
-    dbms/role-not-found))
+    dbms/role-not-found
+    dbms/authentication-failed
+    dbms/tls-required
+    dbms/audit-tamper-detected))
 
 (defun dbms-member-eq (x xs)
   (if (null xs)

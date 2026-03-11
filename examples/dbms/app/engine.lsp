@@ -102,7 +102,8 @@
   (let ((recovered (dbms-storage-recover-from-wal))
         (next-tx-id (+ (dbms-storage-wal-max-txid) 1))
         (session-user (getenv "DBMS_SESSION_USER"))
-        (auth '()))
+        (auth '())
+        (security '()))
     ;; Startup path: ensure tx runtime state is reset and txid monotonicity survives restart.
     (dbms-engine-reset-tx-state)
     (dbms-engine-reset-metrics!)
@@ -115,6 +116,8 @@
         (dbms-metrics-set-recovery-lag! (dbms-engine-recovery-lag-from-report recovered)))
     (setq auth (dbms-auth-ensure-bootstrap (dbms-storage-load-auth-meta)))
     (dbms-storage-save-auth-meta auth)
+    (setq security (dbms-security-ensure-bootstrap (dbms-storage-load-security-meta) auth))
+    (dbms-storage-save-security-meta security)
     (if (and (stringp session-user) (not (string= session-user "")))
         (if (dbms-auth-string-list-member-p session-user (dbms-auth-meta-users auth))
             (setq *dbms-session-user* session-user)
@@ -272,15 +275,100 @@
           normalized)
         (dbms-storage-save-auth-meta normalized))))
 
-(defun dbms-engine-audit-log (result action object detail)
+(defun dbms-security-kdf-rounds (_meta)
+  32)
+
+(defun dbms-security-hash-password-with-salt (salt password rounds)
+  (let ((i 0)
+        (digest (string-append salt "|" password)))
+    (while (< i rounds)
+      (setq digest (dbms-storage-audit-hash-string
+                    (string-append salt "|" digest "|" password "|" (format nil "~A" i))))
+      (setq i (+ i 1)))
+    digest))
+
+(defun dbms-security-make-salt (user)
+  (string-append user ":" (format nil "~A" (get-universal-time)) ":" (format nil "~A" (length user))))
+
+(defun dbms-security-build-credential (user password meta)
+  (let* ((salt (dbms-security-make-salt user))
+         (rounds (dbms-security-kdf-rounds meta))
+         (digest (dbms-security-hash-password-with-salt salt password rounds)))
+    (dbms-make-security-credential user salt rounds digest)))
+
+(defun dbms-security-credential-valid-p (cred password)
+  (and (dbms-security-credential-p cred)
+       (string= (fifth cred)
+                (dbms-security-hash-password-with-salt (third cred) password (fourth cred)))))
+
+(defun dbms-security-meta-with-credentials (meta credentials)
+  (list 'dbms-security-meta
+        (second meta)
+        (dbms-security-meta-kdf-spec meta)
+        credentials
+        (dbms-security-meta-tls-mode meta)
+        (dbms-security-meta-cert-path meta)
+        (dbms-security-meta-key-path meta)
+        (dbms-security-meta-ca-path meta)
+        (dbms-security-meta-audit-key meta)))
+
+(defun dbms-security-meta-with-tls (meta tls-mode cert-path key-path ca-path)
+  (list 'dbms-security-meta
+        (second meta)
+        (dbms-security-meta-kdf-spec meta)
+        (dbms-security-meta-credentials meta)
+        tls-mode
+        cert-path
+        key-path
+        ca-path
+        (dbms-security-meta-audit-key meta)))
+
+(defun dbms-security-ensure-bootstrap (meta auth)
+  (let* ((base (if (dbms-security-meta-p meta) meta (dbms-storage-empty-security-meta)))
+         (audit-key (dbms-security-meta-audit-key base))
+         (creds (dbms-security-meta-credentials base))
+         (admin-cred (dbms-storage-security-find-credential creds "admin")))
+    (if (or (null audit-key) (string= audit-key ""))
+        (setq audit-key "dbms-audit-bootstrap-key")
+        nil)
+    (if (and (dbms-auth-meta-p auth)
+             (dbms-auth-string-list-member-p "admin" (dbms-auth-meta-users auth))
+             (null admin-cred))
+        (setq creds (dbms-storage-security-put-credential creds
+                                                          (dbms-security-build-credential "admin"
+                                                                                          "admin"
+                                                                                          base)))
+        nil)
+    (list 'dbms-security-meta
+          (second base)
+          (dbms-security-meta-kdf-spec base)
+          creds
+          (dbms-security-meta-tls-mode base)
+          (dbms-security-meta-cert-path base)
+          (dbms-security-meta-key-path base)
+          (dbms-security-meta-ca-path base)
+          audit-key)))
+
+(defun dbms-engine-load-security-meta ()
+  (dbms-security-ensure-bootstrap (dbms-storage-load-security-meta)
+                                  (dbms-auth-ensure-bootstrap (dbms-storage-load-auth-meta))))
+
+(defun dbms-engine-save-security-meta (meta)
+  (dbms-storage-save-security-meta (dbms-security-ensure-bootstrap meta
+                                                                   (dbms-auth-ensure-bootstrap (dbms-storage-load-auth-meta)))))
+
+(defun dbms-engine-audit-log-with-user (user result action object detail)
   (let ((record (list 'dbms-audit-record
                       (get-universal-time)
-                      *dbms-session-user*
+                      user
                       action
                       object
                       result
                       detail)))
     (dbms-storage-append-audit-record record)))
+
+(defun dbms-engine-audit-log (result action object detail)
+  (dbms-engine-audit-log-with-user *dbms-session-user* result action object detail))
 
 (defun dbms-stmt-audit-object (stmt)
   (let* ((kind (second stmt))
@@ -3512,6 +3600,86 @@
            (list "last-recovery-at" last-recovery-at)
            (list "started-at" started-at)
            (list "uptime-sec" elapsed)))))
+
+(defun dbms-admin-security-set-password (user password)
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot change password while transaction is active" user)
+      (if (or (not (stringp user)) (string= user "")
+              (not (stringp password)) (string= password ""))
+          (dbms-make-result-error 'dbms/invalid-representation "user/password must be non-empty string" (list user password))
+          (let* ((auth (dbms-engine-load-auth-meta))
+                 (security (dbms-engine-load-security-meta)))
+            (if (not (dbms-auth-string-list-member-p user (dbms-auth-meta-users auth)))
+                (dbms-make-result-error 'dbms/user-not-found "user not found" user)
+                (let* ((creds (dbms-security-meta-credentials security))
+                       (cred (dbms-security-build-credential user password security))
+                       (saved (dbms-engine-save-security-meta
+                               (dbms-security-meta-with-credentials security
+                                                                    (dbms-storage-security-put-credential creds cred)))))
+                  (if (dbms-error-p saved)
+                      (dbms-make-result 'error saved)
+                      (dbms-make-result-ok user))))))))
+
+(defun dbms-admin-security-configure-tls (tls-mode cert-path key-path ca-path)
+  (if (dbms-tx-active-p)
+      (dbms-make-result-error 'dbms/tx-already-active "cannot configure tls while transaction is active" tls-mode)
+      (if (or (not (stringp tls-mode))
+              (and (not (string= tls-mode "DISABLED"))
+                   (not (string= tls-mode "REQUIRED"))))
+          (dbms-make-result-error 'dbms/invalid-representation "tls mode must be DISABLED or REQUIRED" tls-mode)
+          (let* ((security (dbms-engine-load-security-meta))
+                 (saved (dbms-engine-save-security-meta
+                         (dbms-security-meta-with-tls security
+                                                      tls-mode
+                                                      (if (stringp cert-path) cert-path "")
+                                                      (if (stringp key-path) key-path "")
+                                                      (if (stringp ca-path) ca-path "")))))
+            (if (dbms-error-p saved)
+                (dbms-make-result 'error saved)
+                (dbms-make-result-ok saved))))))
+
+(defun dbms-admin-security-status ()
+  (dbms-make-result-ok
+   (let ((security (dbms-engine-load-security-meta)))
+     (list (list "kdf-spec" (dbms-security-meta-kdf-spec security))
+           (list "tls-mode" (dbms-security-meta-tls-mode security))
+           (list "cert-path" (dbms-security-meta-cert-path security))
+           (list "key-path" (dbms-security-meta-key-path security))
+           (list "ca-path" (dbms-security-meta-ca-path security))
+           (list "credential-count" (length (dbms-security-meta-credentials security)))))))
+
+(defun dbms-admin-security-authenticate (user password transport tls-enabled)
+  (let* ((security (dbms-engine-load-security-meta))
+         (auth (dbms-engine-load-auth-meta))
+         (tls-mode (dbms-security-meta-tls-mode security))
+         (remote (and (stringp transport) (not (string= transport "LOCAL"))))
+         (cred (dbms-storage-security-find-credential (dbms-security-meta-credentials security) user))
+         (result '()))
+    (if (and remote (string= tls-mode "REQUIRED") (null tls-enabled))
+        (setq result (dbms-make-result-error 'dbms/tls-required "tls required for remote authentication" transport))
+        (if (not (dbms-auth-string-list-member-p user (dbms-auth-meta-users auth)))
+            (setq result (dbms-make-result-error 'dbms/authentication-failed "authentication failed" user))
+            (if (or (null cred)
+                    (not (dbms-security-credential-valid-p cred password)))
+                (setq result (dbms-make-result-error 'dbms/authentication-failed "authentication failed" user))
+                (progn
+                  (setq *dbms-session-user* user)
+                  (setq *dbms-session-active-role* "")
+                  (setq result (dbms-make-result-ok user))))))
+    (dbms-engine-audit-log-with-user user
+                                     (if (and (dbms-result-p result) (eq (second result) 'ok)) 'OK 'DENY)
+                                     'AUTH
+                                     (if (stringp transport) transport "LOCAL")
+                                     (if (and (dbms-result-p result) (eq (second result) 'error))
+                                         (third result)
+                                         user))
+    result))
+
+(defun dbms-admin-audit-verify-integrity ()
+  (let ((report (dbms-storage-audit-verify-chain)))
+    (if (dbms-error-p report)
+        (dbms-make-result 'error report)
+        (dbms-make-result-ok report))))
 
 (defun dbms-admin-backup-create ()
   (if (dbms-tx-active-p)

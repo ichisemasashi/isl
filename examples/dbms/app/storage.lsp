@@ -31,6 +31,9 @@
 (defun dbms-storage-auth-path ()
   (string-append (dbms-storage-root) "/auth.lspdata"))
 
+(defun dbms-storage-security-path ()
+  (string-append (dbms-storage-root) "/security.lspdata"))
+
 (defun dbms-storage-audit-path ()
   (string-append (dbms-storage-root) "/audit.lspdata"))
 
@@ -1028,24 +1031,244 @@
       (dbms-storage-atomic-replace (dbms-storage-auth-path) auth)
       (dbms-make-error 'dbms/invalid-representation "auth must be dbms-auth-meta" auth)))
 
+(defun dbms-security-credential-p (v)
+  ;; (dbms-credential <user> <salt> <rounds> <digest>)
+  (and (listp v)
+       (= (length v) 5)
+       (eq (first v) 'dbms-credential)
+       (stringp (second v))
+       (stringp (third v))
+       (numberp (fourth v))
+       (stringp (fifth v))))
+
+(defun dbms-make-security-credential (user salt rounds digest)
+  (list 'dbms-credential user salt rounds digest))
+
+(defun dbms-security-meta-p (v)
+  ;; (dbms-security-meta <version> <kdf-spec> <credentials> <tls-mode> <cert-path> <key-path> <ca-path> <audit-key>)
+  (and (listp v)
+       (= (length v) 9)
+       (eq (first v) 'dbms-security-meta)
+       (numberp (second v))
+       (stringp (third v))
+       (listp (fourth v))
+       (stringp (fifth v))
+       (stringp (dbms-sixth v))
+       (stringp (dbms-seventh v))
+       (stringp (dbms-eighth v))
+       (stringp (dbms-ninth v))))
+
+(defun dbms-storage-empty-security-meta ()
+  (list 'dbms-security-meta 1 "KDF-V1-32" '() "DISABLED" "" "" "" "dbms-audit-bootstrap-key"))
+
+(defun dbms-storage-load-security-meta ()
+  (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-security-path))))
+    (if (dbms-security-meta-p raw)
+        raw
+        (dbms-storage-empty-security-meta))))
+
+(defun dbms-storage-save-security-meta (meta)
+  (if (dbms-security-meta-p meta)
+      (dbms-storage-atomic-replace (dbms-storage-security-path) meta)
+      (dbms-make-error 'dbms/invalid-representation "security meta must be dbms-security-meta" meta)))
+
+(defun dbms-security-meta-kdf-spec (meta)
+  (if (dbms-security-meta-p meta) (third meta) "KDF-V1-32"))
+
+(defun dbms-security-meta-credentials (meta)
+  (if (dbms-security-meta-p meta) (fourth meta) '()))
+
+(defun dbms-security-meta-tls-mode (meta)
+  (if (dbms-security-meta-p meta) (fifth meta) "DISABLED"))
+
+(defun dbms-security-meta-cert-path (meta)
+  (if (dbms-security-meta-p meta) (dbms-sixth meta) ""))
+
+(defun dbms-security-meta-key-path (meta)
+  (if (dbms-security-meta-p meta) (dbms-seventh meta) ""))
+
+(defun dbms-security-meta-ca-path (meta)
+  (if (dbms-security-meta-p meta) (dbms-eighth meta) ""))
+
+(defun dbms-security-meta-audit-key (meta)
+  (if (dbms-security-meta-p meta) (dbms-ninth meta) "dbms-audit-bootstrap-key"))
+
+(defun dbms-storage-security-find-credential (credentials user)
+  (if (null credentials)
+      '()
+      (if (and (dbms-security-credential-p (car credentials))
+               (string= (second (car credentials)) user))
+          (car credentials)
+          (dbms-storage-security-find-credential (cdr credentials) user))))
+
+(defun dbms-storage-security-put-credential (credentials cred)
+  (if (null credentials)
+      (list cred)
+      (if (and (dbms-security-credential-p (car credentials))
+               (string= (second (car credentials)) (second cred)))
+          (cons cred (cdr credentials))
+          (cons (car credentials) (dbms-storage-security-put-credential (cdr credentials) cred)))))
+
+(defun dbms-storage-audit-record-p (v)
+  ;; legacy: (dbms-audit-record ts user action object result detail)
+  ;; signed : (dbms-audit-record ts user action object result detail prev-hash entry-hash)
+  (and (listp v)
+       (or (= (length v) 7) (= (length v) 9))
+       (eq (first v) 'dbms-audit-record)
+       (numberp (second v))
+       (stringp (third v))))
+
+(defun dbms-storage-audit-record-body (record)
+  (list (second record)
+        (third record)
+        (fourth record)
+        (fifth record)
+        (dbms-sixth record)
+        (dbms-seventh record)))
+
+(defun dbms-storage-audit-record-prev-hash (record)
+  (if (and (dbms-storage-audit-record-p record) (= (length record) 9))
+      (dbms-eighth record)
+      ""))
+
+(defun dbms-storage-audit-record-entry-hash (record)
+  (if (and (dbms-storage-audit-record-p record) (= (length record) 9))
+      (dbms-ninth record)
+      ""))
+
+(defun dbms-storage-string-last (xs)
+  (if (null (cdr xs))
+      (car xs)
+      (dbms-storage-string-last (cdr xs))))
+
+(defun dbms-storage-audit-char-code (ch)
+  (let ((idx (string-index ch " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~")))
+    (if (null idx) 0 (+ idx 32))))
+
+(defun dbms-storage-audit-mod (n m)
+  (- n (* m (truncate (/ n m)))))
+
+(defun dbms-storage-audit-hash-string (s)
+  (let ((i 0)
+        (n (length s))
+        (acc 216613626))
+    (while (< i n)
+      (setq acc (+ (* acc 16777619)
+                   (dbms-storage-audit-char-code (substring s i (+ i 1)))))
+      (setq acc (dbms-storage-audit-mod acc 2147483647))
+      (if (< acc 0)
+          (setq acc (- 0 acc))
+          nil)
+      (setq i (+ i 1)))
+    (format nil "~X" acc)))
+
+(defun dbms-storage-audit-entry-hash (audit-key prev-hash record)
+  (dbms-storage-audit-hash-string
+   (string-append audit-key "|" prev-hash "|" (format nil "~S" (dbms-storage-audit-record-body record)))))
+
+(defun dbms-storage-audit-sign-record (audit-key prev-hash record)
+  (let ((entry-hash (dbms-storage-audit-entry-hash audit-key prev-hash record)))
+    (list 'dbms-audit-record
+          (second record)
+          (third record)
+          (fourth record)
+          (fifth record)
+          (dbms-sixth record)
+          (dbms-seventh record)
+          prev-hash
+          entry-hash)))
+
+(defun dbms-storage-audit-normalize-log-with-key (entries audit-key)
+  (let ((rest entries)
+        (prev-hash "")
+        (out '())
+        (tampered '()))
+    (while (and (null tampered) (not (null rest)))
+      (let* ((entry (car rest))
+             (signed (if (= (length entry) 9)
+                         entry
+                         (dbms-storage-audit-sign-record audit-key prev-hash entry)))
+             (expected (dbms-storage-audit-entry-hash audit-key
+                                                     (dbms-storage-audit-record-prev-hash signed)
+                                                     signed)))
+        (if (or (not (dbms-storage-audit-record-p signed))
+                (not (string= (dbms-storage-audit-record-prev-hash signed) prev-hash))
+                (not (string= (dbms-storage-audit-record-entry-hash signed) expected)))
+            (setq tampered (dbms-make-error 'dbms/audit-tamper-detected "audit log tamper detected" signed))
+            (progn
+              (setq out (append out (list signed)))
+              (setq prev-hash (dbms-storage-audit-record-entry-hash signed)))))
+      (setq rest (cdr rest)))
+    (if (dbms-error-p tampered) tampered out)))
+
+(defun dbms-storage-audit-archive-list-from-seq (seq)
+  (let ((path (dbms-storage-audit-archive-path seq)))
+    (if (null (probe-file path))
+        '()
+        (cons path (dbms-storage-audit-archive-list-from-seq (+ seq 1))))))
+
+(defun dbms-storage-audit-archive-paths ()
+  (dbms-storage-audit-archive-list-from-seq 1))
+
+(defun dbms-storage-audit-verify-chain ()
+  (let* ((security (dbms-storage-load-security-meta))
+         (audit-key (dbms-security-meta-audit-key security))
+         (paths (append (dbms-storage-audit-archive-paths)
+                        (list (dbms-storage-audit-path))))
+         (last-hash "")
+         (checked 0)
+         (failed '()))
+    (dolist (path paths)
+      (if (dbms-error-p failed)
+          nil
+          (let* ((entries (dbms-storage-read-sexpr-file path))
+                 (norm (if (listp entries)
+                           (dbms-storage-audit-normalize-log-with-key entries audit-key)
+                           '())))
+            (if (dbms-error-p norm)
+                (setq failed norm)
+                (progn
+                  (if (not (null norm))
+                      (progn
+                        (if (not (string= (dbms-storage-audit-record-prev-hash (car norm)) last-hash))
+                            (setq failed (dbms-make-error 'dbms/audit-tamper-detected "audit chain boundary mismatch" path))
+                            (setq last-hash (dbms-storage-audit-record-entry-hash (dbms-storage-string-last norm))))
+                        (setq checked (+ checked (length norm))))
+                      nil))))))
+    (if (dbms-error-p failed)
+        failed
+        (list 'dbms-audit-verify-report
+              (list "ok" t)
+              (list "record-count" checked)
+              (list "tail-hash" last-hash)))))
+
 (defun dbms-storage-load-audit-log ()
   (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-audit-path))))
     (if (listp raw) raw '())))
 
 (defun dbms-storage-append-audit-record (record)
-  (let* ((entries (dbms-storage-load-audit-log))
-         (merged (append entries (list record)))
-         (max-entries (dbms-storage-audit-max-entries)))
-    (if (> (length merged) max-entries)
-        (let* ((overflow (- (length merged) max-entries))
-               (archived (dbms-storage-list-take merged overflow))
-               (kept (dbms-storage-list-drop merged overflow))
-               (archive-path (dbms-storage-next-audit-archive-path))
-               (saved-archive (dbms-storage-atomic-replace archive-path archived)))
-          (if (dbms-error-p saved-archive)
-              saved-archive
-              (dbms-storage-atomic-replace (dbms-storage-audit-path) kept)))
-        (dbms-storage-atomic-replace (dbms-storage-audit-path) merged))))
+  (let* ((security (dbms-storage-load-security-meta))
+         (audit-key (dbms-security-meta-audit-key security))
+         (entries (dbms-storage-load-audit-log))
+         (normalized (dbms-storage-audit-normalize-log-with-key entries audit-key)))
+    (if (dbms-error-p normalized)
+        normalized
+        (let* ((prev-hash (if (null normalized)
+                              ""
+                              (dbms-storage-audit-record-entry-hash (dbms-storage-string-last normalized))))
+               (signed (dbms-storage-audit-sign-record audit-key prev-hash record))
+               (merged (append normalized (list signed)))
+               (max-entries (dbms-storage-audit-max-entries)))
+          (if (> (length merged) max-entries)
+              (let* ((overflow (- (length merged) max-entries))
+                     (archived (dbms-storage-list-take merged overflow))
+                     (kept (dbms-storage-list-drop merged overflow))
+                     (archive-path (dbms-storage-next-audit-archive-path))
+                     (saved-archive (dbms-storage-atomic-replace archive-path archived)))
+                (if (dbms-error-p saved-archive)
+                    saved-archive
+                    (dbms-storage-atomic-replace (dbms-storage-audit-path) kept)))
+              (dbms-storage-atomic-replace (dbms-storage-audit-path) merged))))))
 
 (defun dbms-storage-wal-committed-txids (records)
   (let ((begun '())
