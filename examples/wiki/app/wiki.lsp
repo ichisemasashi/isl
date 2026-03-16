@@ -293,6 +293,18 @@
 (defun admin-p ()
   (role-allowed-p (current-role) "admin"))
 
+(defun valid-page-status-p (status)
+  (or (string= status "draft")
+      (string= status "published")
+      (string= status "private")))
+
+(defun visible-page-status-sql (alias)
+  (if (admin-p)
+      "1=1"
+      (if (editor-or-admin-p)
+          (string-append alias ".status in ('draft', 'published')")
+          (string-append alias ".status = 'published'"))))
+
 (defun request-cookie-header ()
   (env-or-empty "HTTP_COOKIE"))
 
@@ -1165,8 +1177,14 @@
             (error "md2html conversion failed" cmd status))))))
 
 (defun fetch-pages (db)
-  (postgres-query db
-    "select slug, title, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') from pages where deleted_at is null order by slug"))
+  (postgres-query
+   db
+   (string-append
+    "select p.slug, p.title, to_char(p.updated_at, 'YYYY-MM-DD HH24:MI:SS'), p.status "
+    "from pages p "
+    "where p.deleted_at is null "
+    "  and " (visible-page-status-sql "p") " "
+    "order by p.slug")))
 
 (defun fetch-pages-by-query (db q)
   (postgres-query
@@ -1179,6 +1197,7 @@
     "p.status "
     "from pages p "
     "where p.deleted_at is null "
+    "  and " (visible-page-status-sql "p") " "
     "  and (p.search_vector @@ plainto_tsquery('simple', '" (sql-escape q) "') "
     "       or position(lower('" (sql-escape q) "') in lower(p.title)) > 0) "
     "order by "
@@ -1197,6 +1216,7 @@
     "p.status "
     "from pages p "
     "where p.deleted_at is null "
+    "  and " (visible-page-status-sql "p") " "
     (if (blank-text-p status)
         ""
         (string-append "  and p.status = '" (sql-escape status) "' "))
@@ -1218,8 +1238,9 @@
 
 (defun fetch-page (db slug)
   (let* ((sql (string-append
-                "select slug, title, body_md, current_rev_no "
-                "from pages where slug='" (sql-escape slug) "' and deleted_at is null limit 1"))
+                "select slug, title, body_md, current_rev_no, status "
+                "from pages where slug='" (sql-escape slug) "' and deleted_at is null "
+                "  and " (visible-page-status-sql "pages") " limit 1"))
          (rows (postgres-query db sql)))
     (if (null rows)
         '()
@@ -1228,12 +1249,40 @@
 (defun fetch-page-any (db slug)
   (let* ((sql (string-append
                 "select slug, title, body_md, current_rev_no, "
-                "coalesce(to_char(deleted_at, 'YYYY-MM-DD HH24:MI:SS'), ''), coalesce(deleted_by, '') "
+                "coalesce(to_char(deleted_at, 'YYYY-MM-DD HH24:MI:SS'), ''), coalesce(deleted_by, ''), status "
                 "from pages where slug='" (sql-escape slug) "' limit 1"))
          (rows (postgres-query db sql)))
     (if (null rows)
         '()
         (first rows))))
+
+(defun fetch-page-tags (db slug)
+  (postgres-query
+   db
+   (string-append
+    "select pt.tag "
+    "from page_tags pt "
+    "join pages p on p.id = pt.page_id "
+    "where p.slug='" (sql-escape slug) "' "
+    "order by pt.tag")))
+
+(defun fetch-page-tags-text (db slug)
+  (let ((rows (fetch-page-tags db slug))
+        (out "")
+        (first-tag t))
+    (dolist (row rows)
+      (if first-tag
+          (progn
+            (setq out (first row))
+            (setq first-tag nil))
+          (setq out (string-append out ", " (first row)))))
+    out))
+
+(defun fetch-page-id-any (db slug)
+  (postgres-query-one
+   db
+   (string-append
+    "select id from pages where slug='" (sql-escape slug) "' limit 1")))
 
 (defun fetch-page-updated-at (db slug)
   (postgres-query-one
@@ -1254,6 +1303,39 @@
 
 (defun page-current-rev-no (page-row)
   (if (null page-row) "" (fourth page-row)))
+
+(defun page-status (page-row)
+  (if (null page-row) "" (fifth page-row)))
+
+(defun split-tags-input (raw)
+  (let ((parts (split-on raw ","))
+        (out '()))
+    (dolist (part parts)
+      (let ((tag (ascii-downcase-string (trim-ws part))))
+        (if (blank-text-p tag)
+            nil
+            (let ((exists nil))
+              (dolist (seen out)
+                (if (string= seen tag)
+                    (setq exists t)
+                    nil))
+              (if exists
+                  nil
+                  (setq out (append out (list tag))))))))
+    out))
+
+(defun sync-page-tags (db slug tags)
+  (let ((page-id (fetch-page-id-any db slug)))
+    (if (blank-text-p page-id)
+        nil
+        (progn
+          (postgres-exec db (string-append "delete from page_tags where page_id=" page-id))
+          (dolist (tag tags)
+            (postgres-exec
+             db
+             (string-append
+              "insert into page_tags (page_id, tag) values ("
+              page-id ", '" (sql-escape tag) "')")))))))
 
 (defun fetch-page-history (db slug)
   (postgres-query
@@ -1867,12 +1949,14 @@
           (dolist (row rows)
             (let ((slug (first row))
                   (title (second row))
-                  (updated-at (third row)))
-              (format t "<li><a href=\"~A/~A\">~A</a> <small>(~A)</small></li>~%"
+                  (updated-at (third row))
+                  (page-status (fourth row)))
+              (format t "<li><a href=\"~A/~A\">~A</a> <small>(~A / ~A)</small></li>~%"
                       base
                       (html-escape slug)
                       (html-escape title)
-                      (html-escape updated-at))))
+                      (html-escape updated-at)
+                      (html-escape page-status))))
           (format t "</ul>~%")))
     (print-layout-foot)))
 
@@ -1960,6 +2044,8 @@
 	            (let ((title (second row))
 	                  (body-md (third row))
 	                  (current-rev-no (page-current-rev-no row))
+                      (page-status (page-status row))
+                      (tags-text (fetch-page-tags-text db slug))
 	                  (updated-at (fetch-page-updated-at db slug))
 	                  (latest-summary (fetch-latest-edit-summary db slug))
 	                  (media-rows (fetch-media-for-page db slug))
@@ -1998,6 +2084,10 @@
 	                      (html-escape updated-at)
 	                      (html-escape slug)
 	                      (html-escape current-rev-no))
+              (format t "<p><small>status: <code>~A</code></small></p>~%" (html-escape page-status))
+              (if (blank-text-p tags-text)
+                  nil
+                  (format t "<p><small>tags: <code>~A</code></small></p>~%" (html-escape tags-text)))
               (if (string= latest-summary "")
                   nil
                   (format t "<p><small>latest summary: ~A</small></p>~%" (html-escape latest-summary)))
@@ -2088,9 +2178,10 @@
 (defun render-revision-view (db slug rev-no)
   (if (not (slug-safe-p slug))
       (render-not-found)
-      (let ((rev (fetch-page-revision db slug rev-no))
+      (let ((page (fetch-page db slug))
+            (rev (fetch-page-revision db slug rev-no))
             (base (app-base)))
-        (if (null rev)
+        (if (or (null page) (null rev))
             (render-not-found)
             (let ((found-rev-no (first rev))
                   (title (second rev))
@@ -2129,10 +2220,11 @@
 (defun render-compare-view (db slug left-rev-no right-rev-no)
   (if (not (slug-safe-p slug))
       (render-not-found)
-      (let ((left-rev (fetch-page-revision db slug left-rev-no))
+      (let ((page (fetch-page db slug))
+            (left-rev (fetch-page-revision db slug left-rev-no))
             (right-rev (fetch-page-revision db slug right-rev-no))
             (base (app-base)))
-        (if (or (null left-rev) (null right-rev))
+        (if (or (null page) (null left-rev) (null right-rev))
             (render-not-found)
             (let ((left-title (second left-rev))
                   (left-body (third left-rev))
@@ -2205,12 +2297,16 @@
                   nil
                   (let* ((title (parse-form-field raw-body "title"))
                          (body-md (parse-form-field raw-body "body_md"))
+                         (status (parse-form-field raw-body "status"))
+                         (tags-raw (parse-form-field raw-body "tags"))
                          (edit-summary (parse-form-field raw-body "edit_summary"))
                          (expected-rev (parse-form-field raw-body "current_rev_no"))
                          (page-now (fetch-page db slug))
                          (actual-rev (page-current-rev-no page-now)))
                     (if (blank-text-p title)
                         (render-bad-request "title must not be blank")
+                        (if (not (valid-page-status-p status))
+                            (render-bad-request "status must be draft/published/private")
                         (if (or (blank-text-p expected-rev)
                                 (not (string= expected-rev actual-rev)))
                             (render-edit-conflict db slug title body-md edit-summary expected-rev actual-rev)
@@ -2220,6 +2316,7 @@
                                     "  update pages "
                                     "     set title = '" (sql-escape title) "',"
                                     "         body_md = '" (sql-escape body-md) "',"
+                                    "         status = '" (sql-escape status) "',"
                                     "         last_edited_by = '" (sql-escape (current-username)) "',"
                                     "         current_rev_no = current_rev_no + 1 "
                                     "   where slug = '" (sql-escape slug) "' "
@@ -2236,6 +2333,7 @@
                                     "' "
                                     "from updated u"))))
                               (postgres-exec db sql)
+                              (sync-page-tags db slug (split-tags-input tags-raw))
                               (write-audit-log
                                db
                                "page.update"
@@ -2249,7 +2347,7 @@
                                 "slug" slug
                                 "title" title
                                 "edit_summary" edit-summary))
-                              (render-see-other (string-append (app-base) "/" slug)))))))))))
+                              (render-see-other (string-append (app-base) "/" slug))))))))))))
 
 (defun create-page (db)
   (let ((raw-body (read-form-body-or-render t)))
@@ -2258,19 +2356,24 @@
         (let* ((slug (parse-form-field raw-body "slug"))
                (title (parse-form-field raw-body "title"))
                (body-md (parse-form-field raw-body "body_md"))
+               (status (parse-form-field raw-body "status"))
+               (tags-raw (parse-form-field raw-body "tags"))
                (edit-summary (parse-form-field raw-body "edit_summary")))
           (if (or (not (slug-safe-p slug)) (reserved-slug-p slug))
               (render-bad-request "invalid slug")
               (if (blank-text-p title)
                   (render-bad-request "title must not be blank")
+                  (if (not (valid-page-status-p status))
+                      (render-bad-request "status must be draft/published/private")
                   (if (null (fetch-page-any db slug))
 	                      (let ((sql
 		                             (string-append
 		                              "with inserted as ("
-		                              "  insert into pages (slug, title, body_md, last_edited_by, current_rev_no) "
+		                              "  insert into pages (slug, title, body_md, status, last_edited_by, current_rev_no) "
 		                              "  values ('" (sql-escape slug) "', '"
 		                              (sql-escape title) "', '"
-		                              (sql-escape body-md) "', '" (sql-escape (current-username)) "', 1) "
+		                              (sql-escape body-md) "', '"
+                                      (sql-escape status) "', '" (sql-escape (current-username)) "', 1) "
 		                              "  returning id, title, body_md, current_rev_no"
 		                              ") "
 		                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
@@ -2278,6 +2381,7 @@
 		                              (sql-escape edit-summary)
 		                              "' from inserted i")))
                         (postgres-exec db sql)
+                        (sync-page-tags db slug (split-tags-input tags-raw))
                         (write-audit-log
                          db
                          "page.create"
@@ -2292,7 +2396,7 @@
                           "title" title
                           "edit_summary" edit-summary))
                         (render-see-other (string-append (app-base) "/" slug)))
-                      (render-bad-request "slug already exists (or is soft-deleted; restore it from admin)"))))))))
+                      (render-bad-request "slug already exists (or is soft-deleted; restore it from admin)")))))))))
 
 (defun render-media-index (db)
   (let ((rows (fetch-media-list db))
@@ -3096,6 +3200,8 @@
     (format t "  <p><small>slug: a-z, 0-9, '-' のみ。先頭末尾 '-' 不可。</small></p>~%")
     (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
     (format t "  <p><label>Body (Markdown)<br><textarea name=\"body_md\"></textarea></label></p>~%")
+    (format t "  <p><label>Status<br><select name=\"status\"><option value=\"published\">published</option><option value=\"draft\">draft</option><option value=\"private\">private</option></select></label></p>~%")
+    (format t "  <p><label>Tags (comma separated)<br><input type=\"text\" name=\"tags\" value=\"\" style=\"width:100%\" placeholder=\"guide, onboarding\"></label></p>~%")
     (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"create page\" style=\"width:100%\"></label></p>~%")
     (format t "  <p><button type=\"submit\">Create</button></p>~%")
     (format t "</form>~%")
@@ -3108,7 +3214,9 @@
         (if (null row)
             (render-not-found)
 	            (let ((title (second row))
-	                  (body-md (third row)))
+	                  (body-md (third row))
+                      (page-status (page-status row))
+                      (tags-text (fetch-page-tags-text db slug)))
 	              (print-headers-ok)
 	              (print-layout-head (string-append "Edit: " title))
               (format t "<h1>Edit: ~A</h1>~%" (html-escape title))
@@ -3121,6 +3229,12 @@
 	                      (html-escape title))
               (format t "  <p><label>Body (Markdown)<br><textarea name=\"body_md\">~A</textarea></label></p>~%"
                       (html-escape body-md))
+              (format t "  <p><label>Status<br><select name=\"status\"><option value=\"published\"~A>published</option><option value=\"draft\"~A>draft</option><option value=\"private\"~A>private</option></select></label></p>~%"
+                      (if (string= page-status "published") " selected" "")
+                      (if (string= page-status "draft") " selected" "")
+                      (if (string= page-status "private") " selected" ""))
+              (format t "  <p><label>Tags (comma separated)<br><input type=\"text\" name=\"tags\" value=\"~A\" style=\"width:100%\"></label></p>~%"
+                      (html-escape tags-text))
               (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"\" style=\"width:100%\"></label></p>~%")
               (format t "  <p><button type=\"submit\">Save</button></p>~%")
               (format t "</form>~%")

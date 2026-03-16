@@ -167,6 +167,9 @@ http://localhost:8080/wiki/login
 - 検索フォームは既存クエリを再表示する
 - 検索はタイトル一致優先で並び、本文スニペットを表示する
 - 検索は PostgreSQL 全文検索を利用し、`tag` と `status` で絞り込みできる
+- ページ作成/編集画面で `status` と `tags` を編集できる
+- 公開状態は `published=全員`, `draft=editor以上`, `private=adminのみ` で表示制御される
+- 一覧と検索結果にはページの `status` が反映される
 - `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
 - ページ作成/編集、メディア追加/削除、backup/restore は監査ログに記録される
 - 監査ログは `/wiki/admin/audit` で最新100件を参照できる
