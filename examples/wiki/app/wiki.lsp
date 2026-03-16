@@ -1172,12 +1172,49 @@
   (postgres-query
    db
    (string-append
-    "select slug, title, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') "
-    "from pages "
-    "where deleted_at is null "
-    "  and (position(lower('" (sql-escape q) "') in lower(title)) > 0 "
-    "   or position(lower('" (sql-escape q) "') in lower(body_md)) > 0 "
-    ") order by updated_at desc, slug")))
+    "select p.slug, p.title, to_char(p.updated_at, 'YYYY-MM-DD HH24:MI:SS'), "
+    "coalesce(ts_headline('simple', p.body_md, plainto_tsquery('simple', '" (sql-escape q) "'), "
+    "'MaxFragments=2,MinWords=6,MaxWords=20,StartSel=<mark>,StopSel=</mark>'), ''), "
+    "coalesce((select string_agg(pt.tag, ', ' order by pt.tag) from page_tags pt where pt.page_id = p.id), ''), "
+    "p.status "
+    "from pages p "
+    "where p.deleted_at is null "
+    "  and (p.search_vector @@ plainto_tsquery('simple', '" (sql-escape q) "') "
+    "       or position(lower('" (sql-escape q) "') in lower(p.title)) > 0) "
+    "order by "
+    "  case when position(lower('" (sql-escape q) "') in lower(p.title)) > 0 then 0 else 1 end, "
+    "  ts_rank_cd(p.search_vector, plainto_tsquery('simple', '" (sql-escape q) "')) desc, "
+    "  p.updated_at desc, p.slug")))
+
+(defun fetch-pages-by-query-filtered (db q tag status)
+  (postgres-query
+   db
+   (string-append
+    "select p.slug, p.title, to_char(p.updated_at, 'YYYY-MM-DD HH24:MI:SS'), "
+    "coalesce(ts_headline('simple', p.body_md, plainto_tsquery('simple', '" (sql-escape q) "'), "
+    "'MaxFragments=2,MinWords=6,MaxWords=20,StartSel=<mark>,StopSel=</mark>'), ''), "
+    "coalesce((select string_agg(pt.tag, ', ' order by pt.tag) from page_tags pt where pt.page_id = p.id), ''), "
+    "p.status "
+    "from pages p "
+    "where p.deleted_at is null "
+    (if (blank-text-p status)
+        ""
+        (string-append "  and p.status = '" (sql-escape status) "' "))
+    (if (blank-text-p tag)
+        ""
+        (string-append "  and exists (select 1 from page_tags ptf where ptf.page_id = p.id and ptf.tag = '" (sql-escape tag) "') "))
+    "  and (p.search_vector @@ plainto_tsquery('simple', '" (sql-escape q) "') "
+    "       or position(lower('" (sql-escape q) "') in lower(p.title)) > 0) "
+    "order by "
+    "  case when position(lower('" (sql-escape q) "') in lower(p.title)) > 0 then 0 else 1 end, "
+    "  ts_rank_cd(p.search_vector, plainto_tsquery('simple', '" (sql-escape q) "')) desc, "
+    "  p.updated_at desc, p.slug")))
+
+(defun fetch-search-tags (db)
+  (postgres-query
+   db
+   (string-append
+    "select distinct tag from page_tags order by tag")))
 
 (defun fetch-page (db slug)
   (let* ((sql (string-append
@@ -1599,7 +1636,8 @@
               (app-base))
       (format t " | <a href=\"~A/login\">Login</a></p>~%" (app-base)))
   (format t "<form method=\"get\" action=\"~A/search\" style=\"margin:0 0 1rem 0\">~%" (app-base))
-  (format t "<input type=\"text\" name=\"q\" value=\"\" placeholder=\"Search wiki text\" style=\"width:70%;max-width:28rem\">~%")
+  (format t "<input type=\"text\" name=\"q\" value=\"~A\" placeholder=\"Search wiki text\" style=\"width:70%;max-width:28rem\">~%"
+          (html-escape (query-param "q")))
   (format t "<button type=\"submit\">Search</button>~%")
   (format t "</form>~%"))
 
@@ -1840,14 +1878,39 @@
 
 (defun render-search (db)
   (let ((q (query-param "q"))
-        (base (app-base)))
+        (tag (query-param "tag"))
+        (status (query-param "status"))
+        (base (app-base))
+        (tags (fetch-search-tags db)))
     (print-headers-ok)
     (print-layout-head "Search")
     (format t "<h1>Search</h1>~%")
+    (format t "<form method=\"get\" action=\"~A/search\" style=\"margin:0 0 1rem 0;padding:1rem;border:1px solid #ddd;border-radius:8px\">~%" base)
+    (format t "<p><label>Query<br><input type=\"text\" name=\"q\" value=\"~A\" placeholder=\"Search wiki text\" style=\"width:100%\"></label></p>~%"
+            (html-escape q))
+    (format t "<p><label>Status<br><select name=\"status\"><option value=\"\">all</option><option value=\"published\"~A>published</option><option value=\"draft\"~A>draft</option><option value=\"private\"~A>private</option></select></label></p>~%"
+            (if (string= status "published") " selected" "")
+            (if (string= status "draft") " selected" "")
+            (if (string= status "private") " selected" ""))
+    (format t "<p><label>Tag<br><input type=\"text\" name=\"tag\" value=\"~A\" list=\"search-tags\" placeholder=\"tag name\"></label></p>~%"
+            (html-escape tag))
+    (format t "<datalist id=\"search-tags\">~%")
+    (dolist (row tags)
+      (format t "<option value=\"~A\"></option>~%" (html-escape (first row))))
+    (format t "</datalist>~%")
+    (format t "<p><button type=\"submit\">Search</button></p>~%")
+    (format t "</form>~%")
     (if (blank-text-p q)
         (format t "<p>検索文字列を入力してください。</p>~%")
-        (let ((rows (fetch-pages-by-query db q)))
-          (format t "<p>query: <code>~A</code></p>~%" (html-escape q))
+        (let ((rows (fetch-pages-by-query-filtered db q tag status)))
+          (format t "<p>query: <code>~A</code>" (html-escape q))
+          (if (blank-text-p tag)
+              nil
+              (format t " / tag: <code>~A</code>" (html-escape tag)))
+          (if (blank-text-p status)
+              nil
+              (format t " / status: <code>~A</code>" (html-escape status)))
+          (format t "</p>~%")
           (if (null rows)
               (format t "<p>一致するページはありません。</p>~%")
               (progn
@@ -1855,13 +1918,24 @@
                 (dolist (row rows)
                   (let ((slug (first row))
                         (title (second row))
-                        (updated-at (third row)))
-                    (format t "<li><a href=\"~A/~A?q=~A\">~A</a> <small>(~A)</small></li>~%"
+                        (updated-at (third row))
+                        (snippet (fourth row))
+                        (tags-text (fifth row))
+                        (page-status (sixth row)))
+                    (format t "<li><a href=\"~A/~A?q=~A\">~A</a> <small>(~A / ~A)</small>"
                             base
                             (html-escape slug)
                             (html-escape (url-encode-lite q))
                             (html-escape title)
-                            (html-escape updated-at))))
+                            (html-escape updated-at)
+                            (html-escape page-status))
+                    (if (blank-text-p tags-text)
+                        nil
+                        (format t "<br><small>tags: ~A</small>" (html-escape tags-text)))
+                    (if (blank-text-p snippet)
+                        nil
+                        (format t "<br><small>~A</small>" snippet))
+                    (format t "</li>~%")))
                 (format t "</ul>~%")))))
     (print-layout-foot)))
 

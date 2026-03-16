@@ -22,7 +22,7 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/new` : 新規ページ作成（POSTで保存可能）
 - `/wiki/media` : メディア一覧（任意ファイル。画像/動画/音声は埋め込み表示）
 - `/wiki/media/new` : メディア追加（POSTで保存）
-- `/wiki/search?q=...` : 文書検索（title / body_md の部分一致）
+- `/wiki/search?q=...` : 文書検索（PostgreSQL全文検索 + タイトル優先）
   - 検索結果からページへ遷移すると、`q` の一致箇所をハイライト表示
 - `/wiki/admin` : 管理メニュー
 - `/wiki/admin/backup` : DB + メディアのバックアップ作成
@@ -83,6 +83,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/005_
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/006_audit_logs.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/007_page_lock_version.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/008_soft_delete.sql
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/009_search.sql
 ```
 
 `004_auth.sql` は次を作成します。
@@ -94,6 +95,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/008_
 `006_audit_logs.sql` は `audit_logs` を追加します。
 `007_page_lock_version.sql` は `pages.current_rev_no` を追加します。
 `008_soft_delete.sql` は `pages` / `media_assets` に論理削除カラムを追加します。
+`009_search.sql` は `pages.status`, `page_tags`, `pages.search_vector` を追加します。
 
 初期管理者:
 - username: `admin`
@@ -162,6 +164,9 @@ http://localhost:8080/wiki/login
 - アプリ独自ログは `log_dir/wiki-app.log` に JSON Lines 形式で出力される
 - page create/update、media create、backup、restore は structured log にも記録される
 - 500画面には内部例外の詳細を直接表示せず、詳細はサーバーログ確認前提にした
+- 検索フォームは既存クエリを再表示する
+- 検索はタイトル一致優先で並び、本文スニペットを表示する
+- 検索は PostgreSQL 全文検索を利用し、`tag` と `status` で絞り込みできる
 - `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
 - ページ作成/編集、メディア追加/削除、backup/restore は監査ログに記録される
 - 監査ログは `/wiki/admin/audit` で最新100件を参照できる
