@@ -58,6 +58,9 @@
 (assert-true "date non-empty" (> (length (os-date-utc-iso8601)) 0))
 (assert-true "http date non-empty" (> (length (os-date-http-from-epoch "darwin" 0)) 0))
 (assert-true "http date parse" (numberp (os-epoch-from-http-date "darwin" "Thu, 01 Jan 1970 00:00:00 GMT")))
+(assert-true "sips availability predicate boolean"
+             (or (eq (os-sips-available-p) t)
+                 (null (os-sips-available-p))))
 (assert-true "tar create" (os-tar-create-gz *os-utils-tar-file* *os-utils-test-root*))
 (assert-true "mkdir out" (os-mkdir-p *os-utils-untar-root*))
 (assert-true "tar extract" (os-tar-extract-gz *os-utils-tar-file* *os-utils-untar-root*))

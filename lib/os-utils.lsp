@@ -196,6 +196,22 @@
                 (osu-command-output
                  (string-append "base64 < " (osu-shell-quote path)))))
 
+(defun os-sips-available-p ()
+  (or (os-command-available-p "sips")
+      (os-file-executable-p "/usr/bin/sips")))
+
+(defun os-image-thumb-jpeg (source-path dest-path max-size)
+  (if (not (os-sips-available-p))
+      nil
+      (= (system (string-append "sips -Z "
+                                (format nil "~A" max-size)
+                                " "
+                                (osu-shell-quote source-path)
+                                " --out "
+                                (osu-shell-quote dest-path)
+                                " >/dev/null 2>&1"))
+         0)))
+
 (defun os-tar-create-gz (archive-path source-dir)
   (= (system (string-append "tar -czf "
                             (osu-shell-quote archive-path)

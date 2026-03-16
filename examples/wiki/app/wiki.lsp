@@ -489,12 +489,7 @@
                                                         "-"
                                                         (format nil "~A" *command-temp-counter*)
                                                         ".jpg"))
-                             (use-thumb (and (os-command-available-p "sips")
-                                             (= (system (string-append "sips -Z 256 "
-                                                                       (shell-quote storage-path)
-                                                                       " --out "
-                                                                       (shell-quote thumb-path)
-                                                                       " >/dev/null 2>&1")) 0)))
+                             (use-thumb (os-image-thumb-jpeg storage-path thumb-path 256))
                              (source-path (if use-thumb thumb-path storage-path))
                              (source-mime (if use-thumb "image/jpeg" mtype))
                              (b64 (os-base64-file-no-newline source-path)))
@@ -528,12 +523,7 @@
                                                         "-"
                                                         (format nil "~A" *command-temp-counter*)
                                                         ".jpg"))
-                             (thumb-ok (and (os-file-executable-p "/usr/bin/sips")
-                                            (= (system (string-append "/usr/bin/sips -Z 220 "
-                                                                      (shell-quote storage-path)
-                                                                      " --out "
-                                                                      (shell-quote thumb-path)
-                                                                      " >/dev/null 2>&1")) 0)))
+                             (thumb-ok (os-image-thumb-jpeg storage-path thumb-path 220))
                              (b64 (if thumb-ok
                                       (os-base64-file-no-newline thumb-path)
                                       "")))
