@@ -113,6 +113,7 @@ export ISL_WIKI_BACKUP_DIR='/tmp/isl-wiki-backups'
 ```
 
 アップロード上限は `conf/wiki.conf` の `media_max_bytes` で設定します。
+アプリログ出力先は `conf/wiki.conf` の `log_dir` で設定します。
 
 ## Apache 設定
 
@@ -157,6 +158,10 @@ http://localhost:8080/wiki/login
 - 許可拡張子/MIME のみ登録でき、拡張子と実測MIMEが不一致なファイルは拒否される
 - `html/js/svg/exe/sh` など危険拡張子は拒否される
 - メディア配信は `X-Content-Type-Options: nosniff` を付与し、画像/動画/音声以外は `attachment` 配信される
+- 全レスポンスに `X-Request-Id` が付き、エラー画面にも同じ request id を表示する
+- アプリ独自ログは `log_dir/wiki-app.log` に JSON Lines 形式で出力される
+- page create/update、media create、backup、restore は structured log にも記録される
+- 500画面には内部例外の詳細を直接表示せず、詳細はサーバーログ確認前提にした
 - `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
 - ページ作成/編集、メディア追加/削除、backup/restore は監査ログに記録される
 - 監査ログは `/wiki/admin/audit` で最新100件を参照できる

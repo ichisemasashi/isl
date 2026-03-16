@@ -248,6 +248,7 @@
 
 (defglobal *wiki-current-user* '())
 (defglobal *response-extra-headers* '())
+(defglobal *wiki-request-id* "")
 
 (defun clear-response-extra-headers ()
   (setq *response-extra-headers* '()))
@@ -338,6 +339,81 @@
     (if (string= query "")
         (string-append (app-base) (if (string= path "") "" path))
         (string-append (app-base) (if (string= path "") "" path) "?" query))))
+
+(defun log-root-dir ()
+  (wiki-config-get "log_dir" "/tmp/isl-wiki-logs"))
+
+(defun ensure-log-dir ()
+  (system (string-append "mkdir -p " (shell-quote (log-root-dir))))
+  (system (string-append "chmod 755 " (shell-quote (log-root-dir)))))
+
+(defun request-id ()
+  *wiki-request-id*)
+
+(defun generate-request-id ()
+  (string-append "req-" (format nil "~A" (get-universal-time)) "-" (format nil "~A" *markdown-temp-counter*)))
+
+(defun init-request-id ()
+  (setq *wiki-request-id* (generate-request-id))
+  (add-response-header "X-Request-Id" *wiki-request-id*))
+
+(defun iso-now ()
+  (let* ((tmp (string-append (next-temp-base) ".time"))
+         (status (system (string-append "date -u +%Y-%m-%dT%H:%M:%SZ > " (shell-quote tmp) " 2>/dev/null"))))
+    (if (not (= status 0))
+        (progn
+          (if (null (probe-file tmp)) nil (delete-file tmp))
+          "")
+        (let ((value (trim-ws (read-file-text tmp))))
+          (delete-file tmp)
+          value))))
+
+(defun log-line-path ()
+  (string-append (log-root-dir) "/wiki-app.log"))
+
+(defun append-log-line (line)
+  (ensure-log-dir)
+  (with-open-file (s (log-line-path)
+                     :direction :output
+                     :if-exists :append
+                     :if-does-not-exist :create)
+    (format s "~A~%" line)))
+
+(defun write-structured-log (level event fields-json)
+  (append-log-line
+   (string-append
+    "{\"ts\":\"" (json-escape (iso-now))
+    "\",\"level\":\"" (json-escape level)
+    "\",\"event\":\"" (json-escape event)
+    "\",\"request_id\":\"" (json-escape (request-id))
+    "\",\"method\":\"" (json-escape (request-method))
+    "\",\"path\":\"" (json-escape (env-or-empty "PATH_INFO"))
+    "\",\"user\":\"" (json-escape (current-username))
+    "\",\"role\":\"" (json-escape (current-role))
+    "\",\"fields\":" fields-json
+    "}")))
+
+(defun make-log-fields-1 (k1 v1)
+  (string-append "{\"" k1 "\":\"" (json-escape v1) "\"}"))
+
+(defun make-log-fields-2 (k1 v1 k2 v2)
+  (string-append
+   "{\"" k1 "\":\"" (json-escape v1)
+   "\",\"" k2 "\":\"" (json-escape v2) "\"}"))
+
+(defun make-log-fields-3 (k1 v1 k2 v2 k3 v3)
+  (string-append
+   "{\"" k1 "\":\"" (json-escape v1)
+   "\",\"" k2 "\":\"" (json-escape v2)
+   "\",\"" k3 "\":\"" (json-escape v3) "\"}"))
+
+(defun write-error-log (message)
+  (write-structured-log
+   "error"
+   "request.error"
+   (make-log-fields-2
+    "target" (current-request-target)
+    "message" message)))
 
 (defun login-target-url ()
   (string-append (app-base) "/login?next=" (url-encode-lite (current-request-target))))
@@ -1558,7 +1634,8 @@
   (print-layout-head "Internal Server Error")
   (format t "<h1>500 Internal Server Error</h1>~%")
   (format t "<p>アプリケーション内部でエラーが発生しました。</p>~%")
-  (format t "<pre>~A</pre>~%" (html-escape message))
+  (format t "<p>request id: <code>~A</code></p>~%" (html-escape (request-id)))
+  (format t "<p>詳細はサーバーログを確認してください。</p>~%")
   (print-layout-foot))
 
 (defun render-edit-conflict (db slug submitted-title submitted-body-md submitted-summary expected-rev actual-rev)
@@ -2091,6 +2168,13 @@
                                "page"
                                slug
                                (make-audit-meta-2 "title" title "edit_summary" edit-summary))
+                              (write-structured-log
+                               "info"
+                               "page.update"
+                               (make-log-fields-3
+                                "slug" slug
+                                "title" title
+                                "edit_summary" edit-summary))
                               (render-see-other (string-append (app-base) "/" slug)))))))))))
 
 (defun create-page (db)
@@ -2126,6 +2210,13 @@
                          "page"
                          slug
                          (make-audit-meta-2 "title" title "edit_summary" edit-summary))
+                        (write-structured-log
+                         "info"
+                         "page.create"
+                         (make-log-fields-3
+                          "slug" slug
+                          "title" title
+                          "edit_summary" edit-summary))
                         (render-see-other (string-append (app-base) "/" slug)))
                       (render-bad-request "slug already exists (or is soft-deleted; restore it from admin)"))))))))
 
@@ -2522,6 +2613,13 @@
             "title" title
             "page_slug" page-slug
             "stored_filename" stored-name))
+          (write-structured-log
+           "info"
+           "media.create"
+           (make-log-fields-3
+            "page_slug" page-slug
+            "stored_filename" stored-name
+            "mime_type" mime-type))
           ""))))
 
 (defun move-upload-into-media-dir (temp-path stored-name)
@@ -2735,6 +2833,12 @@
           (if (not (string= confirm-phrase (backup-confirm-phrase)))
               (render-bad-request (string-append "confirm_phrase must be " (backup-confirm-phrase)))
               (let ((result (run-backup-with-audit db)))
+                (write-structured-log
+                 (if (string= (first result) "ok") "info" "error")
+                 "backup.run"
+                 (make-log-fields-2
+                  "status" (first result)
+                  "detail" (if (null (second result)) "" (second result))))
                 (print-headers-ok)
                 (print-layout-head "Backup Result")
                 (if (string= (first result) "ok")
@@ -2775,6 +2879,13 @@
           (if (not (string= confirm-phrase (restore-confirm-phrase)))
               (render-bad-request (string-append "confirm_phrase must be " (restore-confirm-phrase)))
               (let ((result (run-restore-with-audit db sql-path media-path restore-media)))
+                (write-structured-log
+                 (if (string= (first result) "ok") "info" "error")
+                 "restore.run"
+                 (make-log-fields-3
+                  "status" (first result)
+                  "sql_path" sql-path
+                  "restore_media" (if restore-media "true" "false")))
                 (print-headers-ok)
                 (print-layout-head "Restore Result")
                 (if (string= (first result) "ok")
@@ -2955,6 +3066,7 @@
          (n (length segments))
          (db (postgres-open (db-url))))
     (clear-response-extra-headers)
+    (init-request-id)
     (load-current-user db)
     (if (if (string= method "GET") (needs-canonical-redirect-p raw-path) nil)
         (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
@@ -3068,4 +3180,8 @@
 (handler-case
   (render-app)
   (error (e)
+    (if (string= (request-id) "")
+        (init-request-id)
+        nil)
+    (write-error-log (format nil "~A" e))
     (render-error (format nil "~A" e))))
