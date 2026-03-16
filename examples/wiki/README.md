@@ -8,8 +8,10 @@ Wiki システムを段階的に構築するための実装です。
 - `app/multipart_extract.pl`: `multipart/form-data` の単一ファイル抽出ヘルパ
 - `cgi-bin/wiki.cgi`: Apache から呼ばれる CGI エントリ
 - `conf/httpd-wiki.conf`: httpd に include する設定例
+- `scripts/run-backup.sh`: 定期バックアップ用の運用スクリプト
 - `db/001_init.sql`: PostgreSQL 初期スキーマ
 - `docs/markdown-policy.md`: Markdown変換方式の決定記録
+- `docs/restore-runbook.md`: 復元手順書
 - `docs/url-naming-conventions.md`: URL / 命名規約の固定
 
 ## MVP 3画面
@@ -27,6 +29,8 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/admin` : 管理メニュー
 - `/wiki/admin/backup` : DB + メディアのバックアップ作成
 - `/wiki/admin/restore` : バックアップからリストア
+- `/wiki/admin/stats` : 管理用JSON統計
+- `/wiki/healthz` : 監視用ヘルスチェック(JSON)
 - `/wiki/login` : ログイン画面
 - `/wiki/logout` : ログアウト
 
@@ -84,6 +88,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/006_
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/007_page_lock_version.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/008_soft_delete.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/009_search.sql
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/010_backup_runs.sql
 ```
 
 `004_auth.sql` は次を作成します。
@@ -96,6 +101,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/009_
 `007_page_lock_version.sql` は `pages.current_rev_no` を追加します。
 `008_soft_delete.sql` は `pages` / `media_assets` に論理削除カラムを追加します。
 `009_search.sql` は `pages.status`, `page_tags`, `pages.search_vector` を追加します。
+`010_backup_runs.sql` は `backup_runs` を追加します。
 
 初期管理者:
 - username: `admin`
@@ -116,6 +122,7 @@ export ISL_WIKI_BACKUP_DIR='/tmp/isl-wiki-backups'
 
 アップロード上限は `conf/wiki.conf` の `media_max_bytes` で設定します。
 アプリログ出力先は `conf/wiki.conf` の `log_dir` で設定します。
+バックアップ保持数は `conf/wiki.conf` の `backup_keep_count` で設定します。
 
 ## Apache 設定
 
@@ -142,9 +149,11 @@ http://localhost:8080/wiki/search?q=welcome
 http://localhost:8080/wiki/admin
 http://localhost:8080/wiki/admin/backup
 http://localhost:8080/wiki/admin/restore
+http://localhost:8080/wiki/admin/stats
 http://localhost:8080/wiki/admin/audit
 http://localhost:8080/wiki/admin/deleted-pages
 http://localhost:8080/wiki/admin/deleted-media
+http://localhost:8080/wiki/healthz
 http://localhost:8080/wiki/login
 ```
 
@@ -170,6 +179,11 @@ http://localhost:8080/wiki/login
 - ページ作成/編集画面で `status` と `tags` を編集できる
 - 公開状態は `published=全員`, `draft=editor以上`, `private=adminのみ` で表示制御される
 - 一覧と検索結果にはページの `status` が反映される
+- `/wiki/admin/backup` は保存先、保持数、dry-run を指定でき、最近の履歴を表示する
+- バックアップ/リストアの結果は `backup_runs` に履歴記録される
+- 監視用に `/wiki/healthz`、運用統計用に `/wiki/admin/stats` を提供する
+- 定期バックアップは `scripts/run-backup.sh` を cron などから呼び出せる
+- 復元手順と検証コマンドは `docs/restore-runbook.md` を参照
 - `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
 - ページ作成/編集、メディア追加/削除、backup/restore は監査ログに記録される
 - 監査ログは `/wiki/admin/audit` で最新100件を参照できる

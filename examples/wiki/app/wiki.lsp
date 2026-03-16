@@ -239,6 +239,11 @@
 (defun backup-root-dir ()
   (wiki-config-get "backup_dir" "/tmp/isl-wiki-backups"))
 
+(defun backup-keep-count ()
+  (let ((raw (wiki-config-get "backup_keep_count" "7")))
+    (let ((n (parse-int-safe raw)))
+      (if (null n) 7 n))))
+
 (defun session-cookie-name ()
   (wiki-config-get "session_cookie_name" "isl_wiki_session"))
 
@@ -1457,6 +1462,29 @@
     "order by a.created_at desc, a.id desc "
     "limit 100")))
 
+(defun fetch-backup-runs (db)
+  (postgres-query
+   db
+   (string-append
+    "select b.id, b.mode, b.status, coalesce(b.backup_dir, ''), coalesce(b.keep_count::text, ''), "
+    "case when b.dry_run then 'true' else 'false' end, "
+    "coalesce(b.sql_path, ''), coalesce(b.media_path, ''), coalesce(b.message, ''), "
+    "to_char(b.created_at, 'YYYY-MM-DD HH24:MI:SS'), coalesce(to_char(b.completed_at, 'YYYY-MM-DD HH24:MI:SS'), ''), "
+    "coalesce(u.username, '[system]') "
+    "from backup_runs b "
+    "left join users u on u.id = b.triggered_by_user_id "
+    "order by b.created_at desc, b.id desc "
+    "limit 50")))
+
+(defun fetch-backup-stats (db)
+  (list
+   (postgres-query-one db "select count(*) from pages where deleted_at is null")
+   (postgres-query-one db "select count(*) from pages where deleted_at is not null")
+   (postgres-query-one db "select count(*) from media_assets where deleted_at is null")
+   (postgres-query-one db "select count(*) from media_assets where deleted_at is not null")
+   (postgres-query-one db "select count(*) from backup_runs")
+   (postgres-query-one db "select coalesce(to_char(max(created_at), 'YYYY-MM-DD HH24:MI:SS'), '') from backup_runs where mode='backup' and status in ('ok','dry-run')")))
+
 (defun fetch-user-for-login (db username password)
   (let ((rows
          (postgres-query
@@ -1676,6 +1704,11 @@
 (defun print-headers-500 ()
   (format t "Status: 500 Internal Server Error~%")
   (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
+
+(defun print-headers-json-ok ()
+  (format t "Content-Type: application/json; charset=UTF-8~%")
   (print-extra-headers)
   (format t "~%"))
 
@@ -1907,6 +1940,7 @@
   (let ((n (length segments)))
     (cond
      ((= n 0) "")
+     ((string= (first segments) "healthz") "")
      ((string= (first segments) "login") "")
      ((string= (first segments) "logout") "viewer")
      ((string= (first segments) "admin") "admin")
@@ -2680,32 +2714,88 @@
          (> (length path) (length base))
          (string= (substring path (length base) (+ (length base) 1)) "/"))))
 
-(defun run-backup ()
-  (ensure-backup-dir)
-  (ensure-media-dir)
-  (let* ((ts (format nil "~A" (get-universal-time)))
-         (base (string-append (backup-root-dir) "/wiki-backup-" ts))
-         (sql-path (string-append base ".sql"))
-         (media-path (string-append base "-media.tar.gz"))
-         (db-cmd (string-append "pg_dump --clean --if-exists " (shell-quote (db-url)) " > " (shell-quote sql-path)))
-         (media-cmd (string-append "tar -czf " (shell-quote media-path) " -C " (shell-quote (media-root-dir)) " .")))
-    (let ((db-status (system db-cmd)))
-      (if (= db-status 0)
-          (let ((media-status (system media-cmd)))
-            (if (= media-status 0)
-                (list "ok" sql-path media-path)
-                (list "error" "media backup failed")))
-	          (list "error" "database backup failed")))))
+(defun write-backup-run-record (db mode status backup-dir keep-count dry-run sql-path media-path message)
+  (postgres-exec
+   db
+   (string-append
+    "insert into backup_runs (triggered_by_user_id, mode, status, backup_dir, keep_count, dry_run, sql_path, media_path, message, completed_at) values ("
+    (audit-actor-id-sql) ", '"
+    (sql-escape mode) "', '"
+    (sql-escape status) "', "
+    (if (blank-text-p backup-dir) "NULL" (string-append "'" (sql-escape backup-dir) "'")) ", "
+    (if (null keep-count) "NULL" (format nil "~A" keep-count)) ", "
+    (if dry-run "true" "false") ", "
+    (if (blank-text-p sql-path) "NULL" (string-append "'" (sql-escape sql-path) "'")) ", "
+    (if (blank-text-p media-path) "NULL" (string-append "'" (sql-escape media-path) "'")) ", "
+    (if (blank-text-p message) "NULL" (string-append "'" (sql-escape message) "'")) ", now())")))
 
-(defun run-backup-with-audit (db)
-  (let ((result (run-backup)))
-    (if (string= (first result) "ok")
+(defun cleanup-old-backups (dir keep-count)
+  (if (or (null keep-count) (<= keep-count 0))
+      nil
+      (let* ((tmp (string-append (next-temp-base) ".cleanup"))
+             (cmd (string-append
+                   "sh -c "
+                   (shell-quote
+                    (string-append
+                     "ls -1t " dir "/wiki-backup-* 2>/dev/null | awk 'NR>" (format nil "~A" keep-count) " {print}' > " tmp)))))
+        (system cmd)
+        (if (null (probe-file tmp))
+            nil
+            (let ((raw (read-file-text tmp)))
+              (safe-delete-file tmp)
+              (dolist (line (split-on raw "\n"))
+                (if (blank-text-p line)
+                    nil
+                    (safe-delete-file (trim-ws line)))))))))
+
+(defun run-backup (target-dir keep-count dry-run)
+  (let ((backup-dir (if (blank-text-p target-dir) (backup-root-dir) target-dir)))
+    (ensure-backup-dir)
+    (ensure-media-dir)
+    (if (not (path-under-dir-p backup-dir "/tmp"))
+        (list "error" "" "" "backup_dir must be under /tmp")
+        (let* ((ts (format nil "~A" (get-universal-time)))
+               (base (string-append backup-dir "/wiki-backup-" ts))
+               (sql-path (string-append base ".sql"))
+               (media-path (string-append base "-media.tar.gz"))
+               (db-cmd (string-append "pg_dump --clean --if-exists " (shell-quote (db-url)) " > " (shell-quote sql-path)))
+               (media-cmd (string-append "tar -czf " (shell-quote media-path) " -C " (shell-quote (media-root-dir)) " .")))
+          (if dry-run
+              (list "dry-run" sql-path media-path "backup dry-run only")
+              (progn
+                (system (string-append "mkdir -p " (shell-quote backup-dir)))
+                (let ((db-status (system db-cmd)))
+                  (if (= db-status 0)
+                      (let ((media-status (system media-cmd)))
+                        (if (= media-status 0)
+                            (progn
+                              (cleanup-old-backups backup-dir keep-count)
+                              (list "ok" sql-path media-path "backup completed"))
+                            (list "error" sql-path media-path "media backup failed")))
+                      (list "error" sql-path media-path "database backup failed")))))))))
+
+(defun run-backup-with-audit (db target-dir keep-count dry-run)
+  (let ((result (run-backup target-dir keep-count dry-run)))
+    (write-backup-run-record
+     db
+     "backup"
+     (first result)
+     (if (blank-text-p target-dir) (backup-root-dir) target-dir)
+     keep-count
+     dry-run
+     (second result)
+     (third result)
+     (fourth result))
+    (if (or (string= (first result) "ok") (string= (first result) "dry-run"))
         (write-audit-log
          db
          "backup.run"
          "backup"
          (second result)
-         (make-audit-meta-2 "sql_path" (second result) "media_path" (third result)))
+         (make-audit-meta-3
+          "sql_path" (second result)
+          "media_path" (third result)
+          "status" (first result)))
         nil)
     result))
 
@@ -2731,6 +2821,16 @@
 
 (defun run-restore-with-audit (db sql-path media-path restore-media)
   (let ((result (run-restore sql-path media-path restore-media)))
+    (write-backup-run-record
+     db
+     "restore"
+     (first result)
+     (backup-root-dir)
+     (backup-keep-count)
+     nil
+     sql-path
+     media-path
+     (second result))
     (if (string= (first result) "ok")
         (write-audit-log
          db
@@ -2743,6 +2843,32 @@
           "restore_media" (if restore-media "true" "false")))
         nil)
     result))
+
+(defun render-backup-runs-table (rows)
+  (if (null rows)
+      (format t "<p>バックアップ履歴はまだありません。</p>~%")
+      (progn
+        (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
+        (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">When</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Mode</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Status</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Dir</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Keep</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Actor</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Message</th></tr></thead>~%")
+        (format t "<tbody>~%")
+        (dolist (row rows)
+          (let ((mode (list-nth-or-empty row 1))
+                (status (list-nth-or-empty row 2))
+                (backup-dir (list-nth-or-empty row 3))
+                (keep-count (list-nth-or-empty row 4))
+                (message (list-nth-or-empty row 8))
+                (created-at (list-nth-or-empty row 9))
+                (actor (list-nth-or-empty row 11)))
+            (format t "<tr>~%")
+            (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape created-at))
+            (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape mode))
+            (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape status))
+            (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape backup-dir))
+            (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape keep-count))
+            (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape actor))
+            (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape message))
+            (format t "</tr>~%")))
+        (format t "</tbody></table>~%"))))
 
 (defun persist-media-record (db page-slug media-type title original-filename stored-name mime-type storage-path public-url edit-summary)
   (let ((page-id-sql
@@ -2953,11 +3079,39 @@
     (format t "<ul>~%")
     (format t "<li><a href=\"~A/admin/backup\">Backup</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/restore\">Restore</a></li>~%" base)
+    (format t "<li><a href=\"~A/admin/stats\">Stats</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/audit\">Audit Log</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/deleted-pages\">Deleted Pages</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/deleted-media\">Deleted Media</a></li>~%" base)
     (format t "</ul>~%")
     (print-layout-foot)))
+
+(defun render-healthz (db)
+  (let ((db-ok t))
+    (if (null db)
+        (setq db-ok nil)
+        (handler-case
+          (postgres-query-one db "select 'ok'")
+          (error (e) (setq db-ok nil))))
+    (print-headers-json-ok)
+    (format t "{\"status\":\"~A\",\"request_id\":\"~A\",\"db\":\"~A\",\"media_dir\":\"~A\",\"backup_dir\":\"~A\"}~%"
+            (if db-ok "ok" "error")
+            (json-escape (request-id))
+            (if db-ok "ok" "error")
+            (json-escape (media-root-dir))
+            (json-escape (backup-root-dir)))))
+
+(defun render-admin-stats (db)
+  (let ((stats (fetch-backup-stats db)))
+    (print-headers-json-ok)
+    (format t "{\"request_id\":\"~A\",\"pages_active\":\"~A\",\"pages_deleted\":\"~A\",\"media_active\":\"~A\",\"media_deleted\":\"~A\",\"backup_runs\":\"~A\",\"last_backup_at\":\"~A\"}~%"
+            (json-escape (request-id))
+            (json-escape (first stats))
+            (json-escape (second stats))
+            (json-escape (third stats))
+            (json-escape (fourth stats))
+            (json-escape (fifth stats))
+            (json-escape (sixth stats)))))
 
 (defun render-admin-audit (db)
   (let ((rows (fetch-audit-logs db)))
@@ -2988,46 +3142,64 @@
           (format t "</tbody></table>~%")))
     (print-layout-foot)))
 
-(defun render-admin-backup-form ()
-  (let ((base (app-base)))
+(defun render-admin-backup-form (db)
+  (let ((base (app-base))
+        (rows (fetch-backup-runs db)))
     (print-headers-ok)
     (print-layout-head "Backup")
     (format t "<h1>Backup</h1>~%")
     (format t "<p>DB(SQL) とメディア(tar.gz)をバックアップします。</p>~%")
     (format t "<form method=\"post\" action=\"~A/admin/backup\">~%" base)
     (render-csrf-hidden-input)
+    (format t "<p><label>Backup Dir<br><input type=\"text\" name=\"backup_dir\" value=\"~A\" style=\"width:100%\"></label></p>~%" (html-escape (backup-root-dir)))
+    (format t "<p><label>Keep Count<br><input type=\"number\" name=\"keep_count\" value=\"~A\" min=\"1\" style=\"width:10rem\"></label></p>~%" (html-escape (format nil "~A" (backup-keep-count))))
+    (format t "<p><label><input type=\"checkbox\" name=\"dry_run\" value=\"1\"> Dry run only (do not create files)</label></p>~%")
     (format t "<p><label>Confirmation Phrase<br><input type=\"text\" name=\"confirm_phrase\" value=\"\" style=\"width:100%\" placeholder=\"~A\"></label></p>~%" (html-escape (backup-confirm-phrase)))
     (format t "<p><small>Type <code>~A</code> to confirm this backup.</small></p>~%" (html-escape (backup-confirm-phrase)))
     (format t "<p><button type=\"submit\">Run Backup</button></p>~%")
     (format t "</form>~%")
-    (format t "<p><small>backup dir: <code>~A</code></small></p>~%" (html-escape (backup-root-dir)))
+    (format t "<p><small>default backup dir: <code>~A</code> / keep count: <code>~A</code></small></p>~%"
+            (html-escape (backup-root-dir))
+            (html-escape (format nil "~A" (backup-keep-count))))
+    (format t "<h2>Recent Backup History</h2>~%")
+    (render-backup-runs-table rows)
     (print-layout-foot)))
 
 (defun render-admin-backup-run ()
   (let ((raw-body (read-form-body-or-render t)))
     (if (null raw-body)
         nil
-        (let ((confirm-phrase (parse-form-field raw-body "confirm_phrase")))
+        (let* ((confirm-phrase (parse-form-field raw-body "confirm_phrase"))
+               (backup-dir (parse-form-field raw-body "backup_dir"))
+               (keep-count-raw (parse-form-field raw-body "keep_count"))
+               (dry-run (string= (parse-form-field raw-body "dry_run") "1"))
+               (keep-count (if (blank-text-p keep-count-raw) (backup-keep-count) (parse-int-safe keep-count-raw))))
           (if (not (string= confirm-phrase (backup-confirm-phrase)))
               (render-bad-request (string-append "confirm_phrase must be " (backup-confirm-phrase)))
-              (let ((result (run-backup-with-audit db)))
-                (write-structured-log
-                 (if (string= (first result) "ok") "info" "error")
-                 "backup.run"
-                 (make-log-fields-2
-                  "status" (first result)
-                  "detail" (if (null (second result)) "" (second result))))
-                (print-headers-ok)
-                (print-layout-head "Backup Result")
-                (if (string= (first result) "ok")
-                    (progn
-                      (format t "<h1>Backup completed</h1>~%")
-                      (format t "<p>SQL: <code>~A</code></p>~%" (html-escape (second result)))
-                      (format t "<p>Media: <code>~A</code></p>~%" (html-escape (third result))))
-                    (progn
-                      (format t "<h1>Backup failed</h1>~%")
-                      (format t "<p><code>~A</code></p>~%" (html-escape (second result)))))
-                (print-layout-foot)))))))
+              (if (or (null keep-count) (<= keep-count 0))
+                  (render-bad-request "keep_count must be a positive integer")
+                  (let ((result (run-backup-with-audit db backup-dir keep-count dry-run)))
+                    (write-structured-log
+                     (if (or (string= (first result) "ok") (string= (first result) "dry-run")) "info" "error")
+                     "backup.run"
+                     (make-log-fields-3
+                      "status" (first result)
+                      "detail" (if (null (fourth result)) "" (fourth result))
+                      "backup_dir" (if (blank-text-p backup-dir) (backup-root-dir) backup-dir)))
+                    (print-headers-ok)
+                    (print-layout-head "Backup Result")
+                    (if (or (string= (first result) "ok") (string= (first result) "dry-run"))
+                        (progn
+                          (format t "<h1>~A</h1>~%" (if (string= (first result) "dry-run") "Backup dry-run" "Backup completed"))
+                          (format t "<p>SQL: <code>~A</code></p>~%" (html-escape (second result)))
+                          (format t "<p>Media: <code>~A</code></p>~%" (html-escape (third result)))
+                          (format t "<p><small>keep_count: <code>~A</code> / dry_run: <code>~A</code></small></p>~%"
+                                  (html-escape (format nil "~A" keep-count))
+                                  (html-escape (if dry-run "true" "false"))))
+                        (progn
+                          (format t "<h1>Backup failed</h1>~%")
+                          (format t "<p><code>~A</code></p>~%" (html-escape (fourth result)))))
+                    (print-layout-foot))))))))
 
 (defun render-admin-restore-form ()
   (let ((base (app-base)))
@@ -3044,6 +3216,12 @@
     (format t "  <p><small>Type <code>~A</code> to confirm restore.</small></p>~%" (html-escape (restore-confirm-phrase)))
     (format t "  <p><button type=\"submit\">Run Restore</button></p>~%")
     (format t "</form>~%")
+    (format t "<h2>Validation Commands</h2>~%")
+    (format t "<pre>ls -lh ~A\npsql ~A -c '\\dt'\npsql ~A -c 'select count(*) from pages;'</pre>~%"
+            (html-escape (backup-root-dir))
+            (html-escape (db-url))
+            (html-escape (db-url)))
+    (format t "<p><small>See <code>examples/wiki/docs/restore-runbook.md</code> for the full restore checklist.</small></p>~%")
     (print-layout-foot)))
 
 (defun render-admin-restore-run ()
@@ -3252,118 +3430,130 @@
          (raw-path (env-or-empty "PATH_INFO"))
          (segments (path-segments))
          (n (length segments))
-         (db (postgres-open (db-url))))
+         (db '()))
     (clear-response-extra-headers)
     (init-request-id)
-    (load-current-user db)
-    (if (if (string= method "GET") (needs-canonical-redirect-p raw-path) nil)
-        (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
-        (if (ensure-authorized method segments)
-            (cond
-             ((= n 0)
-              (render-index db))
-             ((= n 1)
-              (cond
-               ((string= (first segments) "new")
-                (if (string= method "POST")
-                    (create-page db)
-                    (render-new)))
-               ((string= (first segments) "media")
-                (render-media-index db))
-               ((string= (first segments) "search")
-                (render-search db))
-               ((string= (first segments) "admin")
-                (render-admin-home))
-               ((string= (first segments) "login")
-                (if (string= method "POST")
-                    (handle-login db)
-                    (render-login-form "" "")))
-               ((string= (first segments) "logout")
-                (handle-logout db))
-               (t
-                (render-view db (first segments)))))
-             ((= n 2)
-              (cond
-              ((string= (first segments) "admin")
-               (cond
-                 ((string= (second segments) "audit")
-                  (render-admin-audit db))
-                 ((string= (second segments) "deleted-pages")
-                  (render-admin-deleted-pages db))
-                 ((string= (second segments) "deleted-media")
-                  (render-admin-deleted-media db))
-                 ((string= (second segments) "backup")
-                  (if (string= method "POST")
-                      (render-admin-backup-run)
-                      (render-admin-backup-form)))
-                 ((string= (second segments) "restore")
-                  (if (string= method "POST")
-                      (render-admin-restore-run)
-                      (render-admin-restore-form)))
-                 (t
-                  (render-not-found))))
-               ((string= (first segments) "media")
-                (if (string= (second segments) "new")
-                    (if (string= method "POST")
-                        (create-media db)
-                        (render-media-new db))
+    (setq db (handler-case
+               (postgres-open (db-url))
+               (error (e) '())))
+    (if (null db)
+        (if (and (= n 1) (string= (first segments) "healthz"))
+            (render-healthz '())
+            (error "database unavailable"))
+        (progn
+          (load-current-user db)
+          (if (and (string= method "GET") (needs-canonical-redirect-p raw-path))
+              (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
+              (if (ensure-authorized method segments)
+                  (cond
+                   ((= n 0)
+                    (render-index db))
+                   ((= n 1)
+                    (cond
+                     ((string= (first segments) "new")
+                      (if (string= method "POST")
+                          (create-page db)
+                          (render-new)))
+                     ((string= (first segments) "media")
+                      (render-media-index db))
+                     ((string= (first segments) "search")
+                      (render-search db))
+                     ((string= (first segments) "healthz")
+                      (render-healthz db))
+                     ((string= (first segments) "admin")
+                      (render-admin-home))
+                     ((string= (first segments) "login")
+                      (if (string= method "POST")
+                          (handle-login db)
+                          (render-login-form "" "")))
+                     ((string= (first segments) "logout")
+                      (handle-logout db))
+                     (t
+                      (render-view db (first segments)))))
+                   ((= n 2)
+                    (cond
+                     ((string= (first segments) "admin")
+                      (cond
+                       ((string= (second segments) "audit")
+                        (render-admin-audit db))
+                       ((string= (second segments) "stats")
+                        (render-admin-stats db))
+                       ((string= (second segments) "deleted-pages")
+                        (render-admin-deleted-pages db))
+                       ((string= (second segments) "deleted-media")
+                        (render-admin-deleted-media db))
+                       ((string= (second segments) "backup")
+                        (if (string= method "POST")
+                            (render-admin-backup-run)
+                            (render-admin-backup-form db)))
+                       ((string= (second segments) "restore")
+                        (if (string= method "POST")
+                            (render-admin-restore-run)
+                            (render-admin-restore-form)))
+                       (t
+                        (render-not-found))))
+                     ((string= (first segments) "media")
+                      (if (string= (second segments) "new")
+                          (if (string= method "POST")
+                              (create-media db)
+                              (render-media-new db))
+                          (render-not-found)))
+                     ((string= (first segments) "files")
+                      (render-media-file db (second segments)))
+                     ((string= (second segments) "history")
+                      (render-history db (first segments)))
+                     ((string= (second segments) "delete")
+                      (if (string= method "POST")
+                          (delete-page db (first segments))
+                          (render-not-found)))
+                     ((string= (second segments) "edit")
+                      (if (string= method "POST")
+                          (save-page db (first segments))
+                          (render-edit db (first segments))))
+                     (t
+                      (render-not-found))))
+                   ((= n 3)
+                    (cond
+                     ((and (string= (first segments) "media")
+                           (string= (third segments) "delete"))
+                      (if (string= method "POST")
+                          (delete-media db (second segments))
+                          (render-not-found)))
+                     ((and (string= (second segments) "revisions")
+                           (not (blank-text-p (third segments))))
+                      (render-revision-view db (first segments) (third segments)))
+                     (t
+                      (render-not-found))))
+                   ((= n 4)
+                    (cond
+                     ((and (string= (first segments) "admin")
+                           (string= (second segments) "deleted-pages")
+                           (string= (fourth segments) "restore"))
+                      (if (string= method "POST")
+                          (restore-page db (third segments))
+                          (render-not-found)))
+                     ((and (string= (first segments) "admin")
+                           (string= (second segments) "deleted-media")
+                           (string= (fourth segments) "restore"))
+                      (if (string= method "POST")
+                          (restore-media db (third segments))
+                          (render-not-found)))
+                     ((and (string= (second segments) "compare")
+                           (not (blank-text-p (third segments)))
+                           (not (blank-text-p (fourth segments))))
+                      (render-compare-view db (first segments) (third segments) (fourth segments)))
+                     ((and (string= (second segments) "revisions")
+                           (string= (fourth segments) "rollback")
+                           (not (blank-text-p (third segments))))
+                      (if (string= method "POST")
+                          (rollback-page-to-revision db (first segments) (third segments))
+                          (render-not-found)))
+                     (t
+                      (render-not-found))))
+                   (t
                     (render-not-found)))
-               ((string= (first segments) "files")
-                (render-media-file db (second segments)))
-               ((string= (second segments) "history")
-                (render-history db (first segments)))
-               ((string= (second segments) "delete")
-                (if (string= method "POST")
-                    (delete-page db (first segments))
-                    (render-not-found)))
-               ((string= (second segments) "edit")
-                (if (string= method "POST")
-                    (save-page db (first segments))
-                    (render-edit db (first segments))))
-               (t
-                (render-not-found))))
-             ((= n 3)
-              (cond
-               ((and (string= (first segments) "media")
-                     (string= (third segments) "delete"))
-                (if (string= method "POST")
-                    (delete-media db (second segments))
-                    (render-not-found)))
-               ((and (string= (second segments) "revisions")
-                     (not (blank-text-p (third segments))))
-                (render-revision-view db (first segments) (third segments)))
-               (t
-                (render-not-found))))
-             ((= n 4)
-              (cond
-               ((and (string= (first segments) "admin")
-                     (string= (second segments) "deleted-pages")
-                     (string= (fourth segments) "restore"))
-                (if (string= method "POST")
-                    (restore-page db (third segments))
-                    (render-not-found)))
-               ((and (string= (first segments) "admin")
-                     (string= (second segments) "deleted-media")
-                     (string= (fourth segments) "restore"))
-                (if (string= method "POST")
-                    (restore-media db (third segments))
-                    (render-not-found)))
-               ((and (string= (second segments) "compare")
-                     (not (blank-text-p (third segments)))
-                     (not (blank-text-p (fourth segments))))
-                (render-compare-view db (first segments) (third segments) (fourth segments)))
-               ((and (string= (second segments) "revisions")
-                     (string= (fourth segments) "rollback")
-                     (not (blank-text-p (third segments))))
-                (if (string= method "POST")
-                    (rollback-page-to-revision db (first segments) (third segments))
-                    (render-not-found)))
-               (t
-                (render-not-found))))
-             (t
-              (render-not-found)))
-            nil))
-    (postgres-close db)))
+                  nil))
+          (postgres-close db)))))
 
 (handler-case
   (render-app)
