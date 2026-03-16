@@ -1,23 +1,10 @@
 #!/Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl
 
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
+
 (defun env-or-empty (name)
   (let ((v (getenv name)))
     (if (null v) "" v)))
-
-(defun shell-quote (s)
-  (string-append "'" (string-append-replace s "'" "'\\''") "'"))
-
-(defun string-append-replace (s old new)
-  (let ((p (string-index old s)))
-    (if (null p)
-        s
-        (string-append
-         (substring s 0 p)
-         new
-         (string-append-replace
-          (substring s (+ p (length old)) (length s))
-          old
-          new)))))
 
 (defun split-on (s delim)
   (if (= (length s) 0)
@@ -51,60 +38,20 @@
     (convert s <integer>)
     (error (e) fallback)))
 
-(defun temp-path ()
-  (string-append "/tmp/isl-wiki-backup-" (format nil "~A" (get-universal-time)) ".txt"))
-
-(defun read-file-text (path)
-  (with-open-file (s path :direction :input)
-    (let ((line (read-line s #f))
-          (acc "")
-          (first-line t))
-      (while (not (null line))
-        (if first-line
-            (progn
-              (setq acc line)
-              (setq first-line nil))
-            (setq acc (string-append acc "\n" line)))
-        (setq line (read-line s #f)))
-      acc)))
-
-(defun safe-delete-file (path)
-  (handler-case
-    (delete-file path)
-    (error (e) nil)))
-
 (defun capture-command-output (cmd)
-  (let ((tmp (temp-path)))
-    (let ((status (system (string-append cmd " > " (shell-quote tmp) " 2>/dev/null"))))
-      (if (not (= status 0))
-          (progn
-            (safe-delete-file tmp)
-            "")
-          (let ((value (trim-ws (read-file-text tmp))))
-            (safe-delete-file tmp)
-            value)))))
+  (trim-ws (os-command-output cmd)))
 
 (defun iso-stamp ()
-  (capture-command-output "date -u +%Y%m%dT%H%M%SZ"))
+  (os-date-utc-format "+%Y%m%dT%H%M%SZ"))
 
 (defun cleanup-old-backups (backup-dir keep-count)
-  (let ((tmp (temp-path)))
-    (let ((cmd (string-append
-                "ls -1t "
-                (shell-quote (string-append backup-dir "/wiki-backup-*"))
-                " 2>/dev/null | awk 'NR>"
-                (format nil "~A" keep-count)
-                " {print}' > "
-                (shell-quote tmp))))
-      (system cmd)
-      (if (null (probe-file tmp))
-          nil
-          (let ((raw (read-file-text tmp)))
-            (safe-delete-file tmp)
-            (dolist (line (split-on raw "\n"))
-              (if (= (length (trim-ws line)) 0)
-                  nil
-                  (safe-delete-file (trim-ws line)))))))))
+  (let ((entries (os-ls-newest-first-glob (string-append backup-dir "/wiki-backup-*")))
+        (idx 0))
+    (dolist (line entries)
+      (setq idx (+ idx 1))
+      (if (> idx keep-count)
+          (os-safe-delete-file (trim-ws line))
+          nil))))
 
 (defun main ()
   (let* ((db-url (let ((v (getenv "ISL_WIKI_DB_URL")))
@@ -119,7 +66,7 @@
          (base (string-append backup-dir "/wiki-backup-" ts))
          (sql-path (string-append base ".sql"))
          (media-path (string-append base "-media.tar.gz")))
-    (system (string-append "mkdir -p " (shell-quote backup-dir)))
+    (os-mkdir-p backup-dir)
     (format t "backup_dir=~A~%" backup-dir)
     (format t "keep_count=~A~%" keep-count)
     (format t "sql_path=~A~%" sql-path)
@@ -129,16 +76,12 @@
           (format t "dry_run=true~%")
           (exit 0))
         (let ((db-status (system (string-append "pg_dump --clean --if-exists "
-                                                (shell-quote db-url)
+                                                (os-shell-quote db-url)
                                                 " > "
-                                                (shell-quote sql-path)))))
+                                                (os-shell-quote sql-path)))))
           (if (not (= db-status 0))
               (exit 1)
-              (let ((media-status (system (string-append "tar -czf "
-                                                         (shell-quote media-path)
-                                                         " -C "
-                                                         (shell-quote media-dir)
-                                                         " ."))))
+              (let ((media-status (if (os-tar-create-gz media-path media-dir) 0 1)))
                 (if (not (= media-status 0))
                     (exit 1)
                     (progn

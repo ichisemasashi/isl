@@ -3989,7 +3989,7 @@
              (states (fourth payload))
              (failed '()))
         (dbms-engine-restore-storage-root! follower-root)
-        (if (not (= (system (string-append "mkdir -p " (dbms-storage-shell-quote follower-root))) 0))
+        (if (not (os-mkdir-p follower-root))
             (setq failed (dbms-make-error 'dbms/not-implemented "failed to create follower root" follower-root))
             nil)
         (if (dbms-error-p failed)

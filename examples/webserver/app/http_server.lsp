@@ -1,3 +1,5 @@
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
+
 (defun ws-ascii-downcase (s)
   (let ((i 0)
         (out ""))
@@ -308,18 +310,7 @@
       (ws-contains mime "svg")))
 
 (defun ws-read-file-text (path)
-  (with-open-file (s path :direction :input)
-    (let ((line (read-line s #f))
-          (acc "")
-          (first t))
-      (while (not (null line))
-        (if first
-            (progn
-              (setq acc line)
-              (setq first nil))
-            (setq acc (string-append acc "\n" line)))
-        (setq line (read-line s #f)))
-      acc)))
+  (os-read-file-text path))
 
 (defun ws-read-file-raw (path)
   (ws-read-file-text path))
@@ -348,11 +339,7 @@
     (if (null n) 0 n)))
 
 (defun ws-file-size-bytes (path)
-  (let* ((result (ws-command-output (string-append "wc -c < " (ws-shell-quote path))))
-         (status (car result))
-         (out (second result))
-         (n (if (= status 0) (ws-parse-int out) '())))
-    (if (null n) 0 n)))
+  (os-wc-c path))
 
 (defun ws-http-date-from-epoch (cfg epoch-sec)
   (let* ((os-family (ws-config-get cfg 'os_family))
@@ -360,10 +347,8 @@
          (cmd (if (string= os-family "linux")
                   (string-append "date -u -d @" (format nil "~A" epoch-sec) " +" fmt)
                   (string-append "date -u -r " (format nil "~A" epoch-sec) " +" fmt)))
-         (result (ws-command-output cmd)))
-    (if (= (car result) 0)
-        (second result)
-        "")))
+         (result (os-command-output cmd)))
+    (if (null result) "" result)))
 
 (defun ws-epoch-from-http-date (cfg http-date)
   (let* ((os-family (ws-config-get cfg 'os_family))
@@ -372,8 +357,8 @@
                   (string-append "date -ju -f '%a, %d %b %Y %H:%M:%S GMT' "
                                  (ws-shell-quote http-date)
                                  " +%s")))
-         (result (ws-command-output cmd))
-         (n (if (= (car result) 0) (ws-parse-int (second result)) '())))
+         (result (os-command-output cmd))
+         (n (if (= (length result) 0) '() (ws-parse-int result))))
     (if (null n) '() n)))
 
 (defun ws-digits-only-p (s)

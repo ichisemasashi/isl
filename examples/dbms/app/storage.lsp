@@ -1,6 +1,7 @@
 ;; dbms/app/storage.lsp
 ;; 永続化層（MVP Core）。
 
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
 (load "./examples/dbms/app/repr.lsp")
 
 (defglobal *dbms-storage-tmp-seq* 0)
@@ -90,22 +91,13 @@
   (dbms-storage-audit-archive-path *dbms-audit-archive-seq*))
 
 (defun dbms-storage-shell-quote (s)
-  (let ((i 0)
-        (n (length s))
-        (out "'"))
-    (while (< i n)
-      (let ((ch (substring s i (+ i 1))))
-        (if (string= ch "'")
-            (setq out (string-append out "'\\''"))
-            (setq out (string-append out ch))))
-      (setq i (+ i 1)))
-    (string-append out "'")))
+  (os-shell-quote s))
 
 (defun dbms-storage-ensure-root ()
-  (= (system (string-append "mkdir -p " (dbms-storage-shell-quote (dbms-storage-root)))) 0))
+  (os-mkdir-p (dbms-storage-root)))
 
 (defun dbms-storage-ensure-backup-root ()
-  (= (system (string-append "mkdir -p " (dbms-storage-shell-quote (dbms-storage-backup-root)))) 0))
+  (os-mkdir-p (dbms-storage-backup-root)))
 
 (defun dbms-storage-next-tmp-path (target-path)
   (setq *dbms-storage-tmp-seq* (+ *dbms-storage-tmp-seq* 1))
@@ -303,7 +295,7 @@
 (defun dbms-storage-repl-ship-wal-to-root (target-root)
   (if (or (not (stringp target-root)) (string= target-root ""))
       (dbms-make-error 'dbms/invalid-representation "target-root must be non-empty string" target-root)
-      (let* ((mk-status (system (string-append "mkdir -p " (dbms-storage-shell-quote target-root))))
+      (let* ((mk-status (if (os-mkdir-p target-root) 0 1))
              (records (dbms-storage-load-wal-records))
              (checkpoint (dbms-storage-load-checkpoint-meta))
              (saved-wal '())
@@ -1377,10 +1369,7 @@
              (tmp-write (dbms-storage-write-sexpr-file tmp-path value)))
         (if (dbms-error-p tmp-write)
             tmp-write
-            (let ((mv-status (system (string-append "mv "
-                                                    (dbms-storage-shell-quote tmp-path)
-                                                    " "
-                                                    (dbms-storage-shell-quote target-path)))))
+            (let ((mv-status (if (os-mv tmp-path target-path) 0 1)))
               (if (= mv-status 0)
                   value
                   ;; mv 失敗時フォールバック: 明示警告のうえ直接上書き。

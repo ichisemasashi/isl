@@ -2,6 +2,8 @@
   (let ((v (getenv name)))
     (if (null v) "" v)))
 
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
+
 (defun last-index-of-char-local (s ch)
   (let ((i (- (length s) 1))
         (found '()))
@@ -19,18 +21,7 @@
         (substring p 0 idx))))
 
 (defun read-file-text (path)
-  (with-open-file (s path :direction :input)
-    (let ((line (read-line s #f))
-          (acc "")
-          (first-line t))
-      (while (not (null line))
-        (if first-line
-            (progn
-              (setq acc line)
-              (setq first-line nil))
-            (setq acc (string-append acc "\n" line)))
-        (setq line (read-line s #f)))
-      acc)))
+  (os-read-file-text path))
 
 (defun read-stdin-text ()
   (with-open-file (s "/dev/stdin" :direction :input)
@@ -47,8 +38,7 @@
       acc)))
 
 (defun write-file-text (path text)
-  (with-open-file (s path :direction :output)
-    (format s "~A~%" text)))
+  (os-write-file-text path (string-append text "\n")))
 
 (defun md2html-root ()
   (let ((v (getenv "MD2HTML_ROOT")))

@@ -102,6 +102,21 @@
             (osu-safe-delete-file tmp)
             out)))))
 
+(defun os-shell-quote (s)
+  (osu-shell-quote s))
+
+(defun os-read-file-text (path)
+  (osu-read-file-text path))
+
+(defun os-write-file-text (path text)
+  (osu-write-file-text path text))
+
+(defun os-safe-delete-file (path)
+  (osu-safe-delete-file path))
+
+(defun os-command-output (cmd)
+  (osu-command-output cmd))
+
 (defun os-mkdir-p (path)
   (= (system (string-append "mkdir -p " (osu-shell-quote path))) 0))
 
@@ -122,6 +137,12 @@
 
 (defun os-cat-file (path)
   (osu-read-file-text path))
+
+(defun os-cat-to-stdout (path)
+  (= (system (string-append "cat " (osu-shell-quote path))) 0))
+
+(defun os-cat-stdin-to-file (path)
+  (= (system (string-append "cat > " (osu-shell-quote path))) 0))
 
 (defun os-cat-files (paths)
   (let ((rest paths)
@@ -165,6 +186,12 @@
 
 (defun os-ls (path)
   (let ((raw (osu-command-output (string-append "ls -1A " (osu-shell-quote path)))))
+    (if (= (length raw) 0)
+        '()
+        (osu-split-on (osu-trim raw) "\n"))))
+
+(defun os-ls-newest-first-glob (pattern)
+  (let ((raw (osu-command-output (string-append "ls -1t " pattern " 2>/dev/null"))))
     (if (= (length raw) 0)
         '()
         (osu-split-on (osu-trim raw) "\n"))))

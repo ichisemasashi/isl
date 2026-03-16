@@ -1,5 +1,7 @@
 #!/Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl
 
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
+
 (defun env-or-empty (name)
   (let ((v (getenv name)))
     (if (null v) "" v)))
@@ -33,27 +35,10 @@
           s)))
 
 (defun read-file-text (path)
-  (if (null (probe-file path))
-      ""
-      (with-open-file (s path :direction :input)
-        (let ((line (read-line s #f))
-              (acc "")
-              (first-line t))
-          (while (not (null line))
-            (if first-line
-                (progn
-                  (setq acc line)
-                  (setq first-line nil))
-                (setq acc (string-append acc "\n" line)))
-            (setq line (read-line s #f)))
-          acc))))
+  (os-read-file-text path))
 
 (defun write-file-text (path text)
-  (with-open-file (s path
-                     :direction :output
-                     :if-does-not-exist :create
-                     :if-exists :supersede)
-    (format s "~A" text)))
+  (os-write-file-text path text))
 
 (defun split-once (s delim)
   (let ((p (string-index delim s)))

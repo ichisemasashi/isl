@@ -16,6 +16,8 @@
 (defun wiki-path (suffix)
   (string-append (wiki-root) suffix))
 
+(load (wiki-path "/lib/os-utils.lsp"))
+
 (defun request-method ()
   (let ((m (env-or-empty "REQUEST_METHOD")))
     (if (= (length m) 0) "GET" m)))
@@ -370,8 +372,8 @@
   (wiki-config-get "log_dir" "/tmp/isl-wiki-logs"))
 
 (defun ensure-log-dir ()
-  (system (string-append "mkdir -p " (shell-quote (log-root-dir))))
-  (system (string-append "chmod 755 " (shell-quote (log-root-dir)))))
+  (os-mkdir-p (log-root-dir))
+  (os-chmod "755" (log-root-dir)))
 
 (defun request-id ()
   *wiki-request-id*)
@@ -384,15 +386,7 @@
   (add-response-header "X-Request-Id" *wiki-request-id*))
 
 (defun iso-now ()
-  (let* ((tmp (string-append (next-temp-base) ".time"))
-         (status (system (string-append "date -u +%Y-%m-%dT%H:%M:%SZ > " (shell-quote tmp) " 2>/dev/null"))))
-    (if (not (= status 0))
-        (progn
-          (if (null (probe-file tmp)) nil (delete-file tmp))
-          "")
-        (let ((value (trim-ws (read-file-text tmp))))
-          (delete-file tmp)
-          value))))
+  (os-date-utc-iso8601))
 
 (defun log-line-path ()
   (string-append (log-root-dir) "/wiki-app.log"))
@@ -466,25 +460,13 @@
 
 (defun command-output (cmd)
   (setq *command-temp-counter* (+ *command-temp-counter* 1))
-  (let ((tmp (string-append "/tmp/isl-wiki-cmd-"
-                            (format nil "~A" (get-universal-time))
-                            "-"
-                            (format nil "~A" *command-temp-counter*)
-                            ".out")))
-    (let ((status (system (string-append cmd " > " (shell-quote tmp) " 2>/dev/null"))))
-      (if (not (= status 0))
-          (progn
-            (if (null (probe-file tmp)) nil (delete-file tmp))
-            "")
-          (let ((out (read-file-text tmp)))
-            (delete-file tmp)
-            out)))))
+  (os-command-output cmd))
 
 (defun inline-cache-dir ()
   "/tmp/isl-wiki-inline-cache")
 
 (defun ensure-inline-cache-dir ()
-  (system (string-append "mkdir -p " (shell-quote (inline-cache-dir)))))
+  (os-mkdir-p (inline-cache-dir)))
 
 (defun inline-cache-path (stored-filename)
   (string-append (inline-cache-dir) "/" (sanitize-filename stored-filename) ".b64"))
@@ -575,20 +557,18 @@
                               (string-append "data:image/jpeg;base64," b64))))))))))))
 
 (defun ensure-media-dir ()
-  (system (string-append "mkdir -p " (shell-quote (media-root-dir))))
-  (system (string-append "chmod 755 " (shell-quote (media-root-dir)))))
+  (os-mkdir-p (media-root-dir))
+  (os-chmod "755" (media-root-dir)))
 
 (defun ensure-backup-dir ()
-  (system (string-append "mkdir -p " (shell-quote (backup-root-dir))))
-  (system (string-append "chmod 755 " (shell-quote (backup-root-dir)))))
+  (os-mkdir-p (backup-root-dir))
+  (os-chmod "755" (backup-root-dir)))
 
 (defun contains-char-p (s ch)
   (not (null (string-index ch s))))
 
 (defun shell-quote (s)
-  (if (contains-char-p s "'")
-      (error "single quote is not supported in file path" s)
-      (string-append "'" s "'")))
+  (os-shell-quote s))
 
 (defun last-index-of (s needle)
   (let ((i 0)
@@ -854,30 +834,13 @@
                  (format nil "~A" *markdown-temp-counter*)))
 
 (defun write-file-text (path text)
-  (with-open-file (s path
-                     :direction :output
-                     :if-does-not-exist :create
-                     :if-exists :supersede)
-    (format s "~A" (safe-text text))))
+  (os-write-file-text path (safe-text text)))
 
 (defun read-file-text (path)
-  (with-open-file (s path :direction :input)
-    (let ((line (read-line s #f))
-          (acc "")
-          (first-line t))
-      (while (not (null line))
-        (if first-line
-            (progn
-              (setq acc line)
-              (setq first-line nil))
-            (setq acc (string-append acc "\n" line)))
-        (setq line (read-line s #f)))
-      acc)))
+  (os-read-file-text path))
 
 (defun safe-delete-file (path)
-  (handler-case
-    (delete-file path)
-    (error (e) '())))
+  (os-safe-delete-file path))
 
 (defun read-request-body ()
   (with-open-file (s "/dev/stdin" :direction :input)
@@ -894,7 +857,7 @@
       acc)))
 
 (defun capture-request-body-to-file (path)
-  (system (string-append "cat > " (shell-quote path))))
+  (if (os-cat-stdin-to-file path) 0 1))
 
 (defun request-content-type ()
   (env-or-empty "CONTENT_TYPE"))
@@ -2562,28 +2525,10 @@
   (format t "Not Found~%"))
 
 (defun file-size-bytes (path)
-  (let* ((cmd (string-append "wc -c < " (shell-quote path)))
-         (tmp (string-append "/tmp/isl-wiki-size-" (format nil "~A" (get-universal-time))))
-         (status (system (string-append cmd " > " (shell-quote tmp)))))
-    (if (not (= status 0))
-        (progn
-          (if (null (probe-file tmp)) nil (delete-file tmp))
-          0)
-        (let* ((raw (trim-ws (read-file-text tmp)))
-               (n (parse-int-safe raw)))
-          (delete-file tmp)
-          (if (null n) 0 n)))))
+  (os-wc-c path))
 
 (defun detect-mime-type (path)
-  (let* ((tmp (string-append (next-temp-base) ".mime"))
-         (status (system (string-append "file --brief --mime-type " (shell-quote path) " > " (shell-quote tmp) " 2>/dev/null"))))
-    (if (not (= status 0))
-        (progn
-          (if (null (probe-file tmp)) nil (delete-file tmp))
-          "")
-        (let ((mime-type (trim-ws (read-file-text tmp))))
-          (delete-file tmp)
-          mime-type))))
+  (os-file-mime-type path))
 
 (defun safe-download-filename (name)
   (sanitize-filename (basename name)))
@@ -2655,7 +2600,7 @@
             (html-escape (safe-download-filename download-name)))
     (print-extra-headers)
     (format t "~%")
-    (system (string-append "cat " (shell-quote storage-path)))))
+    (os-cat-to-stdout storage-path)))
 
 (defun render-media-file (db stored-filename)
   (let ((meta (fetch-media-file-meta db stored-filename)))
@@ -2741,21 +2686,13 @@
 (defun cleanup-old-backups (dir keep-count)
   (if (or (null keep-count) (<= keep-count 0))
       nil
-      (let* ((tmp (string-append (next-temp-base) ".cleanup"))
-             (cmd (string-append
-                   "sh -c "
-                   (shell-quote
-                    (string-append
-                     "ls -1t " dir "/wiki-backup-* 2>/dev/null | awk 'NR>" (format nil "~A" keep-count) " {print}' > " tmp)))))
-        (system cmd)
-        (if (null (probe-file tmp))
-            nil
-            (let ((raw (read-file-text tmp)))
-              (safe-delete-file tmp)
-              (dolist (line (split-on raw "\n"))
-                (if (blank-text-p line)
-                    nil
-                    (safe-delete-file (trim-ws line)))))))))
+      (let ((entries (os-ls-newest-first-glob (string-append dir "/wiki-backup-*")))
+            (idx 0))
+        (dolist (line entries)
+          (setq idx (+ idx 1))
+          (if (> idx keep-count)
+              (safe-delete-file (trim-ws line))
+              nil)))))
 
 (defun run-backup (target-dir keep-count dry-run)
   (let ((backup-dir (if (blank-text-p target-dir) (backup-root-dir) target-dir)))
@@ -2772,10 +2709,10 @@
           (if dry-run
               (list "dry-run" sql-path media-path "backup dry-run only")
               (progn
-                (system (string-append "mkdir -p " (shell-quote backup-dir)))
+                (os-mkdir-p backup-dir)
                 (let ((db-status (system db-cmd)))
                   (if (= db-status 0)
-                      (let ((media-status (system media-cmd)))
+                      (let ((media-status (if (os-tar-create-gz media-path (media-root-dir)) 0 1)))
                         (if (= media-status 0)
                             (progn
                               (cleanup-old-backups backup-dir keep-count)
@@ -2823,7 +2760,7 @@
                     (list "error" "invalid media_archive_path")
                     (progn
                       (ensure-media-dir)
-	                      (let ((media-status (system (string-append "tar -xzf " (shell-quote media-path) " -C " (shell-quote (media-root-dir))))))
+	                      (let ((media-status (if (os-tar-extract-gz media-path (media-root-dir)) 0 1)))
 	                        (if (= media-status 0)
 	                            (list "ok" "database and media restored")
 	                            (list "error" "media restore failed"))))))))))
@@ -2936,12 +2873,12 @@
           ""))))
 
 (defun move-upload-into-media-dir (temp-path stored-name)
-  (let ((dest-path (string-append (media-root-dir) "/" stored-name)))
+    (let ((dest-path (string-append (media-root-dir) "/" stored-name)))
     (ensure-media-dir)
-    (let ((mv-status (system (string-append "mv " (shell-quote temp-path) " " (shell-quote dest-path)))))
+    (let ((mv-status (if (os-mv temp-path dest-path) 0 1)))
       (if (= mv-status 0)
           (progn
-            (system (string-append "chmod 644 " (shell-quote dest-path)))
+            (os-chmod "644" dest-path)
             dest-path)
           ""))))
 
@@ -2978,10 +2915,10 @@
                           (render-bad-request (second validation))
                           (let ((mime-type (second validation)))
                             (ensure-media-dir)
-                            (let ((copy-status (system (string-append "cp " (shell-quote source-path) " " (shell-quote storage-path)))))
+                            (let ((copy-status (if (os-cp source-path storage-path) 0 1)))
                               (if (= copy-status 0)
                                   (progn
-                                    (system (string-append "chmod 644 " (shell-quote storage-path)))
+                                    (os-chmod "644" storage-path)
                                     (let ((err (persist-media-record db page-slug media-type title base-name stored-name mime-type storage-path public-url edit-summary)))
                                       (if (string= err "")
                                           (render-see-other (string-append (app-base) "/media"))
@@ -3002,7 +2939,7 @@
           (if (not (= capture-status 0))
               (render-bad-request "failed to receive upload body")
               (progn
-                (system (string-append "mkdir -p " (shell-quote work-dir)))
+                (os-mkdir-p work-dir)
                 (setenv "ISL_ROOT" (wiki-root))
                 (setenv "WIKI_MULTIPART_INPUT" body-path)
                 (setenv "WIKI_MULTIPART_OUTDIR" work-dir)

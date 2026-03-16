@@ -1,3 +1,5 @@
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
+
 (defun ws-log (msg)
   (format t "webserver: ~A~%" msg))
 
@@ -44,23 +46,13 @@
   (not (null (string-index ch s))))
 
 (defun ws-shell-quote (s)
-  (if (ws-contains-char-p s "'")
-      (ws-die (string-append "single quote is not supported in path: " s))
-      (string-append "'" s "'")))
+  (handler-case
+    (os-shell-quote s)
+    (error (e)
+      (ws-die (string-append "single quote is not supported in path: " s)))))
 
 (defun ws-read-file-text (path)
-  (with-open-file (s path :direction :input)
-    (let ((line (read-line s #f))
-          (acc "")
-          (first t))
-      (while (not (null line))
-        (if first
-            (progn
-              (setq acc line)
-              (setq first nil))
-            (setq acc (string-append acc "\n" line)))
-        (setq line (read-line s #f)))
-      acc)))
+  (os-read-file-text path))
 
 (defun ws-temp-file-path (prefix)
   (string-append "/tmp/" prefix "-"
@@ -83,15 +75,7 @@
                 "unknown")))))
 
 (defun ws-uname-s ()
-  (let* ((tmp (ws-temp-file-path "webserver-uname"))
-         (cmd (string-append "sh -c 'uname -s > " tmp " 2>/dev/null'")))
-    (if (= (system cmd) 0)
-        (let ((v (ws-read-file-text tmp)))
-          (delete-file tmp)
-          v)
-        (progn
-          (if (not (null (probe-file tmp))) (delete-file tmp) nil)
-          ""))))
+  (os-command-output "uname -s"))
 
 (defun ws-validate-platform ()
   (let ((required '("sh" "test" "dirname" "basename" "uname" "sleep" "kill" "date" "stat"))
