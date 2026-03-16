@@ -964,7 +964,7 @@
 
 (defun fetch-page (db slug)
   (let* ((sql (string-append
-                "select slug, title, body_md "
+                "select slug, title, body_md, current_rev_no "
                 "from pages where slug='" (sql-escape slug) "' limit 1"))
          (rows (postgres-query db sql)))
     (if (null rows)
@@ -987,6 +987,9 @@
     "join pages p on p.id = r.page_id "
     "where p.slug='" (sql-escape slug) "' "
     "order by r.rev_no desc limit 1")))
+
+(defun page-current-rev-no (page-row)
+  (if (null page-row) "" (fourth page-row)))
 
 (defun fetch-media-list (db)
   (postgres-query
@@ -1229,6 +1232,12 @@
   (print-extra-headers)
   (format t "~%"))
 
+(defun print-headers-409 ()
+  (format t "Status: 409 Conflict~%")
+  (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
+
 (defun print-headers-500 ()
   (format t "Status: 500 Internal Server Error~%")
   (format t "Content-Type: text/html; charset=UTF-8~%")
@@ -1311,6 +1320,32 @@
   (format t "<p>アプリケーション内部でエラーが発生しました。</p>~%")
   (format t "<pre>~A</pre>~%" (html-escape message))
   (print-layout-foot))
+
+(defun render-edit-conflict (db slug submitted-title submitted-body-md submitted-summary expected-rev actual-rev)
+  (let ((page (fetch-page db slug)))
+    (if (null page)
+        (render-not-found)
+        (let ((current-title (second page))
+              (current-body-md (third page)))
+          (print-headers-409)
+          (print-layout-head "Edit Conflict")
+          (format t "<h1>Edit Conflict</h1>~%")
+          (format t "<p>このページは別の編集で更新されました。保存は行っていません。</p>~%")
+          (format t "<p><small>your base rev: <code>~A</code> / current rev: <code>~A</code></small></p>~%"
+                  (html-escape expected-rev)
+                  (html-escape actual-rev))
+          (format t "<p><a href=\"~A/~A/edit\">Reload editor</a> | <a href=\"~A/~A\">View page</a></p>~%"
+                  (app-base) (html-escape slug) (app-base) (html-escape slug))
+          (format t "<h2>Current Page</h2>~%")
+          (format t "<p><strong>Title</strong></p><pre>~A</pre>~%" (html-escape current-title))
+          (format t "<p><strong>Body</strong></p><pre>~A</pre>~%" (html-escape current-body-md))
+          (format t "<h2>Your Unsaved Draft</h2>~%")
+          (format t "<p><strong>Title</strong></p><pre>~A</pre>~%" (html-escape submitted-title))
+          (format t "<p><strong>Body</strong></p><pre>~A</pre>~%" (html-escape submitted-body-md))
+          (if (blank-text-p submitted-summary)
+              nil
+              (format t "<p><strong>Edit Summary</strong></p><pre>~A</pre>~%" (html-escape submitted-summary)))
+          (print-layout-foot)))))
 
 (defun render-redirect (location)
   (print-headers-301 location)
@@ -1479,11 +1514,12 @@
             (base (app-base)))
         (if (null row)
             (render-not-found)
-            (let ((title (second row))
-                  (body-md (third row))
-                  (updated-at (fetch-page-updated-at db slug))
-                  (latest-summary (fetch-latest-edit-summary db slug))
-                  (media-rows (fetch-media-for-page db slug))
+	            (let ((title (second row))
+	                  (body-md (third row))
+	                  (current-rev-no (page-current-rev-no row))
+	                  (updated-at (fetch-page-updated-at db slug))
+	                  (latest-summary (fetch-latest-edit-summary db slug))
+	                  (media-rows (fetch-media-for-page db slug))
                   (search-q (query-param "q")))
               (let ((body-html (markdown->html body-md)))
               (print-headers-ok)
@@ -1497,9 +1533,10 @@
               (if (editor-or-admin-p)
                   (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
                   nil)
-              (format t "<p><small>updated: ~A / slug: <code>~A</code></small></p>~%"
-                      (html-escape updated-at)
-                      (html-escape slug))
+	              (format t "<p><small>updated: ~A / slug: <code>~A</code> / rev: <code>~A</code></small></p>~%"
+	                      (html-escape updated-at)
+	                      (html-escape slug)
+	                      (html-escape current-rev-no))
               (if (string= latest-summary "")
                   nil
                   (format t "<p><small>latest summary: ~A</small></p>~%" (html-escape latest-summary)))
@@ -1547,42 +1584,44 @@
                   nil
                   (let* ((title (parse-form-field raw-body "title"))
                          (body-md (parse-form-field raw-body "body_md"))
-                         (edit-summary (parse-form-field raw-body "edit_summary")))
+                         (edit-summary (parse-form-field raw-body "edit_summary"))
+                         (expected-rev (parse-form-field raw-body "current_rev_no"))
+                         (page-now (fetch-page db slug))
+                         (actual-rev (page-current-rev-no page-now)))
                     (if (blank-text-p title)
                         (render-bad-request "title must not be blank")
-	                        (let ((sql
-	                               (string-append
-	                                "with target as ("
-                                "  select p.id as page_id,"
-                                "         coalesce((select max(r.rev_no) from page_revisions r where r.page_id = p.id), 0) + 1 as next_rev"
-                                "    from pages p"
-                                "   where p.slug = '" (sql-escape slug) "'"
-	                                "), updated as ("
-	                                "  update pages p"
-	                                "     set title = '" (sql-escape title) "',"
-	                                "         body_md = '" (sql-escape body-md) "',"
-	                                "         last_edited_by = '" (sql-escape (current-username)) "'"
-	                                "    from target t"
-                                "   where p.id = t.page_id"
-                                "  returning p.id, t.next_rev"
-                                ") "
-                                "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-	                                "select u.id, u.next_rev, '"
-	                                (sql-escape title)
-	                                "', '"
-	                                (sql-escape body-md)
-	                                "', '" (sql-escape (current-username)) "', '"
-	                                (sql-escape edit-summary)
-	                                "' "
-                                "from updated u")))
-                          (postgres-exec db sql)
-                          (write-audit-log
-                           db
-                           "page.update"
-                           "page"
-                           slug
-                           (make-audit-meta-2 "title" title "edit_summary" edit-summary))
-                          (render-see-other (string-append (app-base) "/" slug)))))))))))
+                        (if (or (blank-text-p expected-rev)
+                                (not (string= expected-rev actual-rev)))
+                            (render-edit-conflict db slug title body-md edit-summary expected-rev actual-rev)
+                            (let ((sql
+                                   (string-append
+                                    "with updated as ("
+                                    "  update pages "
+                                    "     set title = '" (sql-escape title) "',"
+                                    "         body_md = '" (sql-escape body-md) "',"
+                                    "         last_edited_by = '" (sql-escape (current-username)) "',"
+                                    "         current_rev_no = current_rev_no + 1 "
+                                    "   where slug = '" (sql-escape slug) "' "
+                                    "     and current_rev_no = " (sql-escape expected-rev) " "
+                                    "  returning id, current_rev_no"
+                                    ") "
+                                    "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+                                    "select u.id, u.current_rev_no, '"
+                                    (sql-escape title)
+                                    "', '"
+                                    (sql-escape body-md)
+                                    "', '" (sql-escape (current-username)) "', '"
+                                    (sql-escape edit-summary)
+                                    "' "
+                                    "from updated u"))))
+                              (postgres-exec db sql)
+                              (write-audit-log
+                               db
+                               "page.update"
+                               "page"
+                               slug
+                               (make-audit-meta-2 "title" title "edit_summary" edit-summary))
+                              (render-see-other (string-append (app-base) "/" slug)))))))))))
 
 (defun create-page (db)
   (let ((raw-body (read-form-body-or-render t)))
@@ -1597,19 +1636,19 @@
               (if (blank-text-p title)
                   (render-bad-request "title must not be blank")
                   (if (null (fetch-page db slug))
-                      (let ((sql
-	                             (string-append
-	                              "with inserted as ("
-	                              "  insert into pages (slug, title, body_md, last_edited_by) "
-	                              "  values ('" (sql-escape slug) "', '"
-	                              (sql-escape title) "', '"
-	                              (sql-escape body-md) "', '" (sql-escape (current-username)) "') "
-	                              "  returning id, title, body_md"
-	                              ") "
-	                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-	                              "select i.id, 1, i.title, i.body_md, '" (sql-escape (current-username)) "', '"
-	                              (sql-escape edit-summary)
-	                              "' from inserted i")))
+	                      (let ((sql
+		                             (string-append
+		                              "with inserted as ("
+		                              "  insert into pages (slug, title, body_md, last_edited_by, current_rev_no) "
+		                              "  values ('" (sql-escape slug) "', '"
+		                              (sql-escape title) "', '"
+		                              (sql-escape body-md) "', '" (sql-escape (current-username)) "', 1) "
+		                              "  returning id, title, body_md, current_rev_no"
+		                              ") "
+		                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+		                              "select i.id, i.current_rev_no, i.title, i.body_md, '" (sql-escape (current-username)) "', '"
+		                              (sql-escape edit-summary)
+		                              "' from inserted i")))
                         (postgres-exec db sql)
                         (write-audit-log
                          db
@@ -1985,10 +2024,17 @@
 	                                            (postgres-exec
 	                                             db
 	                                             (string-append
+	                                              "with updated as ("
+	                                              "  update pages "
+	                                              "     set current_rev_no = current_rev_no + 1,"
+	                                              "         last_edited_by = '" (sql-escape (current-username)) "' "
+	                                              "   where slug='" (sql-escape page-slug) "' "
+	                                              "  returning id, title, body_md, current_rev_no"
+	                                              ") "
 	                                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-	                                              "select p.id, coalesce((select max(r.rev_no) from page_revisions r where r.page_id=p.id),0)+1, p.title, p.body_md, '" (sql-escape (current-username)) "', '"
+	                                              "select u.id, u.current_rev_no, u.title, u.body_md, '" (sql-escape (current-username)) "', '"
 	                                              (sql-escape edit-summary)
-	                                              "' from pages p where p.slug='" (sql-escape page-slug) "'")))
+	                                              "' from updated u")))
                                         (write-audit-log
                                          db
                                          "media.create"
@@ -2054,17 +2100,18 @@
       (let ((row (fetch-page db slug)))
         (if (null row)
             (render-not-found)
-            (let ((title (second row))
-                  (body-md (third row)))
-              (print-headers-ok)
-              (print-layout-head (string-append "Edit: " title))
+	            (let ((title (second row))
+	                  (body-md (third row)))
+	              (print-headers-ok)
+	              (print-layout-head (string-append "Edit: " title))
               (format t "<h1>Edit: ~A</h1>~%" (html-escape title))
-              (format t "<form method=\"post\" action=\"~A/~A/edit\">~%"
-                      (app-base)
-                      (html-escape slug))
-              (render-csrf-hidden-input)
-              (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"~A\" style=\"width:100%\"></label></p>~%"
-                      (html-escape title))
+	              (format t "<form method=\"post\" action=\"~A/~A/edit\">~%"
+	                      (app-base)
+	                      (html-escape slug))
+	              (render-csrf-hidden-input)
+	              (format t "  <input type=\"hidden\" name=\"current_rev_no\" value=\"~A\">~%" (html-escape (page-current-rev-no row)))
+	              (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"~A\" style=\"width:100%\"></label></p>~%"
+	                      (html-escape title))
               (format t "  <p><label>Body (Markdown)<br><textarea name=\"body_md\">~A</textarea></label></p>~%"
                       (html-escape body-md))
               (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"\" style=\"width:100%\"></label></p>~%")

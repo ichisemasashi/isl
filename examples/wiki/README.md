@@ -77,6 +77,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/003_
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/004_auth.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/005_session_csrf.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/006_audit_logs.sql
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/007_page_lock_version.sql
 ```
 
 `004_auth.sql` は次を作成します。
@@ -86,6 +87,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/006_
 
 `005_session_csrf.sql` は `user_sessions.csrf_token` を追加します。
 `006_audit_logs.sql` は `audit_logs` を追加します。
+`007_page_lock_version.sql` は `pages.current_rev_no` を追加します。
 
 初期管理者:
 - username: `admin`
@@ -138,6 +140,7 @@ http://localhost:8080/wiki/login
 - `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
 - ページ作成/編集、メディア追加/削除、backup/restore は監査ログに記録される
 - 監査ログは `/wiki/admin/audit` で最新100件を参照できる
+- 編集画面は `current_rev_no` を保持し、競合時は保存せず比較画面を表示する
 
 保存（POST）確認例:
 
