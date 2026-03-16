@@ -237,6 +237,11 @@
                             (osu-shell-quote dest-path)))
      0))
 
+(defun os-rm-f (path)
+  (if (null (probe-file path))
+      t
+      (not (null (os-safe-delete-file path)))))
+
 (defun os-date-format (fmt)
   (osu-trim
    (osu-command-output
@@ -279,3 +284,8 @@
      (if (null pid) "0" pid)
      "-"
      (format nil "~A" *os-utils-token-counter*))))
+
+(defun os-sleep-sec (seconds)
+  (if (and (numberp seconds) (>= seconds 0))
+      (= (system (string-append "sleep " (format nil "~A" seconds))) 0)
+      nil))

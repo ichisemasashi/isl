@@ -1689,7 +1689,7 @@
     (if (and (not (null delay-sec))
              (not (string= delay-sec ""))
              (dbms-digits-only-p delay-sec))
-        (system (string-append "sleep " delay-sec))
+        (if (os-sleep-sec (convert delay-sec <integer>)) 0 1)
         0)))
 
 (defun dbms-find-column-def (columns name)

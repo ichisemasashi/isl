@@ -837,10 +837,10 @@
   (let ((dump-path (dbms-backup-generation-dump-path entry))
         (wal-path (dbms-backup-generation-wal-path entry)))
     (if (not (null (probe-file dump-path)))
-        (system (string-append "rm -f " (dbms-storage-shell-quote dump-path)))
+        (os-rm-f dump-path)
         nil)
     (if (not (null (probe-file wal-path)))
-        (system (string-append "rm -f " (dbms-storage-shell-quote wal-path)))
+        (os-rm-f wal-path)
         nil)
     'ok))
 

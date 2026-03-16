@@ -43,6 +43,8 @@
 (assert-true "mv" (os-mv *os-utils-copy-file* *os-utils-moved-file*))
 (assert-equal "moved" "abc\ndef" (os-cat-file *os-utils-moved-file*))
 (assert-true "chmod" (os-chmod "644" *os-utils-moved-file*))
+(assert-true "rm-f" (os-rm-f *os-utils-moved-file*))
+(assert-true "rm-f removed" (null (probe-file *os-utils-moved-file*)))
 (assert-true "ls contains a.txt"
              (string-list-contains-p (os-ls *os-utils-test-root*) "a.txt"))
 (assert-true "mime non-empty" (> (length (os-file-mime-type *os-utils-src-file*)) 0))
