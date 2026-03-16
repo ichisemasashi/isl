@@ -81,6 +81,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/004_
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/005_session_csrf.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/006_audit_logs.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/007_page_lock_version.sql
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/008_soft_delete.sql
 ```
 
 `004_auth.sql` は次を作成します。
@@ -91,6 +92,7 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/007_
 `005_session_csrf.sql` は `user_sessions.csrf_token` を追加します。
 `006_audit_logs.sql` は `audit_logs` を追加します。
 `007_page_lock_version.sql` は `pages.current_rev_no` を追加します。
+`008_soft_delete.sql` は `pages` / `media_assets` に論理削除カラムを追加します。
 
 初期管理者:
 - username: `admin`
@@ -135,12 +137,15 @@ http://localhost:8080/wiki/admin
 http://localhost:8080/wiki/admin/backup
 http://localhost:8080/wiki/admin/restore
 http://localhost:8080/wiki/admin/audit
+http://localhost:8080/wiki/admin/deleted-pages
+http://localhost:8080/wiki/admin/deleted-media
 http://localhost:8080/wiki/login
 ```
 
 注意:
 - `/wiki/new`, `/wiki/{slug}/edit`, `/wiki/media/new` は `editor` 以上が必要
 - `/wiki/admin`, `/wiki/admin/backup`, `/wiki/admin/restore` は `admin` が必要
+- `/wiki/{slug}/delete` は `editor` 以上、削除済みページ/メディアの復元は `admin` が必要
 - POST系操作はログイン済みユーザーのみ実行可能
 - 認証済みPOSTにはフォーム埋め込みの `csrf_token` が必須
 - `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
@@ -149,6 +154,8 @@ http://localhost:8080/wiki/login
 - 編集画面は `current_rev_no` を保持し、競合時は保存せず比較画面を表示する
 - 履歴一覧から各リビジョンの `vs latest` で最新版との差分を参照できる
 - ロールバックは `/wiki/{slug}/revisions/{rev_no}` から `admin` のみ実行でき、新しい履歴として保存される
+- 論理削除されたページは一覧/検索/通常表示から除外され、`/wiki/admin/deleted-pages` から復元できる
+- 論理削除されたメディアは一覧/配信から除外され、`/wiki/admin/deleted-media` から復元できる
 
 保存（POST）確認例:
 

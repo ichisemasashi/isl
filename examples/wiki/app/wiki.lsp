@@ -950,7 +950,7 @@
 
 (defun fetch-pages (db)
   (postgres-query db
-    "select slug, title, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') from pages order by slug"))
+    "select slug, title, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') from pages where deleted_at is null order by slug"))
 
 (defun fetch-pages-by-query (db q)
   (postgres-query
@@ -958,13 +958,24 @@
    (string-append
     "select slug, title, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') "
     "from pages "
-    "where position(lower('" (sql-escape q) "') in lower(title)) > 0 "
+    "where deleted_at is null "
+    "  and (position(lower('" (sql-escape q) "') in lower(title)) > 0 "
     "   or position(lower('" (sql-escape q) "') in lower(body_md)) > 0 "
-    "order by updated_at desc, slug")))
+    ") order by updated_at desc, slug")))
 
 (defun fetch-page (db slug)
   (let* ((sql (string-append
                 "select slug, title, body_md, current_rev_no "
+                "from pages where slug='" (sql-escape slug) "' and deleted_at is null limit 1"))
+         (rows (postgres-query db sql)))
+    (if (null rows)
+        '()
+        (first rows))))
+
+(defun fetch-page-any (db slug)
+  (let* ((sql (string-append
+                "select slug, title, body_md, current_rev_no, "
+                "coalesce(to_char(deleted_at, 'YYYY-MM-DD HH24:MI:SS'), ''), coalesce(deleted_by, '') "
                 "from pages where slug='" (sql-escape slug) "' limit 1"))
          (rows (postgres-query db sql)))
     (if (null rows)
@@ -1029,7 +1040,7 @@
    (string-append
     "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
     "coalesce((select p.slug from pages p where p.id = m.page_id), '') "
-    "from media_assets m order by m.id desc")))
+    "from media_assets m where m.deleted_at is null order by m.id desc")))
 
 (defun fetch-media-for-page (db slug)
   (postgres-query
@@ -1039,6 +1050,8 @@
     "from media_assets m "
     "join pages p on p.id = m.page_id "
     "where p.slug='" (sql-escape slug) "' "
+    "  and p.deleted_at is null "
+    "  and m.deleted_at is null "
     "order by m.id desc")))
 
 (defun fetch-media-file-meta (db stored-filename)
@@ -1046,7 +1059,7 @@
                db
                (string-append
                 "select storage_path, mime_type from media_assets "
-                "where stored_filename='" (sql-escape stored-filename) "' limit 1"))))
+                "where stored_filename='" (sql-escape stored-filename) "' and deleted_at is null limit 1"))))
     (if (null rows) '() (first rows))))
 
 (defun fetch-media-by-id (db media-id)
@@ -1060,8 +1073,43 @@
                  "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
                  "coalesce(m.storage_path, ''), coalesce((select p.slug from pages p where p.id = m.page_id), '') "
                  "from media_assets m "
+                 "where m.id = " (format nil "~A" mid) " and m.deleted_at is null limit 1"))))
+          (if (null rows) '() (first rows))))))
+
+(defun fetch-media-by-id-any (db media-id)
+  (let ((mid (parse-int-safe media-id)))
+    (if (null mid)
+        '()
+        (let ((rows
+               (postgres-query
+                db
+                (string-append
+                 "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
+                 "coalesce(m.storage_path, ''), coalesce((select p.slug from pages p where p.id = m.page_id), ''), "
+                 "coalesce(to_char(m.deleted_at, 'YYYY-MM-DD HH24:MI:SS'), ''), coalesce(m.deleted_by, '') "
+                 "from media_assets m "
                  "where m.id = " (format nil "~A" mid) " limit 1"))))
           (if (null rows) '() (first rows))))))
+
+(defun fetch-deleted-pages (db)
+  (postgres-query
+   db
+   (string-append
+    "select slug, title, to_char(deleted_at, 'YYYY-MM-DD HH24:MI:SS'), coalesce(deleted_by, '') "
+    "from pages "
+    "where deleted_at is not null "
+    "order by deleted_at desc, slug")))
+
+(defun fetch-deleted-media (db)
+  (postgres-query
+   db
+   (string-append
+    "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
+    "coalesce((select p.slug from pages p where p.id = m.page_id), ''), "
+    "to_char(m.deleted_at, 'YYYY-MM-DD HH24:MI:SS'), coalesce(m.deleted_by, '') "
+    "from media_assets m "
+    "where m.deleted_at is not null "
+    "order by m.deleted_at desc, m.id desc")))
 
 (defun fetch-audit-logs (db)
   (postgres-query
@@ -1527,6 +1575,7 @@
      ((string= (first segments) "admin") "admin")
      ((and (= n 4) (string= (second segments) "revisions") (string= (fourth segments) "rollback")) "admin")
      ((and (= n 3) (string= (first segments) "media") (string= (third segments) "delete")) "admin")
+     ((and (= n 2) (string= (second segments) "delete")) "editor")
      ((string= (first segments) "new") "editor")
      ((and (= n 2) (string= (second segments) "edit")) "editor")
      ((and (= n 2) (string= (first segments) "media") (string= (second segments) "new")) "editor")
@@ -1641,6 +1690,16 @@
 	              (if (editor-or-admin-p)
 	                  (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
 	                  nil)
+                  (if (editor-or-admin-p)
+                      (progn
+                        (format t "<form method=\"post\" action=\"~A/~A/delete\" style=\"margin:0 0 1rem 0\">~%"
+                                base
+                                (html-escape slug))
+                        (render-csrf-hidden-input)
+                        (format t "<button type=\"submit\" onclick=\"return confirm('Delete page ~A?');\">Delete Page</button>~%"
+                                (html-escape slug))
+                        (format t "</form>~%"))
+                      nil)
 	              (format t "<p><small>updated: ~A / slug: <code>~A</code> / rev: <code>~A</code></small></p>~%"
 	                      (html-escape updated-at)
 	                      (html-escape slug)
@@ -1903,7 +1962,7 @@
               (render-bad-request "invalid slug")
               (if (blank-text-p title)
                   (render-bad-request "title must not be blank")
-                  (if (null (fetch-page db slug))
+                  (if (null (fetch-page-any db slug))
 	                      (let ((sql
 		                             (string-append
 		                              "with inserted as ("
@@ -1925,7 +1984,7 @@
                          slug
                          (make-audit-meta-2 "title" title "edit_summary" edit-summary))
                         (render-see-other (string-append (app-base) "/" slug)))
-                      (render-bad-request "slug already exists"))))))))
+                      (render-bad-request "slug already exists (or is soft-deleted; restore it from admin)"))))))))
 
 (defun render-media-index (db)
   (let ((rows (fetch-media-list db))
@@ -1970,6 +2029,74 @@
                   (format t "</form>~%"))
                 nil)
             (format t "</section>~%")))))
+    (print-layout-foot)))
+
+(defun render-admin-deleted-pages (db)
+  (let ((rows (fetch-deleted-pages db))
+        (base (app-base)))
+    (print-headers-ok)
+    (print-layout-head "Deleted Pages")
+    (format t "<h1>Deleted Pages</h1>~%")
+    (format t "<p><a href=\"~A/admin\">Admin</a></p>~%" base)
+    (if (null rows)
+        (format t "<p>削除済みページはありません。</p>~%")
+        (progn
+          (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
+          (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Slug</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Title</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Deleted At</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Deleted By</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Action</th></tr></thead>~%")
+          (format t "<tbody>~%")
+          (dolist (row rows)
+            (let ((slug (first row))
+                  (title (second row))
+                  (deleted-at (third row))
+                  (deleted-by (fourth row)))
+              (format t "<tr>~%")
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape slug))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape title))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape deleted-at))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape deleted-by))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~%")
+              (format t "<form method=\"post\" action=\"~A/admin/deleted-pages/~A/restore\">~%" base (html-escape slug))
+              (render-csrf-hidden-input)
+              (format t "<button type=\"submit\" onclick=\"return confirm('Restore page ~A?');\">Restore</button>~%" (html-escape slug))
+              (format t "</form>~%")
+              (format t "</td>~%")
+              (format t "</tr>~%")))
+          (format t "</tbody></table>~%")))
+    (print-layout-foot)))
+
+(defun render-admin-deleted-media (db)
+  (let ((rows (fetch-deleted-media db))
+        (base (app-base)))
+    (print-headers-ok)
+    (print-layout-head "Deleted Media")
+    (format t "<h1>Deleted Media</h1>~%")
+    (format t "<p><a href=\"~A/admin\">Admin</a></p>~%" base)
+    (if (null rows)
+        (format t "<p>削除済みメディアはありません。</p>~%")
+        (progn
+          (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
+          (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">ID</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Type</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Title</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Deleted At</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Deleted By</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Action</th></tr></thead>~%")
+          (format t "<tbody>~%")
+          (dolist (row rows)
+            (let ((media-id (first row))
+                  (media-type (second row))
+                  (media-title (third row))
+                  (deleted-at (seventh row))
+                  (deleted-by (eighth row)))
+              (format t "<tr>~%")
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape media-id))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape media-type))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape media-title))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape deleted-at))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape deleted-by))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~%")
+              (format t "<form method=\"post\" action=\"~A/admin/deleted-media/~A/restore\">~%" base (html-escape media-id))
+              (render-csrf-hidden-input)
+              (format t "<button type=\"submit\" onclick=\"return confirm('Restore media #~A?');\">Restore</button>~%" (html-escape media-id))
+              (format t "</form>~%")
+              (format t "</td>~%")
+              (format t "</tr>~%")))
+          (format t "</tbody></table>~%")))
     (print-layout-foot)))
 
 (defun render-file-not-found ()
@@ -2124,6 +2251,8 @@
     (format t "<li><a href=\"~A/admin/backup\">Backup</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/restore\">Restore</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/audit\">Audit Log</a></li>~%" base)
+    (format t "<li><a href=\"~A/admin/deleted-pages\">Deleted Pages</a></li>~%" base)
+    (format t "<li><a href=\"~A/admin/deleted-media\">Deleted Media</a></li>~%" base)
     (format t "</ul>~%")
     (print-layout-foot)))
 
@@ -2330,11 +2459,10 @@
                     (page-slug (seventh media)))
                 (postgres-exec
                  db
-                 (string-append "delete from media_assets where id=" (format nil "~A" mid)))
-                (if (and (not (blank-text-p storage-path))
-                         (not (null (probe-file storage-path))))
-                    (safe-delete-file storage-path)
-                    nil)
+                 (string-append
+                  "update media_assets "
+                  "set deleted_at = now(), deleted_by = '" (sql-escape (current-username)) "' "
+                  "where id=" (format nil "~A" mid) " and deleted_at is null"))
                 (write-audit-log
                  db
                  "media.delete"
@@ -2345,6 +2473,79 @@
                   "storage_path" storage-path
                   "page_slug" page-slug))
                 (render-see-other (string-append (app-base) "/media"))))))))))
+
+(defun delete-page (db slug)
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((page (fetch-page db slug)))
+          (if (null page)
+              (render-not-found)
+              (let ((title (second page)))
+                (postgres-exec
+                 db
+                 (string-append
+                  "update pages "
+                  "set deleted_at = now(), deleted_by = '" (sql-escape (current-username)) "' "
+                  "where slug='" (sql-escape slug) "' and deleted_at is null"))
+                (write-audit-log
+                 db
+                 "page.delete"
+                 "page"
+                 slug
+                 (make-audit-meta-2
+                  "title" title
+                  "deleted_by" (current-username)))
+                (render-see-other (app-base))))))))
+
+(defun restore-page (db slug)
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((page (fetch-page-any db slug)))
+          (if (or (null page) (string= (fifth page) ""))
+              (render-not-found)
+              (let ((title (second page)))
+                (postgres-exec
+                 db
+                 (string-append
+                  "update pages "
+                  "set deleted_at = NULL, deleted_by = NULL "
+                  "where slug='" (sql-escape slug) "' and deleted_at is not null"))
+                (write-audit-log
+                 db
+                 "page.restore"
+                 "page"
+                 slug
+                 (make-audit-meta-2
+                  "title" title
+                  "restored_by" (current-username)))
+                (render-see-other (string-append (app-base) "/admin/deleted-pages"))))))))
+
+(defun restore-media (db media-id)
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((mid (parse-int-safe media-id))
+              (media (fetch-media-by-id-any db media-id)))
+          (if (or (null mid) (null media) (string= (eighth media) ""))
+              (render-not-found)
+              (let ((stored-filename (fourth media)))
+                (postgres-exec
+                 db
+                 (string-append
+                  "update media_assets "
+                  "set deleted_at = NULL, deleted_by = NULL "
+                  "where id=" (format nil "~A" mid) " and deleted_at is not null"))
+                (write-audit-log
+                 db
+                 "media.restore"
+                 "media"
+                 media-id
+                 (make-audit-meta-2
+                  "stored_filename" stored-filename
+                  "restored_by" (current-username)))
+                (render-see-other (string-append (app-base) "/admin/deleted-media"))))))))
 
 (defun render-new ()
   (let ((base (app-base)))
@@ -2385,6 +2586,13 @@
               (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"\" style=\"width:100%\"></label></p>~%")
               (format t "  <p><button type=\"submit\">Save</button></p>~%")
               (format t "</form>~%")
+              (format t "<form method=\"post\" action=\"~A/~A/delete\" style=\"margin-top:1rem\">~%"
+                      (app-base)
+                      (html-escape slug))
+              (render-csrf-hidden-input)
+              (format t "<button type=\"submit\" onclick=\"return confirm('Delete page ~A?');\">Delete Page</button>~%"
+                      (html-escape slug))
+              (format t "</form>~%")
               (print-layout-foot))))))
 
 (defun render-app ()
@@ -2423,10 +2631,14 @@
                 (render-view db (first segments)))))
              ((= n 2)
               (cond
-               ((string= (first segments) "admin")
-                (cond
+              ((string= (first segments) "admin")
+               (cond
                  ((string= (second segments) "audit")
                   (render-admin-audit db))
+                 ((string= (second segments) "deleted-pages")
+                  (render-admin-deleted-pages db))
+                 ((string= (second segments) "deleted-media")
+                  (render-admin-deleted-media db))
                  ((string= (second segments) "backup")
                   (if (string= method "POST")
                       (render-admin-backup-run)
@@ -2447,6 +2659,10 @@
                 (render-media-file db (second segments)))
                ((string= (second segments) "history")
                 (render-history db (first segments)))
+               ((string= (second segments) "delete")
+                (if (string= method "POST")
+                    (delete-page db (first segments))
+                    (render-not-found)))
                ((string= (second segments) "edit")
                 (if (string= method "POST")
                     (save-page db (first segments))
@@ -2467,6 +2683,18 @@
                 (render-not-found))))
              ((= n 4)
               (cond
+               ((and (string= (first segments) "admin")
+                     (string= (second segments) "deleted-pages")
+                     (string= (fourth segments) "restore"))
+                (if (string= method "POST")
+                    (restore-page db (third segments))
+                    (render-not-found)))
+               ((and (string= (first segments) "admin")
+                     (string= (second segments) "deleted-media")
+                     (string= (fourth segments) "restore"))
+                (if (string= method "POST")
+                    (restore-media db (third segments))
+                    (render-not-found)))
                ((and (string= (second segments) "compare")
                      (not (blank-text-p (third segments)))
                      (not (blank-text-p (fourth segments))))
