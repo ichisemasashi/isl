@@ -182,6 +182,25 @@
       (setq i (+ i 1)))
     out))
 
+(defun json-escape (s)
+  (let ((text (safe-text s))
+        (i 0)
+        (out ""))
+    (while (< i (length text))
+      (let ((ch (substring text i (+ i 1))))
+        (setq out
+              (string-append
+               out
+               (cond
+                ((string= ch "\\") "\\\\")
+                ((string= ch "\"") "\\\"")
+                ((string= ch "\n") "\\n")
+                ((string= ch "\r") "\\r")
+                ((string= ch "\t") "\\t")
+                (t ch)))))
+      (setq i (+ i 1)))
+    out))
+
 (defun slug-safe-char-p (ch)
   (not (null (string-index ch "abcdefghijklmnopqrstuvwxyz0123456789-"))))
 
@@ -995,6 +1014,31 @@
                 "where stored_filename='" (sql-escape stored-filename) "' limit 1"))))
     (if (null rows) '() (first rows))))
 
+(defun fetch-media-by-id (db media-id)
+  (let ((mid (parse-int-safe media-id)))
+    (if (null mid)
+        '()
+        (let ((rows
+               (postgres-query
+                db
+                (string-append
+                 "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
+                 "coalesce(m.storage_path, ''), coalesce((select p.slug from pages p where p.id = m.page_id), '') "
+                 "from media_assets m "
+                 "where m.id = " (format nil "~A" mid) " limit 1"))))
+          (if (null rows) '() (first rows))))))
+
+(defun fetch-audit-logs (db)
+  (postgres-query
+   db
+   (string-append
+    "select a.id, to_char(a.created_at, 'YYYY-MM-DD HH24:MI:SS'), "
+    "coalesce(u.username, '[deleted-user]'), a.action, a.target_type, coalesce(a.target_id, ''), a.meta_json "
+    "from audit_logs a "
+    "left join users u on u.id = a.actor_user_id "
+    "order by a.created_at desc, a.id desc "
+    "limit 100")))
+
 (defun fetch-user-for-login (db username password)
   (let ((rows
          (postgres-query
@@ -1100,6 +1144,62 @@
 
 (defun restore-confirm-phrase ()
   "RESTORE WIKI")
+
+(defun audit-actor-id-sql ()
+  (if (blank-text-p (current-username))
+      "NULL"
+      (string-append "(select id from users where username='" (sql-escape (current-username)) "' limit 1)")))
+
+(defun make-audit-meta-1 (k1 v1)
+  (string-append
+   "{\""
+   k1
+   "\":\""
+   (json-escape v1)
+   "\"}"))
+
+(defun make-audit-meta-2 (k1 v1 k2 v2)
+  (string-append
+   "{\""
+   k1
+   "\":\""
+   (json-escape v1)
+   "\",\""
+   k2
+   "\":\""
+   (json-escape v2)
+   "\"}"))
+
+(defun make-audit-meta-3 (k1 v1 k2 v2 k3 v3)
+  (string-append
+   "{\""
+   k1
+   "\":\""
+   (json-escape v1)
+   "\",\""
+   k2
+   "\":\""
+   (json-escape v2)
+   "\",\""
+   k3
+   "\":\""
+   (json-escape v3)
+   "\"}"))
+
+(defun write-audit-log (db action target-type target-id meta-json)
+  (postgres-exec
+   db
+   (string-append
+    "insert into audit_logs (actor_user_id, action, target_type, target_id, meta_json) values ("
+    (audit-actor-id-sql) ", '"
+    (sql-escape action) "', '"
+    (sql-escape target-type) "', "
+    (if (blank-text-p target-id)
+        "NULL"
+        (string-append "'" (sql-escape target-id) "'"))
+    ", '"
+    (sql-escape meta-json)
+    "')")))
 
 (defun print-extra-headers ()
   (dolist (header (wiki-reverse *response-extra-headers*))
@@ -1288,6 +1388,7 @@
      ((string= (first segments) "login") "")
      ((string= (first segments) "logout") "viewer")
      ((string= (first segments) "admin") "admin")
+     ((and (= n 3) (string= (first segments) "media") (string= (third segments) "delete")) "admin")
      ((string= (first segments) "new") "editor")
      ((and (= n 2) (string= (second segments) "edit")) "editor")
      ((and (= n 2) (string= (first segments) "media") (string= (second segments) "new")) "editor")
@@ -1475,6 +1576,12 @@
 	                                "' "
                                 "from updated u")))
                           (postgres-exec db sql)
+                          (write-audit-log
+                           db
+                           "page.update"
+                           "page"
+                           slug
+                           (make-audit-meta-2 "title" title "edit_summary" edit-summary))
                           (render-see-other (string-append (app-base) "/" slug)))))))))))
 
 (defun create-page (db)
@@ -1504,6 +1611,12 @@
 	                              (sql-escape edit-summary)
 	                              "' from inserted i")))
                         (postgres-exec db sql)
+                        (write-audit-log
+                         db
+                         "page.create"
+                         "page"
+                         slug
+                         (make-audit-meta-2 "title" title "edit_summary" edit-summary))
                         (render-see-other (string-append (app-base) "/" slug)))
                       (render-bad-request "slug already exists"))))))))
 
@@ -1542,6 +1655,13 @@
                         base
                         (html-escape page-slug)
                         (html-escape page-slug)))
+            (if (admin-p)
+                (progn
+                  (format t "<form method=\"post\" action=\"~A/media/~A/delete\" style=\"margin-top:.75rem\">~%" base (html-escape media-id))
+                  (render-csrf-hidden-input)
+                  (format t "<button type=\"submit\" onclick=\"return confirm('Delete media #~A?');\">Delete Media</button>~%" (html-escape media-id))
+                  (format t "</form>~%"))
+                nil)
             (format t "</section>~%")))))
     (print-layout-foot)))
 
@@ -1639,7 +1759,19 @@
             (if (= media-status 0)
                 (list "ok" sql-path media-path)
                 (list "error" "media backup failed")))
-          (list "error" "database backup failed")))))
+	          (list "error" "database backup failed")))))
+
+(defun run-backup-with-audit (db)
+  (let ((result (run-backup)))
+    (if (string= (first result) "ok")
+        (write-audit-log
+         db
+         "backup.run"
+         "backup"
+         (second result)
+         (make-audit-meta-2 "sql_path" (second result) "media_path" (third result)))
+        nil)
+    result))
 
 (defun run-restore (sql-path media-path restore-media)
   (if (or (blank-text-p sql-path)
@@ -1656,10 +1788,25 @@
                     (list "error" "invalid media_archive_path")
                     (progn
                       (ensure-media-dir)
-                      (let ((media-status (system (string-append "tar -xzf " (shell-quote media-path) " -C " (shell-quote (media-root-dir))))))
-                        (if (= media-status 0)
-                            (list "ok" "database and media restored")
-                            (list "error" "media restore failed"))))))))))
+	                      (let ((media-status (system (string-append "tar -xzf " (shell-quote media-path) " -C " (shell-quote (media-root-dir))))))
+	                        (if (= media-status 0)
+	                            (list "ok" "database and media restored")
+	                            (list "error" "media restore failed"))))))))))
+
+(defun run-restore-with-audit (db sql-path media-path restore-media)
+  (let ((result (run-restore sql-path media-path restore-media)))
+    (if (string= (first result) "ok")
+        (write-audit-log
+         db
+         "restore.run"
+         "backup"
+         sql-path
+         (make-audit-meta-3
+          "sql_path" sql-path
+          "media_path" media-path
+          "restore_media" (if restore-media "true" "false")))
+        nil)
+    result))
 
 (defun render-admin-home ()
   (let ((base (app-base)))
@@ -1669,7 +1816,37 @@
     (format t "<ul>~%")
     (format t "<li><a href=\"~A/admin/backup\">Backup</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/restore\">Restore</a></li>~%" base)
+    (format t "<li><a href=\"~A/admin/audit\">Audit Log</a></li>~%" base)
     (format t "</ul>~%")
+    (print-layout-foot)))
+
+(defun render-admin-audit (db)
+  (let ((rows (fetch-audit-logs db)))
+    (print-headers-ok)
+    (print-layout-head "Audit Log")
+    (format t "<h1>Audit Log</h1>~%")
+    (format t "<p><small>Latest 100 events</small></p>~%")
+    (if (null rows)
+        (format t "<p>監査ログはまだありません。</p>~%")
+        (progn
+          (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
+          (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">When</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Actor</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Action</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Target</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Meta</th></tr></thead>~%")
+          (format t "<tbody>~%")
+          (dolist (row rows)
+            (let ((created-at (second row))
+                  (actor (third row))
+                  (action (fourth row))
+                  (target-type (fifth row))
+                  (target-id (sixth row))
+                  (meta-json (seventh row)))
+              (format t "<tr>~%")
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape created-at))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape actor))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape action))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code><br><small>~A</small></td>~%" (html-escape target-type) (html-escape target-id))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><pre style=\"margin:0\">~A</pre></td>~%" (html-escape meta-json))
+              (format t "</tr>~%")))
+          (format t "</tbody></table>~%")))
     (print-layout-foot)))
 
 (defun render-admin-backup-form ()
@@ -1694,7 +1871,7 @@
         (let ((confirm-phrase (parse-form-field raw-body "confirm_phrase")))
           (if (not (string= confirm-phrase (backup-confirm-phrase)))
               (render-bad-request (string-append "confirm_phrase must be " (backup-confirm-phrase)))
-              (let ((result (run-backup)))
+              (let ((result (run-backup-with-audit db)))
                 (print-headers-ok)
                 (print-layout-head "Backup Result")
                 (if (string= (first result) "ok")
@@ -1734,7 +1911,7 @@
                (confirm-phrase (parse-form-field raw-body "confirm_phrase")))
           (if (not (string= confirm-phrase (restore-confirm-phrase)))
               (render-bad-request (string-append "confirm_phrase must be " (restore-confirm-phrase)))
-              (let ((result (run-restore sql-path media-path restore-media)))
+              (let ((result (run-restore-with-audit db sql-path media-path restore-media)))
                 (print-headers-ok)
                 (print-layout-head "Restore Result")
                 (if (string= (first result) "ok")
@@ -1812,8 +1989,48 @@
 	                                              "select p.id, coalesce((select max(r.rev_no) from page_revisions r where r.page_id=p.id),0)+1, p.title, p.body_md, '" (sql-escape (current-username)) "', '"
 	                                              (sql-escape edit-summary)
 	                                              "' from pages p where p.slug='" (sql-escape page-slug) "'")))
+                                        (write-audit-log
+                                         db
+                                         "media.create"
+                                         "media"
+                                         stored-name
+                                         (make-audit-meta-3
+                                          "title" title
+                                          "page_slug" page-slug
+                                          "stored_filename" stored-name))
                                         (render-see-other (string-append (app-base) "/media"))))
                                     (render-bad-request "file copy failed")))))))))))))
+
+(defun delete-media (db media-id)
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((mid (parse-int-safe media-id)))
+          (if (null mid)
+              (render-bad-request "invalid media id")
+              (let ((media (fetch-media-by-id db media-id)))
+          (if (null media)
+              (render-not-found)
+              (let ((stored-filename (fourth media))
+                    (storage-path (sixth media))
+                    (page-slug (seventh media)))
+                (postgres-exec
+                 db
+                 (string-append "delete from media_assets where id=" (format nil "~A" mid)))
+                (if (and (not (blank-text-p storage-path))
+                         (not (null (probe-file storage-path))))
+                    (safe-delete-file storage-path)
+                    nil)
+                (write-audit-log
+                 db
+                 "media.delete"
+                 "media"
+                 media-id
+                 (make-audit-meta-3
+                  "stored_filename" stored-filename
+                  "storage_path" storage-path
+                  "page_slug" page-slug))
+                (render-see-other (string-append (app-base) "/media"))))))))))
 
 (defun render-new ()
   (let ((base (app-base)))
@@ -1893,6 +2110,8 @@
               (cond
                ((string= (first segments) "admin")
                 (cond
+                 ((string= (second segments) "audit")
+                  (render-admin-audit db))
                  ((string= (second segments) "backup")
                   (if (string= method "POST")
                       (render-admin-backup-run)
@@ -1915,6 +2134,15 @@
                 (if (string= method "POST")
                     (save-page db (first segments))
                     (render-edit db (first segments))))
+               (t
+                (render-not-found))))
+             ((= n 3)
+              (cond
+               ((and (string= (first segments) "media")
+                     (string= (third segments) "delete"))
+                (if (string= method "POST")
+                    (delete-media db (second segments))
+                    (render-not-found)))
                (t
                 (render-not-found))))
              (t
