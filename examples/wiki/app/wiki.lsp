@@ -439,13 +439,7 @@
   (string-append (app-base) "/login?next=" (url-encode-lite (current-request-target))))
 
 (defun issue-session-token ()
-  (let ((a (trim-ws (command-output "/usr/bin/uuidgen")))
-        (b (trim-ws (command-output "/usr/bin/uuidgen"))))
-    (if (or (blank-text-p a) (blank-text-p b))
-        (string-append (format nil "~A" (get-universal-time))
-                       "-"
-                       (format nil "~A" *command-temp-counter*))
-        (string-append a "-" b))))
+  (os-generate-token))
 
 (defun issue-csrf-token ()
   (issue-session-token))
@@ -495,7 +489,7 @@
                                                         "-"
                                                         (format nil "~A" *command-temp-counter*)
                                                         ".jpg"))
-                             (use-thumb (and (= (system "sh -c 'command -v sips >/dev/null 2>&1'") 0)
+                             (use-thumb (and (os-command-available-p "sips")
                                              (= (system (string-append "sips -Z 256 "
                                                                        (shell-quote storage-path)
                                                                        " --out "
@@ -503,9 +497,7 @@
                                                                        " >/dev/null 2>&1")) 0)))
                              (source-path (if use-thumb thumb-path storage-path))
                              (source-mime (if use-thumb "image/jpeg" mtype))
-                             (b64 (command-output (string-append "base64 < "
-                                                                 (shell-quote source-path)
-                                                                 " | tr -d '\\n'"))))
+                             (b64 (os-base64-file-no-newline source-path)))
                         (if use-thumb
                             (if (null (probe-file thumb-path)) nil (delete-file thumb-path))
                             nil)
@@ -536,16 +528,14 @@
                                                         "-"
                                                         (format nil "~A" *command-temp-counter*)
                                                         ".jpg"))
-                             (thumb-ok (and (= (system "sh -c 'test -x /usr/bin/sips'") 0)
+                             (thumb-ok (and (os-file-executable-p "/usr/bin/sips")
                                             (= (system (string-append "/usr/bin/sips -Z 220 "
                                                                       (shell-quote storage-path)
                                                                       " --out "
                                                                       (shell-quote thumb-path)
                                                                       " >/dev/null 2>&1")) 0)))
                              (b64 (if thumb-ok
-                                      (command-output (string-append "/usr/bin/base64 < "
-                                                                     (shell-quote thumb-path)
-                                                                     " | /usr/bin/tr -d '\\n'"))
+                                      (os-base64-file-no-newline thumb-path)
                                       "")))
                         (if thumb-ok
                             (if (null (probe-file thumb-path)) nil (delete-file thumb-path))

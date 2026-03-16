@@ -46,6 +46,10 @@
 (assert-true "ls contains a.txt"
              (string-list-contains-p (os-ls *os-utils-test-root*) "a.txt"))
 (assert-true "mime non-empty" (> (length (os-file-mime-type *os-utils-src-file*)) 0))
+(assert-equal "base64" "YWJjCmRlZg==" (os-base64-file-no-newline *os-utils-src-file*))
+(assert-true "command available sh" (os-command-available-p "sh"))
+(assert-true "file executable isl" (os-file-executable-p "/Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl"))
+(assert-true "token non-empty" (> (length (os-generate-token)) 0))
 (assert-true "date non-empty" (> (length (os-date-utc-iso8601)) 0))
 (assert-true "tar create" (os-tar-create-gz *os-utils-tar-file* *os-utils-test-root*))
 (assert-true "mkdir out" (os-mkdir-p *os-utils-untar-root*))

@@ -53,6 +53,7 @@
     (error (e) nil)))
 
 (defglobal *os-utils-temp-counter* 0)
+(defglobal *os-utils-token-counter* 0)
 
 (defun osu-temp-path (prefix)
   (setq *os-utils-temp-counter* (+ *os-utils-temp-counter* 1))
@@ -117,6 +118,12 @@
 (defun os-command-output (cmd)
   (osu-command-output cmd))
 
+(defun os-command-available-p (cmd)
+  (= (system (string-append "sh -c 'command -v " cmd " >/dev/null 2>&1'")) 0))
+
+(defun os-file-executable-p (path)
+  (= (system (string-append "sh -c 'test -x " (osu-shell-quote path) " >/dev/null 2>&1'")) 0))
+
 (defun os-mkdir-p (path)
   (= (system (string-append "mkdir -p " (osu-shell-quote path))) 0))
 
@@ -168,6 +175,11 @@
   (osu-trim
    (osu-command-output
     (string-append "file --brief --mime-type " (osu-shell-quote path)))))
+
+(defun os-base64-file-no-newline (path)
+  (os-tr-delete "\r\n"
+                (osu-command-output
+                 (string-append "base64 < " (osu-shell-quote path)))))
 
 (defun os-tar-create-gz (archive-path source-dir)
   (= (system (string-append "tar -czf "
@@ -222,3 +234,16 @@
 
 (defun os-date-utc-iso8601 ()
   (os-date-utc-format "+%Y-%m-%dT%H:%M:%SZ"))
+
+(defun os-generate-token ()
+  (setq *os-utils-token-counter* (+ *os-utils-token-counter* 1))
+  (let ((pid (getenv "PPID")))
+    (string-append
+     "tok-"
+     (format nil "~A" (get-universal-time))
+     "-"
+     (format nil "~A" (get-internal-run-time))
+     "-"
+     (if (null pid) "0" pid)
+     "-"
+     (format nil "~A" *os-utils-token-counter*))))
