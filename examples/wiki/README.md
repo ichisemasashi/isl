@@ -75,12 +75,15 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/002_media_assets.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/003_media_assets_allow_file_type.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/004_auth.sql
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/005_session_csrf.sql
 ```
 
 `004_auth.sql` は次を作成します。
 - `roles`
 - `users`
 - `user_sessions`
+
+`005_session_csrf.sql` は `user_sessions.csrf_token` を追加します。
 
 初期管理者:
 - username: `admin`
@@ -128,8 +131,12 @@ http://localhost:8080/wiki/login
 - `/wiki/new`, `/wiki/{slug}/edit`, `/wiki/media/new` は `editor` 以上が必要
 - `/wiki/admin`, `/wiki/admin/backup`, `/wiki/admin/restore` は `admin` が必要
 - POST系操作はログイン済みユーザーのみ実行可能
+- 認証済みPOSTにはフォーム埋め込みの `csrf_token` が必須
+- `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
 
 保存（POST）確認例:
+
+注意: これらのPOSTはログイン済みセッションCookieと有効な `csrf_token` が必要です。ブラウザ経由のフォーム送信を想定しています。
 
 ```sh
 curl -i -X POST "http://localhost:8080/wiki/home/edit" \

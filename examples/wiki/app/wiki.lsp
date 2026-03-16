@@ -251,6 +251,9 @@
 (defun current-session-token ()
   (if (null *wiki-current-user*) "" (fourth *wiki-current-user*)))
 
+(defun current-csrf-token ()
+  (if (null *wiki-current-user*) "" (fifth *wiki-current-user*)))
+
 (defun logged-in-p ()
   (not (null *wiki-current-user*)))
 
@@ -328,6 +331,9 @@
                        "-"
                        (format nil "~A" *command-temp-counter*))
         (string-append a "-" b))))
+
+(defun issue-csrf-token ()
+  (issue-session-token))
 
 (defun media-public-base ()
   (wiki-config-get "media_base_url" (string-append (app-base) "/files")))
@@ -1007,7 +1013,7 @@
          (postgres-query
           db
           (string-append
-           "select u.username, u.display_name, u.role_name, s.session_token "
+           "select u.username, u.display_name, u.role_name, s.session_token, s.csrf_token "
            "from user_sessions s "
            "join users u on u.id = s.user_id "
            "where s.session_token='" (sql-escape token) "' "
@@ -1017,12 +1023,12 @@
            "limit 1"))))
     (if (null rows) '() (first rows))))
 
-(defun create-user-session (db username token)
+(defun create-user-session (db username token csrf-token)
   (postgres-exec
    db
    (string-append
-    "insert into user_sessions (user_id, session_token, expires_at) "
-    "select id, '" (sql-escape token) "', now() + interval '" (sql-escape (session-duration-days)) " days' "
+    "insert into user_sessions (user_id, session_token, csrf_token, expires_at) "
+    "select id, '" (sql-escape token) "', '" (sql-escape csrf-token) "', now() + interval '" (sql-escape (session-duration-days)) " days' "
     "from users where username='" (sql-escape username) "' limit 1")))
 
 (defun revoke-session-token (db token)
@@ -1066,6 +1072,34 @@
               (progn
                 (setq *wiki-current-user* user)
                 (touch-session-token db token)))))))
+
+(defun render-csrf-hidden-input ()
+  (format t "  <input type=\"hidden\" name=\"csrf_token\" value=\"~A\">~%" (html-escape (current-csrf-token))))
+
+(defun valid-csrf-token-p (raw-body)
+  (let ((token (parse-form-field raw-body "csrf_token")))
+    (and (not (blank-text-p token))
+         (not (blank-text-p (current-csrf-token)))
+         (string= token (current-csrf-token)))))
+
+(defun read-form-body-or-render (require-csrf)
+  (let ((content-type (env-or-empty "CONTENT_TYPE")))
+    (if (not (starts-with content-type "application/x-www-form-urlencoded"))
+        (progn
+          (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
+          '())
+        (let ((raw-body (read-request-body)))
+          (if (and require-csrf (not (valid-csrf-token-p raw-body)))
+              (progn
+                (render-forbidden "invalid csrf_token")
+                '())
+              raw-body)))))
+
+(defun backup-confirm-phrase ()
+  "RUN BACKUP")
+
+(defun restore-confirm-phrase ()
+  "RESTORE WIKI")
 
 (defun print-extra-headers ()
   (dolist (header (wiki-reverse *response-extra-headers*))
@@ -1232,10 +1266,11 @@
                 (if (null user)
                     (render-login-form "invalid username or password" next)
                     (let ((token (issue-session-token))
+                          (csrf-token (issue-csrf-token))
                           (dest (if (blank-text-p next) (app-base) next)))
-                      (create-user-session db (first user) token)
+                      (create-user-session db (first user) token csrf-token)
                       (update-last-login-at db (first user))
-                      (setq *wiki-current-user* (list (first user) (second user) (third user) token))
+                      (setq *wiki-current-user* (list (first user) (second user) (third user) token csrf-token))
                       (set-session-cookie-header token)
                       (render-see-other dest)))))))))
 
@@ -1406,11 +1441,10 @@
       (let ((page (fetch-page db slug)))
         (if (null page)
             (render-not-found)
-            (let ((content-type (env-or-empty "CONTENT_TYPE")))
-              (if (not (starts-with content-type "application/x-www-form-urlencoded"))
-                  (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
-                  (let* ((raw-body (read-request-body))
-                         (title (parse-form-field raw-body "title"))
+            (let ((raw-body (read-form-body-or-render t)))
+              (if (null raw-body)
+                  nil
+                  (let* ((title (parse-form-field raw-body "title"))
                          (body-md (parse-form-field raw-body "body_md"))
                          (edit-summary (parse-form-field raw-body "edit_summary")))
                     (if (blank-text-p title)
@@ -1444,11 +1478,10 @@
                           (render-see-other (string-append (app-base) "/" slug)))))))))))
 
 (defun create-page (db)
-  (let ((content-type (env-or-empty "CONTENT_TYPE")))
-    (if (not (starts-with content-type "application/x-www-form-urlencoded"))
-        (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
-        (let* ((raw-body (read-request-body))
-               (slug (parse-form-field raw-body "slug"))
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let* ((slug (parse-form-field raw-body "slug"))
                (title (parse-form-field raw-body "title"))
                (body-md (parse-form-field raw-body "body_md"))
                (edit-summary (parse-form-field raw-body "edit_summary")))
@@ -1574,6 +1607,7 @@
     (format t "<h1>Add Media</h1>~%")
     (format t "<p>サーバー上のファイルをストレージへコピーし、メタ情報をDBに保存します。</p>~%")
     (format t "<form method=\"post\" action=\"~A/media/new\">~%" base)
+    (render-csrf-hidden-input)
     (format t "  <p><label>Source Path (server local)<br><input type=\"text\" name=\"source_path\" value=\"\" style=\"width:100%\" placeholder=\"/path/to/file.png\"></label></p>~%")
     (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
     (format t "  <p><label>Page Slug (optional)<br><input type=\"text\" name=\"page_slug\" value=\"\" style=\"width:100%\" placeholder=\"home\"></label></p>~%")
@@ -1645,24 +1679,33 @@
     (format t "<h1>Backup</h1>~%")
     (format t "<p>DB(SQL) とメディア(tar.gz)をバックアップします。</p>~%")
     (format t "<form method=\"post\" action=\"~A/admin/backup\">~%" base)
+    (render-csrf-hidden-input)
+    (format t "<p><label>Confirmation Phrase<br><input type=\"text\" name=\"confirm_phrase\" value=\"\" style=\"width:100%\" placeholder=\"~A\"></label></p>~%" (html-escape (backup-confirm-phrase)))
+    (format t "<p><small>Type <code>~A</code> to confirm this backup.</small></p>~%" (html-escape (backup-confirm-phrase)))
     (format t "<p><button type=\"submit\">Run Backup</button></p>~%")
     (format t "</form>~%")
     (format t "<p><small>backup dir: <code>~A</code></small></p>~%" (html-escape (backup-root-dir)))
     (print-layout-foot)))
 
 (defun render-admin-backup-run ()
-  (let ((result (run-backup)))
-    (print-headers-ok)
-    (print-layout-head "Backup Result")
-    (if (string= (first result) "ok")
-        (progn
-          (format t "<h1>Backup completed</h1>~%")
-          (format t "<p>SQL: <code>~A</code></p>~%" (html-escape (second result)))
-          (format t "<p>Media: <code>~A</code></p>~%" (html-escape (third result))))
-        (progn
-          (format t "<h1>Backup failed</h1>~%")
-          (format t "<p><code>~A</code></p>~%" (html-escape (second result)))))
-    (print-layout-foot)))
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((confirm-phrase (parse-form-field raw-body "confirm_phrase")))
+          (if (not (string= confirm-phrase (backup-confirm-phrase)))
+              (render-bad-request (string-append "confirm_phrase must be " (backup-confirm-phrase)))
+              (let ((result (run-backup)))
+                (print-headers-ok)
+                (print-layout-head "Backup Result")
+                (if (string= (first result) "ok")
+                    (progn
+                      (format t "<h1>Backup completed</h1>~%")
+                      (format t "<p>SQL: <code>~A</code></p>~%" (html-escape (second result)))
+                      (format t "<p>Media: <code>~A</code></p>~%" (html-escape (third result))))
+                    (progn
+                      (format t "<h1>Backup failed</h1>~%")
+                      (format t "<p><code>~A</code></p>~%" (html-escape (second result)))))
+                (print-layout-foot)))))))
 
 (defun render-admin-restore-form ()
   (let ((base (app-base)))
@@ -1671,39 +1714,43 @@
     (format t "<h1>Restore</h1>~%")
     (format t "<p>バックアップファイルの絶対パスを指定します。</p>~%")
     (format t "<form method=\"post\" action=\"~A/admin/restore\">~%" base)
+    (render-csrf-hidden-input)
     (format t "  <p><label>SQL Path<br><input type=\"text\" name=\"sql_path\" value=\"\" style=\"width:100%\" placeholder=\"~A/wiki-backup-XXXX.sql\"></label></p>~%" (html-escape (backup-root-dir)))
     (format t "  <p><label>Media Archive Path (optional)<br><input type=\"text\" name=\"media_archive_path\" value=\"\" style=\"width:100%\" placeholder=\"~A/wiki-backup-XXXX-media.tar.gz\"></label></p>~%" (html-escape (backup-root-dir)))
     (format t "  <p><label><input type=\"checkbox\" name=\"restore_media\" value=\"1\"> Restore media archive too</label></p>~%")
+    (format t "  <p><label>Confirmation Phrase<br><input type=\"text\" name=\"confirm_phrase\" value=\"\" style=\"width:100%\" placeholder=\"~A\"></label></p>~%" (html-escape (restore-confirm-phrase)))
+    (format t "  <p><small>Type <code>~A</code> to confirm restore.</small></p>~%" (html-escape (restore-confirm-phrase)))
     (format t "  <p><button type=\"submit\">Run Restore</button></p>~%")
     (format t "</form>~%")
     (print-layout-foot)))
 
 (defun render-admin-restore-run ()
-  (let* ((content-type (env-or-empty "CONTENT_TYPE")))
-    (if (not (starts-with content-type "application/x-www-form-urlencoded"))
-        (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
-        (let* ((raw-body (read-request-body))
-               (sql-path (parse-form-field raw-body "sql_path"))
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let* ((sql-path (parse-form-field raw-body "sql_path"))
                (media-path (parse-form-field raw-body "media_archive_path"))
                (restore-media (string= (parse-form-field raw-body "restore_media") "1"))
-               (result (run-restore sql-path media-path restore-media)))
-          (print-headers-ok)
-          (print-layout-head "Restore Result")
-          (if (string= (first result) "ok")
-              (progn
-                (format t "<h1>Restore completed</h1>~%")
-                (format t "<p><code>~A</code></p>~%" (html-escape (second result))))
-              (progn
-                (format t "<h1>Restore failed</h1>~%")
-                (format t "<p><code>~A</code></p>~%" (html-escape (second result)))))
-          (print-layout-foot)))))
+               (confirm-phrase (parse-form-field raw-body "confirm_phrase")))
+          (if (not (string= confirm-phrase (restore-confirm-phrase)))
+              (render-bad-request (string-append "confirm_phrase must be " (restore-confirm-phrase)))
+              (let ((result (run-restore sql-path media-path restore-media)))
+                (print-headers-ok)
+                (print-layout-head "Restore Result")
+                (if (string= (first result) "ok")
+                    (progn
+                      (format t "<h1>Restore completed</h1>~%")
+                      (format t "<p><code>~A</code></p>~%" (html-escape (second result))))
+                    (progn
+                      (format t "<h1>Restore failed</h1>~%")
+                      (format t "<p><code>~A</code></p>~%" (html-escape (second result)))))
+                (print-layout-foot)))))))
 
 (defun create-media (db)
-  (let ((content-type (env-or-empty "CONTENT_TYPE")))
-    (if (not (starts-with content-type "application/x-www-form-urlencoded"))
-        (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
-        (let* ((raw-body (read-request-body))
-               (source-path (parse-form-field raw-body "source_path"))
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let* ((source-path (parse-form-field raw-body "source_path"))
                (title (parse-form-field raw-body "title"))
                (page-slug (parse-form-field raw-body "page_slug"))
                (media-type-input (parse-form-field raw-body "media_type"))
@@ -1774,6 +1821,7 @@
     (print-layout-head "Create New Page")
     (format t "<h1>Create New Page</h1>~%")
     (format t "<form method=\"post\" action=\"~A/new\">~%" base)
+    (render-csrf-hidden-input)
     (format t "  <p><label>Slug<br><input type=\"text\" name=\"slug\" value=\"\" style=\"width:100%\" placeholder=\"new-page\"></label></p>~%")
     (format t "  <p><small>slug: a-z, 0-9, '-' のみ。先頭末尾 '-' 不可。</small></p>~%")
     (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
@@ -1797,6 +1845,7 @@
               (format t "<form method=\"post\" action=\"~A/~A/edit\">~%"
                       (app-base)
                       (html-escape slug))
+              (render-csrf-hidden-input)
               (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"~A\" style=\"width:100%\"></label></p>~%"
                       (html-escape title))
               (format t "  <p><label>Body (Markdown)<br><textarea name=\"body_md\">~A</textarea></label></p>~%"
