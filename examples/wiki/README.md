@@ -23,6 +23,13 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/admin` : 管理メニュー
 - `/wiki/admin/backup` : DB + メディアのバックアップ作成
 - `/wiki/admin/restore` : バックアップからリストア
+- `/wiki/login` : ログイン画面
+- `/wiki/logout` : ログアウト
+
+認可:
+- `viewer`: 閲覧のみ
+- `editor`: ページ作成 / 編集 / メディア追加
+- `admin`: editor権限に加えて管理画面 / backup / restore
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
 
@@ -67,7 +74,19 @@ createdb isl_wiki
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_init.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/002_media_assets.sql
 psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/003_media_assets_allow_file_type.sql
+psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/004_auth.sql
 ```
+
+`004_auth.sql` は次を作成します。
+- `roles`
+- `users`
+- `user_sessions`
+
+初期管理者:
+- username: `admin`
+- password: `admin`
+
+初回ログイン後に必ず変更してください。
 
 接続文字列は環境変数 `ISL_WIKI_DB_URL` で指定できます。
 未指定時は `postgresql://127.0.0.1:5432/isl_wiki` を使います。
@@ -102,7 +121,13 @@ http://localhost:8080/wiki/search?q=welcome
 http://localhost:8080/wiki/admin
 http://localhost:8080/wiki/admin/backup
 http://localhost:8080/wiki/admin/restore
+http://localhost:8080/wiki/login
 ```
+
+注意:
+- `/wiki/new`, `/wiki/{slug}/edit`, `/wiki/media/new` は `editor` 以上が必要
+- `/wiki/admin`, `/wiki/admin/backup`, `/wiki/admin/restore` は `admin` が必要
+- POST系操作はログイン済みユーザーのみ実行可能
 
 保存（POST）確認例:
 

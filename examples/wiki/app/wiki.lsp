@@ -210,13 +210,124 @@
   (or (string= slug "new")
       (string= slug "media")
       (string= slug "search")
-      (string= slug "admin")))
+      (string= slug "admin")
+      (string= slug "login")
+      (string= slug "logout")))
 
 (defun media-root-dir ()
   (wiki-config-get "media_dir" "./examples/webserver/runtime/docroot/public/wiki-files"))
 
 (defun backup-root-dir ()
   (wiki-config-get "backup_dir" "/tmp/isl-wiki-backups"))
+
+(defun session-cookie-name ()
+  (wiki-config-get "session_cookie_name" "isl_wiki_session"))
+
+(defun session-duration-days ()
+  (let ((raw (wiki-config-get "session_days" "7")))
+    (if (string= raw "") "7" raw)))
+
+(defglobal *wiki-current-user* '())
+(defglobal *response-extra-headers* '())
+
+(defun clear-response-extra-headers ()
+  (setq *response-extra-headers* '()))
+
+(defun add-response-header (name value)
+  (setq *response-extra-headers* (cons (list name value) *response-extra-headers*)))
+
+(defun current-user ()
+  *wiki-current-user*)
+
+(defun current-username ()
+  (if (null *wiki-current-user*) "" (first *wiki-current-user*)))
+
+(defun current-display-name ()
+  (if (null *wiki-current-user*) "" (second *wiki-current-user*)))
+
+(defun current-role ()
+  (if (null *wiki-current-user*) "" (third *wiki-current-user*)))
+
+(defun current-session-token ()
+  (if (null *wiki-current-user*) "" (fourth *wiki-current-user*)))
+
+(defun logged-in-p ()
+  (not (null *wiki-current-user*)))
+
+(defun role-rank (role-name)
+  (cond
+   ((string= role-name "admin") 30)
+   ((string= role-name "editor") 20)
+   ((string= role-name "viewer") 10)
+   (t 0)))
+
+(defun role-allowed-p (actual required)
+  (>= (role-rank actual) (role-rank required)))
+
+(defun editor-or-admin-p ()
+  (role-allowed-p (current-role) "editor"))
+
+(defun admin-p ()
+  (role-allowed-p (current-role) "admin"))
+
+(defun request-cookie-header ()
+  (env-or-empty "HTTP_COOKIE"))
+
+(defun parse-cookie-value (cookie-name)
+  (let ((parts (split-on (request-cookie-header) ";"))
+        (found ""))
+    (dolist (part parts)
+      (let* ((trimmed (trim-ws part))
+             (kv (split-once trimmed "="))
+             (name (trim-ws (first kv)))
+             (value (second kv)))
+        (if (and (string= found "") (string= name cookie-name))
+            (setq found value)
+            nil)))
+    found))
+
+(defun cookie-path ()
+  (app-base))
+
+(defun session-cookie-value ()
+  (parse-cookie-value (session-cookie-name)))
+
+(defun clear-session-cookie-header ()
+  (add-response-header
+   "Set-Cookie"
+   (string-append (session-cookie-name)
+                  "=; Path="
+                  (cookie-path)
+                  "; HttpOnly; SameSite=Lax; Max-Age=0")))
+
+(defun set-session-cookie-header (token)
+  (add-response-header
+   "Set-Cookie"
+   (string-append (session-cookie-name)
+                  "="
+                  token
+                  "; Path="
+                  (cookie-path)
+                  "; HttpOnly; SameSite=Lax")))
+
+(defun current-request-target ()
+  (let ((path (env-or-empty "PATH_INFO"))
+        (query (env-or-empty "QUERY_STRING")))
+    (if (string= query "")
+        (string-append (app-base) (if (string= path "") "" path))
+        (string-append (app-base) (if (string= path "") "" path) "?" query))))
+
+(defun login-target-url ()
+  (string-append (app-base) "/login?next=" (url-encode-lite (current-request-target))))
+
+(defun issue-session-token ()
+  (let ((a (trim-ws (command-output "/usr/bin/uuidgen")))
+        (b (trim-ws (command-output "/usr/bin/uuidgen"))))
+    (if (or (blank-text-p a) (blank-text-p b))
+        (string-append (format nil "~A" (get-universal-time))
+                       "-"
+                       (format nil "~A" *command-temp-counter*))
+        (string-append a "-" b))))
 
 (defun media-public-base ()
   (wiki-config-get "media_base_url" (string-append (app-base) "/files")))
@@ -878,30 +989,131 @@
                 "where stored_filename='" (sql-escape stored-filename) "' limit 1"))))
     (if (null rows) '() (first rows))))
 
+(defun fetch-user-for-login (db username password)
+  (let ((rows
+         (postgres-query
+          db
+          (string-append
+           "select username, display_name, role_name "
+           "from users "
+           "where enabled = true "
+           "  and username='" (sql-escape username) "' "
+           "  and password_hash = crypt('" (sql-escape password) "', password_hash) "
+           "limit 1"))))
+    (if (null rows) '() (first rows))))
+
+(defun fetch-user-by-session-token (db token)
+  (let ((rows
+         (postgres-query
+          db
+          (string-append
+           "select u.username, u.display_name, u.role_name, s.session_token "
+           "from user_sessions s "
+           "join users u on u.id = s.user_id "
+           "where s.session_token='" (sql-escape token) "' "
+           "  and s.revoked_at is null "
+           "  and s.expires_at > now() "
+           "  and u.enabled = true "
+           "limit 1"))))
+    (if (null rows) '() (first rows))))
+
+(defun create-user-session (db username token)
+  (postgres-exec
+   db
+   (string-append
+    "insert into user_sessions (user_id, session_token, expires_at) "
+    "select id, '" (sql-escape token) "', now() + interval '" (sql-escape (session-duration-days)) " days' "
+    "from users where username='" (sql-escape username) "' limit 1")))
+
+(defun revoke-session-token (db token)
+  (if (blank-text-p token)
+      nil
+      (postgres-exec
+       db
+       (string-append
+        "update user_sessions "
+        "set revoked_at = now() "
+        "where session_token='" (sql-escape token) "' "
+        "  and revoked_at is null"))))
+
+(defun touch-session-token (db token)
+  (if (blank-text-p token)
+      nil
+      (postgres-exec
+       db
+       (string-append
+        "update user_sessions "
+        "set last_seen_at = now() "
+        "where session_token='" (sql-escape token) "' "
+        "  and revoked_at is null"))))
+
+(defun update-last-login-at (db username)
+  (postgres-exec
+   db
+   (string-append
+    "update users set last_login_at = now() "
+    "where username='" (sql-escape username) "'")))
+
+(defun load-current-user (db)
+  (let ((token (session-cookie-value)))
+    (if (blank-text-p token)
+        (setq *wiki-current-user* '())
+        (let ((user (fetch-user-by-session-token db token)))
+          (if (null user)
+              (progn
+                (setq *wiki-current-user* '())
+                (clear-session-cookie-header))
+              (progn
+                (setq *wiki-current-user* user)
+                (touch-session-token db token)))))))
+
+(defun print-extra-headers ()
+  (dolist (header (wiki-reverse *response-extra-headers*))
+    (format t "~A: ~A~%" (first header) (second header)))
+  (clear-response-extra-headers))
+
 (defun print-headers-ok ()
-  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+  (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
 
 (defun print-headers-404 ()
   (format t "Status: 404 Not Found~%")
-  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+  (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
 
 (defun print-headers-400 ()
   (format t "Status: 400 Bad Request~%")
-  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+  (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
+
+(defun print-headers-403 ()
+  (format t "Status: 403 Forbidden~%")
+  (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
 
 (defun print-headers-500 ()
   (format t "Status: 500 Internal Server Error~%")
-  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+  (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
 
 (defun print-headers-301 (location)
   (format t "Status: 301 Moved Permanently~%")
   (format t "Location: ~A~%" location)
-  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+  (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
 
 (defun print-headers-303 (location)
   (format t "Status: 303 See Other~%")
   (format t "Location: ~A~%" location)
-  (format t "Content-Type: text/html; charset=UTF-8~%~%"))
+  (format t "Content-Type: text/html; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%"))
 
 (defun print-layout-head (title)
   (format t "<!doctype html>~%")
@@ -913,8 +1125,20 @@
   (format t "  <style>body{font-family:system-ui,-apple-system,sans-serif;margin:2rem;line-height:1.6}main{max-width:840px}textarea{width:100%;min-height:18rem;font-family:ui-monospace,SFMono-Regular,monospace}code{background:#f4f4f4;padding:.1rem .3rem;border-radius:4px}pre{background:#f7f7f7;padding:1rem;border-radius:6px;overflow:auto}a{color:#0b5394}.wiki-body{border:1px solid #ddd;border-radius:8px;padding:1rem;background:#fff}.wiki-body :first-child{margin-top:0}.wiki-body :last-child{margin-bottom:0}</style>~%")
   (format t "</head>~%")
   (format t "<body><main>~%")
-  (format t "<p><a href=\"~A\">Wiki Index</a> | <a href=\"~A/new\">New Page</a> | <a href=\"~A/media\">Media</a> | <a href=\"~A/admin\">Admin</a></p>~%"
-          (app-base) (app-base) (app-base) (app-base))
+  (format t "<p><a href=\"~A\">Wiki Index</a> | <a href=\"~A/media\">Media</a>"
+          (app-base) (app-base))
+  (if (editor-or-admin-p)
+      (format t " | <a href=\"~A/new\">New Page</a>" (app-base))
+      nil)
+  (if (admin-p)
+      (format t " | <a href=\"~A/admin\">Admin</a>" (app-base))
+      nil)
+  (if (logged-in-p)
+      (format t " | signed in as <strong>~A</strong> (<code>~A</code>) | <a href=\"~A/logout\">Logout</a></p>~%"
+              (html-escape (current-display-name))
+              (html-escape (current-role))
+              (app-base))
+      (format t " | <a href=\"~A/login\">Login</a></p>~%" (app-base)))
   (format t "<form method=\"get\" action=\"~A/search\" style=\"margin:0 0 1rem 0\">~%" (app-base))
   (format t "<input type=\"text\" name=\"q\" value=\"\" placeholder=\"Search wiki text\" style=\"width:70%;max-width:28rem\">~%")
   (format t "<button type=\"submit\">Search</button>~%")
@@ -935,6 +1159,14 @@
   (print-layout-head "Bad Request")
   (format t "<h1>400 Bad Request</h1>~%")
   (format t "<p>リクエスト内容が不正です。</p>~%")
+  (format t "<pre>~A</pre>~%" (html-escape message))
+  (print-layout-foot))
+
+(defun render-forbidden (message)
+  (print-headers-403)
+  (print-layout-head "Forbidden")
+  (format t "<h1>403 Forbidden</h1>~%")
+  (format t "<p>この操作を実行する権限がありません。</p>~%")
   (format t "<pre>~A</pre>~%" (html-escape message))
   (print-layout-foot))
 
@@ -962,13 +1194,94 @@
   (format t "<p><a href=\"~A\">continue</a></p>~%" (html-escape location))
   (print-layout-foot))
 
+(defun redirect-to-login ()
+  (render-see-other (login-target-url)))
+
+(defun next-after-login ()
+  (let ((next (query-param "next")))
+    (if (blank-text-p next) (app-base) next)))
+
+(defun render-login-form (message next-value)
+  (let ((next (if (blank-text-p next-value) (next-after-login) next-value)))
+    (print-headers-ok)
+    (print-layout-head "Login")
+    (format t "<h1>Login</h1>~%")
+    (if (blank-text-p message)
+        nil
+        (format t "<p><strong>~A</strong></p>~%" (html-escape message)))
+    (format t "<form method=\"post\" action=\"~A/login\">~%" (app-base))
+    (format t "  <input type=\"hidden\" name=\"next\" value=\"~A\">~%" (html-escape next))
+    (format t "  <p><label>Username<br><input type=\"text\" name=\"username\" value=\"\" style=\"width:100%\"></label></p>~%")
+    (format t "  <p><label>Password<br><input type=\"password\" name=\"password\" value=\"\" style=\"width:100%\"></label></p>~%")
+    (format t "  <p><button type=\"submit\">Login</button></p>~%")
+    (format t "</form>~%")
+    (format t "<p><small>initial admin: <code>admin</code> / <code>admin</code> (change immediately after setup)</small></p>~%")
+    (print-layout-foot)))
+
+(defun handle-login (db)
+  (let ((content-type (env-or-empty "CONTENT_TYPE")))
+    (if (not (starts-with content-type "application/x-www-form-urlencoded"))
+        (render-bad-request "CONTENT_TYPE must be application/x-www-form-urlencoded")
+        (let* ((raw-body (read-request-body))
+               (username (parse-form-field raw-body "username"))
+               (password (parse-form-field raw-body "password"))
+               (next (parse-form-field raw-body "next")))
+          (if (or (blank-text-p username) (blank-text-p password))
+              (render-login-form "username and password are required" next)
+              (let ((user (fetch-user-for-login db username password)))
+                (if (null user)
+                    (render-login-form "invalid username or password" next)
+                    (let ((token (issue-session-token))
+                          (dest (if (blank-text-p next) (app-base) next)))
+                      (create-user-session db (first user) token)
+                      (update-last-login-at db (first user))
+                      (setq *wiki-current-user* (list (first user) (second user) (third user) token))
+                      (set-session-cookie-header token)
+                      (render-see-other dest)))))))))
+
+(defun handle-logout (db)
+  (let ((token (current-session-token)))
+    (revoke-session-token db token)
+    (setq *wiki-current-user* '())
+    (clear-session-cookie-header)
+    (render-see-other (app-base))))
+
+(defun route-required-role (method segments)
+  (let ((n (length segments)))
+    (cond
+     ((= n 0) "")
+     ((string= (first segments) "login") "")
+     ((string= (first segments) "logout") "viewer")
+     ((string= (first segments) "admin") "admin")
+     ((string= (first segments) "new") "editor")
+     ((and (= n 2) (string= (second segments) "edit")) "editor")
+     ((and (= n 2) (string= (first segments) "media") (string= (second segments) "new")) "editor")
+     ((string= method "POST") "viewer")
+     (t ""))))
+
+(defun ensure-authorized (method segments)
+  (let ((required (route-required-role method segments)))
+    (if (or (null required) (string= required ""))
+        t
+        (if (not (logged-in-p))
+            (progn
+              (redirect-to-login)
+              nil)
+            (if (role-allowed-p (current-role) required)
+                t
+                (progn
+                  (render-forbidden (string-append "required role: " required))
+                  nil))))))
+
 (defun render-index (db)
   (let ((rows (fetch-pages db))
         (base (app-base)))
     (print-headers-ok)
     (print-layout-head "Wiki Index")
     (format t "<h1>Wiki Pages</h1>~%")
-    (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
+    (if (editor-or-admin-p)
+        (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
+        nil)
     (if (null rows)
         (format t "<p>ページがありません。</p>~%")
         (progn
@@ -1040,10 +1353,14 @@
               (print-headers-ok)
               (print-layout-head title)
               (format t "<h1>~A</h1>~%" (html-escape title))
-              (format t "<p><a href=\"~A/~A/edit\">Edit this page</a></p>~%"
-                      base
-                      (html-escape slug))
-              (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
+              (if (editor-or-admin-p)
+                  (format t "<p><a href=\"~A/~A/edit\">Edit this page</a></p>~%"
+                          base
+                          (html-escape slug))
+                  nil)
+              (if (editor-or-admin-p)
+                  (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
+                  nil)
               (format t "<p><small>updated: ~A / slug: <code>~A</code></small></p>~%"
                       (html-escape updated-at)
                       (html-escape slug))
@@ -1098,30 +1415,30 @@
                          (edit-summary (parse-form-field raw-body "edit_summary")))
                     (if (blank-text-p title)
                         (render-bad-request "title must not be blank")
-                        (let ((sql
-                               (string-append
-                                "with target as ("
+	                        (let ((sql
+	                               (string-append
+	                                "with target as ("
                                 "  select p.id as page_id,"
                                 "         coalesce((select max(r.rev_no) from page_revisions r where r.page_id = p.id), 0) + 1 as next_rev"
                                 "    from pages p"
                                 "   where p.slug = '" (sql-escape slug) "'"
-                                "), updated as ("
-                                "  update pages p"
-                                "     set title = '" (sql-escape title) "',"
-                                "         body_md = '" (sql-escape body-md) "',"
-                                "         last_edited_by = 'web'"
-                                "    from target t"
+	                                "), updated as ("
+	                                "  update pages p"
+	                                "     set title = '" (sql-escape title) "',"
+	                                "         body_md = '" (sql-escape body-md) "',"
+	                                "         last_edited_by = '" (sql-escape (current-username)) "'"
+	                                "    from target t"
                                 "   where p.id = t.page_id"
                                 "  returning p.id, t.next_rev"
                                 ") "
                                 "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-                                "select u.id, u.next_rev, '"
-                                (sql-escape title)
-                                "', '"
-                                (sql-escape body-md)
-                                "', 'web', '"
-                                (sql-escape edit-summary)
-                                "' "
+	                                "select u.id, u.next_rev, '"
+	                                (sql-escape title)
+	                                "', '"
+	                                (sql-escape body-md)
+	                                "', '" (sql-escape (current-username)) "', '"
+	                                (sql-escape edit-summary)
+	                                "' "
                                 "from updated u")))
                           (postgres-exec db sql)
                           (render-see-other (string-append (app-base) "/" slug)))))))))))
@@ -1141,18 +1458,18 @@
                   (render-bad-request "title must not be blank")
                   (if (null (fetch-page db slug))
                       (let ((sql
-                             (string-append
-                              "with inserted as ("
-                              "  insert into pages (slug, title, body_md, last_edited_by) "
-                              "  values ('" (sql-escape slug) "', '"
-                              (sql-escape title) "', '"
-                              (sql-escape body-md) "', 'web') "
-                              "  returning id, title, body_md"
-                              ") "
-                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-                              "select i.id, 1, i.title, i.body_md, 'web', '"
-                              (sql-escape edit-summary)
-                              "' from inserted i")))
+	                             (string-append
+	                              "with inserted as ("
+	                              "  insert into pages (slug, title, body_md, last_edited_by) "
+	                              "  values ('" (sql-escape slug) "', '"
+	                              (sql-escape title) "', '"
+	                              (sql-escape body-md) "', '" (sql-escape (current-username)) "') "
+	                              "  returning id, title, body_md"
+	                              ") "
+	                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+	                              "select i.id, 1, i.title, i.body_md, '" (sql-escape (current-username)) "', '"
+	                              (sql-escape edit-summary)
+	                              "' from inserted i")))
                         (postgres-exec db sql)
                         (render-see-other (string-append (app-base) "/" slug)))
                       (render-bad-request "slug already exists"))))))))
@@ -1163,7 +1480,9 @@
     (print-headers-ok)
     (print-layout-head "Media Library")
     (format t "<h1>Media Library</h1>~%")
-    (format t "<p><a href=\"~A/media/new\">Add Media</a></p>~%" base)
+    (if (editor-or-admin-p)
+        (format t "<p><a href=\"~A/media/new\">Add Media</a></p>~%" base)
+        nil)
     (if (null rows)
         (format t "<p>メディアがありません。</p>~%")
         (dolist (row rows)
@@ -1195,7 +1514,9 @@
 
 (defun render-file-not-found ()
   (format t "Status: 404 Not Found~%")
-  (format t "Content-Type: text/plain; charset=UTF-8~%~%")
+  (format t "Content-Type: text/plain; charset=UTF-8~%")
+  (print-extra-headers)
+  (format t "~%")
   (format t "Not Found~%"))
 
 (defun file-size-bytes (path)
@@ -1231,7 +1552,9 @@
   (let ((size (file-size-bytes storage-path)))
     (format t "Status: 200 OK~%")
     (format t "Content-Type: ~A~%" (if (blank-text-p mime-type) "application/octet-stream" mime-type))
-    (format t "Content-Length: ~A~%~%" size)
+    (format t "Content-Length: ~A~%" size)
+    (print-extra-headers)
+    (format t "~%")
     (system (string-append "cat " (shell-quote storage-path)))))
 
 (defun render-media-file (db stored-filename)
@@ -1422,26 +1745,26 @@
                                 (if (= copy-status 0)
                                     (progn
                                       (system (string-append "chmod 644 " (shell-quote storage-path)))
-                                      (let ((sql (string-append
-                                                  "insert into media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) values ("
-                                                  page-id-sql ", '"
-                                                  (sql-escape media-type) "', '"
+	                                      (let ((sql (string-append
+	                                                  "insert into media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) values ("
+	                                                  page-id-sql ", '"
+	                                                  (sql-escape media-type) "', '"
                                                   (sql-escape title) "', '"
                                                   (sql-escape base-name) "', '"
-                                                  (sql-escape stored-name) "', '"
-                                                  (sql-escape mime-type) "', '"
-                                                  (sql-escape storage-path) "', '"
-                                                  (sql-escape public-url) "', 'web')")))
-                                        (postgres-exec db sql)
-                                        (if (blank-text-p edit-summary)
-                                            nil
-                                            (postgres-exec
-                                             db
-                                             (string-append
-                                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-                                              "select p.id, coalesce((select max(r.rev_no) from page_revisions r where r.page_id=p.id),0)+1, p.title, p.body_md, 'web', '"
-                                              (sql-escape edit-summary)
-                                              "' from pages p where p.slug='" (sql-escape page-slug) "'")))
+	                                                  (sql-escape stored-name) "', '"
+	                                                  (sql-escape mime-type) "', '"
+	                                                  (sql-escape storage-path) "', '"
+	                                                  (sql-escape public-url) "', '" (sql-escape (current-username)) "')")))
+	                                        (postgres-exec db sql)
+	                                        (if (blank-text-p edit-summary)
+	                                            nil
+	                                            (postgres-exec
+	                                             db
+	                                             (string-append
+	                                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+	                                              "select p.id, coalesce((select max(r.rev_no) from page_revisions r where r.page_id=p.id),0)+1, p.title, p.body_md, '" (sql-escape (current-username)) "', '"
+	                                              (sql-escape edit-summary)
+	                                              "' from pages p where p.slug='" (sql-escape page-slug) "'")))
                                         (render-see-other (string-append (app-base) "/media"))))
                                     (render-bad-request "file copy failed")))))))))))))
 
@@ -1489,47 +1812,65 @@
          (segments (path-segments))
          (n (length segments))
          (db (postgres-open (db-url))))
+    (clear-response-extra-headers)
+    (load-current-user db)
     (if (if (string= method "GET") (needs-canonical-redirect-p raw-path) nil)
         (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
-        (if (= n 0)
-            (render-index db)
-                (if (= n 1)
-                    (if (string= (first segments) "new")
-                        (if (string= method "POST")
-                            (create-page db)
-                            (render-new))
-                        (if (string= (first segments) "media")
-                            (render-media-index db)
-                            (if (string= (first segments) "search")
-                                (render-search db)
-                                (if (string= (first segments) "admin")
-                                    (render-admin-home)
-                                    (render-view db (first segments))))))
-                (if (= n 2)
-                    (if (string= (first segments) "admin")
-                        (if (string= (second segments) "backup")
-                            (if (string= method "POST")
-                                (render-admin-backup-run)
-                                (render-admin-backup-form))
-                            (if (string= (second segments) "restore")
-                                (if (string= method "POST")
-                                    (render-admin-restore-run)
-                                    (render-admin-restore-form))
-                                (render-not-found)))
-                        (if (string= (first segments) "media")
-                            (if (string= (second segments) "new")
-                                (if (string= method "POST")
-                                    (create-media db)
-                                    (render-media-new))
-                                (render-not-found))
-                            (if (string= (first segments) "files")
-                                (render-media-file db (second segments))
-                                (if (string= (second segments) "edit")
-                                    (if (string= method "POST")
-                                        (save-page db (first segments))
-                                        (render-edit db (first segments)))
-                                    (render-not-found)))))
-                    (render-not-found)))))
+        (if (ensure-authorized method segments)
+            (cond
+             ((= n 0)
+              (render-index db))
+             ((= n 1)
+              (cond
+               ((string= (first segments) "new")
+                (if (string= method "POST")
+                    (create-page db)
+                    (render-new)))
+               ((string= (first segments) "media")
+                (render-media-index db))
+               ((string= (first segments) "search")
+                (render-search db))
+               ((string= (first segments) "admin")
+                (render-admin-home))
+               ((string= (first segments) "login")
+                (if (string= method "POST")
+                    (handle-login db)
+                    (render-login-form "" "")))
+               ((string= (first segments) "logout")
+                (handle-logout db))
+               (t
+                (render-view db (first segments)))))
+             ((= n 2)
+              (cond
+               ((string= (first segments) "admin")
+                (cond
+                 ((string= (second segments) "backup")
+                  (if (string= method "POST")
+                      (render-admin-backup-run)
+                      (render-admin-backup-form)))
+                 ((string= (second segments) "restore")
+                  (if (string= method "POST")
+                      (render-admin-restore-run)
+                      (render-admin-restore-form)))
+                 (t
+                  (render-not-found))))
+               ((string= (first segments) "media")
+                (if (string= (second segments) "new")
+                    (if (string= method "POST")
+                        (create-media db)
+                        (render-media-new))
+                    (render-not-found)))
+               ((string= (first segments) "files")
+                (render-media-file db (second segments)))
+               ((string= (second segments) "edit")
+                (if (string= method "POST")
+                    (save-page db (first segments))
+                    (render-edit db (first segments))))
+               (t
+                (render-not-found))))
+             (t
+              (render-not-found)))
+            nil))
     (postgres-close db)))
 
 (handler-case
