@@ -24,6 +24,37 @@
 (defun osu-trim (s)
   (osu-trim-right (osu-trim-left s)))
 
+(defun osu-date-command-format->srfi (fmt)
+  (let ((i 0)
+        (n (length fmt))
+        (acc ""))
+    (while (< i n)
+      (if (and (< (+ i 1) n)
+               (string= (substring fmt i (+ i 1)) "%"))
+          (let ((code (substring fmt (+ i 1) (+ i 2))))
+            (setq acc
+                  (string-append
+                   acc
+                   (cond
+                    ((string= code "Y") "~Y")
+                    ((string= code "m") "~m")
+                    ((string= code "d") "~d")
+                    ((string= code "H") "~H")
+                    ((string= code "M") "~M")
+                    ((string= code "S") "~S")
+                    ((string= code "a") "~a")
+                    ((string= code "b") "~b")
+                    ((string= code "%") "%")
+                    (t (string-append "%" code)))))
+            (setq i (+ i 2)))
+          (progn
+            (setq acc (string-append acc (substring fmt i (+ i 1))))
+            (setq i (+ i 1)))))
+    (if (and (> (length acc) 0)
+             (string= (substring acc 0 1) "+"))
+        (substring acc 1 (length acc))
+        acc)))
+
 (defun osu-read-file-text (path)
   (if (null (probe-file path))
       ""
@@ -119,25 +150,37 @@
   (osu-command-output cmd))
 
 (defun os-command-available-p (cmd)
-  (= (system (string-append "sh -c 'command -v " cmd " >/dev/null 2>&1'")) 0))
+  (handler-case
+    (command-available-p cmd)
+    (error (e) nil)))
 
 (defun os-file-executable-p (path)
-  (= (system (string-append "sh -c 'test -x " (osu-shell-quote path) " >/dev/null 2>&1'")) 0))
+  (handler-case
+    (file-executable-p path)
+    (error (e) nil)))
 
 (defun os-test-dir-p (path)
-  (= (system (string-append "test -d " (osu-shell-quote path))) 0))
+  (handler-case
+    (directory-path-p path)
+    (error (e) nil)))
 
 (defun os-test-file-readable-p (path)
-  (= (system (string-append "test -f " (osu-shell-quote path)
-                            " && test -r " (osu-shell-quote path)))
-     0))
+  (handler-case
+    (file-readable-p path)
+    (error (e) nil)))
 
 (defun os-test-symlink-p (path)
-  (= (system (string-append "test -L " (osu-shell-quote path))) 0))
+  (handler-case
+    (file-symlink-p path)
+    (error (e) nil)))
 
 (defun os-uname-s ()
-  (let ((v (osu-trim (osu-command-output "uname -s"))))
-    (if (= (length v) 0) "unknown" v)))
+  (handler-case
+    (let ((v (uname)))
+      (if (or (null v) (null (car v)))
+          "unknown"
+          (car v)))
+    (error (e) "unknown")))
 
 (defun os-process-running-p (pid)
   (= (system (string-append "sh -c 'kill -0 "
@@ -146,10 +189,14 @@
      0))
 
 (defun os-mkdir-p (path)
-  (= (system (string-append "mkdir -p " (osu-shell-quote path))) 0))
+  (handler-case
+    (make-directory* path)
+    (error (e) nil)))
 
 (defun os-chmod (mode path)
-  (= (system (string-append "chmod " mode " " (osu-shell-quote path))) 0))
+  (handler-case
+    (chmod-file path mode)
+    (error (e) nil)))
 
 (defun os-tr-delete (chars text)
   (let ((i 0)
@@ -167,10 +214,14 @@
   (osu-read-file-text path))
 
 (defun os-cat-to-stdout (path)
-  (= (system (string-append "cat " (osu-shell-quote path))) 0))
+  (handler-case
+    (copy-file-to-stdout path)
+    (error (e) nil)))
 
 (defun os-cat-stdin-to-file (path)
-  (= (system (string-append "cat > " (osu-shell-quote path))) 0))
+  (handler-case
+    (copy-stdin-to-file path)
+    (error (e) nil)))
 
 (defun os-cat-files (paths)
   (let ((rest paths)
@@ -181,16 +232,9 @@
     acc))
 
 (defun os-wc-c (path)
-  (let* ((tmp (osu-temp-path "os-utils-wc"))
-         (cmd (string-append "wc -c < " (osu-shell-quote path) " > " (osu-shell-quote tmp)))
-         (status (system cmd)))
-    (if (not (= status 0))
-        (progn
-          (osu-safe-delete-file tmp)
-          0)
-        (let ((n (osu-parse-int-safe (osu-trim (osu-read-file-text tmp)))))
-          (osu-safe-delete-file tmp)
-          (if (null n) 0 n)))))
+  (handler-case
+    (file-size path)
+    (error (e) 0)))
 
 (defun os-file-mime-type (path)
   (osu-trim
@@ -198,9 +242,12 @@
     (string-append "file --brief --mime-type " (osu-shell-quote path)))))
 
 (defun os-base64-file-no-newline (path)
-  (os-tr-delete "\r\n"
-                (osu-command-output
-                 (string-append "base64 < " (osu-shell-quote path)))))
+  (handler-case
+    (base64-encode-file path)
+    (error (e)
+      (os-tr-delete "\r\n"
+                    (osu-command-output
+                     (string-append "base64 < " (osu-shell-quote path)))))))
 
 (defun os-sips-available-p ()
   (or (os-command-available-p "sips")
@@ -234,30 +281,24 @@
      0))
 
 (defun os-ls (path)
-  (let ((raw (osu-command-output (string-append "ls -1A " (osu-shell-quote path)))))
-    (if (= (length raw) 0)
-        '()
-        (osu-split-on (osu-trim raw) "\n"))))
+  (handler-case
+    (directory-list path)
+    (error (e) '())))
 
 (defun os-ls-newest-first-glob (pattern)
-  (let ((raw (osu-command-output (string-append "ls -1t " pattern " 2>/dev/null"))))
-    (if (= (length raw) 0)
-        '()
-        (osu-split-on (osu-trim raw) "\n"))))
+  (handler-case
+    (glob-newest-first pattern)
+    (error (e) '())))
 
 (defun os-mv (source-path dest-path)
-  (= (system (string-append "mv "
-                            (osu-shell-quote source-path)
-                            " "
-                            (osu-shell-quote dest-path)))
-     0))
+  (handler-case
+    (rename-file source-path dest-path)
+    (error (e) nil)))
 
 (defun os-cp (source-path dest-path)
-  (= (system (string-append "cp "
-                            (osu-shell-quote source-path)
-                            " "
-                            (osu-shell-quote dest-path)))
-     0))
+  (handler-case
+    (copy-file source-path dest-path)
+    (error (e) nil)))
 
 (defun os-rm-f (path)
   (if (null (probe-file path))
@@ -270,46 +311,60 @@
     (string-append "date " fmt))))
 
 (defun os-date-utc-format (fmt)
-  (osu-trim
-   (osu-command-output
-    (string-append "date -u " fmt))))
+  (handler-case
+    (date-utc-format (osu-date-command-format->srfi fmt))
+    (error (e)
+      (osu-trim
+       (osu-command-output
+        (string-append "date -u " fmt))))))
 
 (defun os-date-utc-iso8601 ()
-  (os-date-utc-format "+%Y-%m-%dT%H:%M:%SZ"))
+  (handler-case
+    (date-utc-iso8601)
+    (error (e)
+      (os-date-utc-format "+%Y-%m-%dT%H:%M:%SZ"))))
 
 (defun os-date-http-from-epoch (os-family epoch-sec)
-  (let* ((fmt "'%a, %d %b %Y %H:%M:%S GMT'")
-         (cmd (if (string= os-family "linux")
-                  (string-append "date -u -d @" (format nil "~A" epoch-sec) " +" fmt)
-                  (string-append "date -u -r " (format nil "~A" epoch-sec) " +" fmt))))
-    (osu-trim (osu-command-output cmd))))
+  (handler-case
+    (date-http-from-epoch epoch-sec)
+    (error (e)
+      (let* ((fmt "'%a, %d %b %Y %H:%M:%S GMT'")
+             (cmd (string-append "date -u -r " (format nil "~A" epoch-sec) " +" fmt)))
+        (osu-trim (osu-command-output cmd))))))
 
 (defun os-epoch-from-http-date (os-family http-date)
-  (let* ((cmd (if (string= os-family "linux")
-                  (string-append "date -u -d " (osu-shell-quote http-date) " +%s")
-                  (string-append "date -ju -f '%a, %d %b %Y %H:%M:%S GMT' "
+  (handler-case
+    (epoch-from-http-date http-date)
+    (error (e)
+      (let* ((cmd (string-append "date -ju -f '%a, %d %b %Y %H:%M:%S GMT' "
                                  (osu-shell-quote http-date)
-                                 " +%s")))
-         (out (osu-trim (osu-command-output cmd)))
-         (n (osu-parse-int-safe out)))
-    (if (null n) '() n)))
+                                 " +%s"))
+             (out (osu-trim (osu-command-output cmd)))
+             (n (osu-parse-int-safe out)))
+        (if (null n) '() n)))))
 
 (defun os-generate-token ()
-  (setq *os-utils-token-counter* (+ *os-utils-token-counter* 1))
-  (let ((pid (getenv "PPID")))
-    (string-append
-     "tok-"
-     (format nil "~A" (get-universal-time))
-     "-"
-     (format nil "~A" (get-internal-run-time))
-     "-"
-     (if (null pid) "0" pid)
-     "-"
-     (format nil "~A" *os-utils-token-counter*))))
+  (handler-case
+    (generate-token)
+    (error (e)
+      (setq *os-utils-token-counter* (+ *os-utils-token-counter* 1))
+      (let ((pid (getenv "PPID")))
+        (string-append
+         "tok-"
+         (format nil "~A" (get-universal-time))
+         "-"
+         (format nil "~A" (get-internal-run-time))
+         "-"
+         (if (null pid) "0" pid)
+         "-"
+         (format nil "~A" *os-utils-token-counter*))))))
 
 (defun os-sleep-sec (seconds)
   (if (and (numberp seconds) (>= seconds 0))
-      (= (system (string-append "sleep " (format nil "~A" seconds))) 0)
+      (handler-case
+        (sleep-seconds seconds)
+        (error (e)
+          (= (system (string-append "sleep " (format nil "~A" seconds))) 0)))
       nil))
 
 (defun os-kill (pid sig)

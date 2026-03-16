@@ -2,11 +2,15 @@
 ;; The implementation keeps dependencies close to R7RS-level primitives.
 (define-module isl.core
   (use srfi-1)
+  (use file.util)
   (use gauche.process)
   (use gauche.net)
   (use gauche.threads)
+  (use rfc.base64)
+  (use rfc.uuid)
   (use rfc.tls)
   (use rfc.http)
+  (use srfi.19)
   (export make-initial-env eval-islisp apply-islisp repl read-all))
 
 (select-module isl.core)
@@ -15,6 +19,26 @@
 (define gauche-http-post http-post)
 (define gauche-http-head http-head)
 (define gauche-http-string-receiver http-string-receiver)
+(define gauche-make-directory* make-directory*)
+(define gauche-directory-list directory-list)
+(define gauche-copy-file copy-file)
+(define gauche-move-file move-file)
+(define gauche-file-size file-size)
+(define gauche-file-is-readable? file-is-readable?)
+(define gauche-file-is-executable? file-is-executable?)
+(define gauche-file-is-symlink? file-is-symlink?)
+(define gauche-file-type file-type)
+(define gauche-base64-encode-string base64-encode-string)
+(define gauche-uuid4 uuid4)
+(define gauche-uuid->string uuid->string)
+(define gauche-make-time make-time)
+(define gauche-time-utc time-utc)
+(define gauche-current-time current-time)
+(define gauche-time-utc->date time-utc->date)
+(define gauche-date->string date->string)
+(define gauche-string->date string->date)
+(define gauche-date->time-utc date->time-utc)
+(define gauche-time-second time-second)
 ;; Keep references to Gauche TLS procedures before we define ISL primitives
 ;; with similar names.
 (define gauche-make-tls make-tls)
@@ -311,11 +335,70 @@
     (list (decode-process-exit-status (process-exit-status p)) out err)))
 
 (define (command-available? cmd)
-  (let ((status (decode-process-exit-status
-                 (sys-system (string-append "sh -c 'command -v "
-                                            cmd
-                                            " >/dev/null 2>&1'")))))
-    (or (eq? status 0) (eq? status #t))))
+  (define (find-colon path start)
+    (let loop ((i start))
+      (cond
+       ((>= i (string-length path)) #f)
+       ((char=? (string-ref path i) #\:) i)
+       (else (loop (+ i 1))))))
+  (define (split-path path)
+    (let loop ((start 0) (acc '()))
+      (if (> start (string-length path))
+          (reverse acc)
+          (let ((next (find-colon path start)))
+            (if next
+                (let ((part (substring path start next)))
+                  (loop (+ next 1)
+                        (cons (if (string=? part "") "." part) acc)))
+                (reverse
+                 (cons (let ((part (substring path start (string-length path))))
+                         (if (string=? part "") "." part))
+                       acc)))))))
+  (define (join-path dir leaf)
+    (cond
+     ((or (string=? dir "") (string=? dir ".")) leaf)
+     ((char=? (string-ref dir (- (string-length dir) 1)) #\/)
+      (string-append dir leaf))
+     (else
+      (string-append dir "/" leaf))))
+  (and (string? cmd)
+       (> (string-length cmd) 0)
+       (if (string-scan cmd #\/)
+           (and (file-exists? cmd)
+                (gauche-file-is-executable? cmd))
+           (let ((path (or (sys-getenv "PATH") "")))
+             (let loop ((dirs (split-path path)))
+               (and (pair? dirs)
+                    (or (let ((candidate (join-path (car dirs) cmd)))
+                          (and (file-exists? candidate)
+                               (gauche-file-is-executable? candidate)))
+                        (loop (cdr dirs)))))))))
+
+(define (parse-octal-string s)
+  (let loop ((i 0) (n 0))
+    (if (= i (string-length s))
+        n
+        (let ((ch (string-ref s i)))
+          (if (or (char<? ch #\0) (char>? ch #\7))
+              (error "invalid octal string" s)
+              (loop (+ i 1)
+                    (+ (* n 8)
+                       (- (char->integer ch) (char->integer #\0)))))))))
+
+(define (http-date-format)
+  "~a, ~d ~b ~Y ~H:~M:~S GMT")
+
+(define (http-date->utc-seconds s)
+  (let* ((gmt-suffix " GMT")
+         (len (string-length s))
+         (suffix-len (string-length gmt-suffix))
+         (normalized
+          (if (and (>= len suffix-len)
+                   (string=? (substring s (- len suffix-len) len) gmt-suffix))
+              (string-append (substring s 0 (- len suffix-len)) " +0000")
+              s))
+         (parsed (gauche-string->date normalized "~a, ~d ~b ~Y ~H:~M:~S ~z")))
+    (gauche-time-second (gauche-date->time-utc parsed))))
 
 (define (sqlite3-available?)
   (command-available? "sqlite3"))
@@ -3235,6 +3318,163 @@
             (sys-unlink filename)
             #t)
           '())))
+  (def 'make-directory*
+    (lambda (path)
+      (unless (string? path)
+        (error "make-directory* path must be a string" path))
+      (gauche-make-directory* path)
+      #t))
+  (def 'chmod-file
+    (lambda (path mode)
+      (unless (string? path)
+        (error "chmod-file path must be a string" path))
+      (unless (string? mode)
+        (error "chmod-file mode must be an octal string" mode))
+      (sys-chmod path (parse-octal-string mode))
+      #t))
+  (def 'rename-file
+    (lambda (source dest)
+      (unless (string? source)
+        (error "rename-file source must be a string" source))
+      (unless (string? dest)
+        (error "rename-file dest must be a string" dest))
+      (sys-rename source dest)
+      #t))
+  (def 'copy-file
+    (lambda (source dest)
+      (unless (string? source)
+        (error "copy-file source must be a string" source))
+      (unless (string? dest)
+        (error "copy-file dest must be a string" dest))
+      (gauche-copy-file source dest)
+      #t))
+  (def 'directory-list
+    (lambda (path)
+      (unless (string? path)
+        (error "directory-list path must be a string" path))
+      (gauche-directory-list path :children? #t)))
+  (def 'glob
+    (lambda (pattern)
+      (unless (string? pattern)
+        (error "glob pattern must be a string" pattern))
+      (sys-glob pattern)))
+  (def 'glob-newest-first
+    (lambda (pattern)
+      (unless (string? pattern)
+        (error "glob-newest-first pattern must be a string" pattern))
+      (sort (sys-glob pattern)
+            (lambda (a b)
+              (> (file-mtime a) (file-mtime b))))))
+  (def 'file-size
+    (lambda (path)
+      (unless (string? path)
+        (error "file-size path must be a string" path))
+      (gauche-file-size path)))
+  (def 'file-readable-p
+    (lambda (path)
+      (unless (string? path)
+        (error "file-readable-p path must be a string" path))
+      (if (and (file-exists? path)
+               (gauche-file-is-readable? path))
+          #t
+          #f)))
+  (def 'file-executable-p
+    (lambda (path)
+      (unless (string? path)
+        (error "file-executable-p path must be a string" path))
+      (if (and (file-exists? path)
+               (gauche-file-is-executable? path))
+          #t
+          #f)))
+  (def 'file-symlink-p
+    (lambda (path)
+      (unless (string? path)
+        (error "file-symlink-p path must be a string" path))
+      (if (and (file-exists? path)
+               (gauche-file-is-symlink? path))
+          #t
+          #f)))
+  (def 'directory-path-p
+    (lambda (path)
+      (unless (string? path)
+        (error "directory-path-p path must be a string" path))
+      (if (and (file-exists? path)
+               (eq? (gauche-file-type path) 'directory))
+          #t
+          #f)))
+  (def 'command-available-p
+    (lambda (cmd)
+      (unless (string? cmd)
+        (error "command-available-p cmd must be a string" cmd))
+      (if (command-available? cmd) #t #f)))
+  (def 'copy-file-to-stdout
+    (lambda (path)
+      (unless (string? path)
+        (error "copy-file-to-stdout path must be a string" path))
+      (call-with-input-file path
+        (lambda (in)
+          (copy-port in (current-output-port))))
+      #t))
+  (def 'copy-stdin-to-file
+    (lambda (path)
+      (unless (string? path)
+        (error "copy-stdin-to-file path must be a string" path))
+      (call-with-output-file path
+        (lambda (out)
+          (copy-port (current-input-port) out))
+        :if-exists :supersede)
+      #t))
+  (def 'uname
+    (lambda ()
+      (sys-uname)))
+  (def 'sleep-seconds
+    (lambda (seconds)
+      (unless (number? seconds)
+        (error "sleep-seconds seconds must be numeric" seconds))
+      (unless (>= seconds 0)
+        (error "sleep-seconds seconds must be non-negative" seconds))
+      (sys-nanosleep (inexact->exact (round (* seconds 1000000000))))
+      #t))
+  (def 'base64-encode-file
+    (lambda (path)
+      (unless (string? path)
+        (error "base64-encode-file path must be a string" path))
+      (call-with-input-file path
+        (lambda (in)
+          (gauche-base64-encode-string (port->string in) :line-width #f)))))
+  (def 'generate-token
+    (lambda ()
+      (gauche-uuid->string (gauche-uuid4))))
+  (def 'date-utc-format
+    (lambda (fmt)
+      (unless (string? fmt)
+        (error "date-utc-format fmt must be a string" fmt))
+      (gauche-date->string
+       (gauche-time-utc->date
+        (gauche-current-time gauche-time-utc)
+        0)
+       fmt)))
+  (def 'date-utc-iso8601
+    (lambda ()
+      (gauche-date->string
+       (gauche-time-utc->date
+        (gauche-current-time gauche-time-utc)
+        0)
+       "~Y-~m-~dT~H:~M:~SZ")))
+  (def 'date-http-from-epoch
+    (lambda (epoch-sec)
+      (unless (integer? epoch-sec)
+        (error "date-http-from-epoch epoch-sec must be an integer" epoch-sec))
+      (gauche-date->string
+       (gauche-time-utc->date
+        (gauche-make-time gauche-time-utc 0 epoch-sec)
+        0)
+       (http-date-format))))
+  (def 'epoch-from-http-date
+    (lambda (http-date)
+      (unless (string? http-date)
+        (error "epoch-from-http-date http-date must be a string" http-date))
+      (http-date->utc-seconds http-date)))
   (def 'getenv
     (lambda (name)
       (unless (string? name)
