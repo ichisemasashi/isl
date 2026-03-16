@@ -991,6 +991,34 @@
 (defun page-current-rev-no (page-row)
   (if (null page-row) "" (fourth page-row)))
 
+(defun fetch-page-history (db slug)
+  (postgres-query
+   db
+   (string-append
+    "select r.rev_no, coalesce(r.edited_by, ''), coalesce(r.edit_summary, ''), "
+    "to_char(r.created_at, 'YYYY-MM-DD HH24:MI:SS') "
+    "from page_revisions r "
+    "join pages p on p.id = r.page_id "
+    "where p.slug='" (sql-escape slug) "' "
+    "order by r.rev_no desc")))
+
+(defun fetch-page-revision (db slug rev-no)
+  (let ((n (parse-int-safe rev-no)))
+    (if (null n)
+        '()
+        (let ((rows
+               (postgres-query
+                db
+                (string-append
+                 "select r.rev_no, r.title, r.body_md, coalesce(r.edited_by, ''), "
+                 "coalesce(r.edit_summary, ''), to_char(r.created_at, 'YYYY-MM-DD HH24:MI:SS') "
+                 "from page_revisions r "
+                 "join pages p on p.id = r.page_id "
+                 "where p.slug='" (sql-escape slug) "' "
+                 "  and r.rev_no=" (format nil "~A" n) " "
+                 "limit 1"))))
+          (if (null rows) '() (first rows))))))
+
 (defun fetch-media-list (db)
   (postgres-query
    db
@@ -1524,15 +1552,20 @@
               (let ((body-html (markdown->html body-md)))
               (print-headers-ok)
               (print-layout-head title)
-              (format t "<h1>~A</h1>~%" (html-escape title))
-              (if (editor-or-admin-p)
-                  (format t "<p><a href=\"~A/~A/edit\">Edit this page</a></p>~%"
-                          base
-                          (html-escape slug))
-                  nil)
-              (if (editor-or-admin-p)
-                  (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
-                  nil)
+	              (format t "<h1>~A</h1>~%" (html-escape title))
+	              (if (editor-or-admin-p)
+	                  (format t "<p><a href=\"~A/~A/edit\">Edit this page</a> | <a href=\"~A/~A/history\">History</a></p>~%"
+	                          base
+	                          (html-escape slug)
+	                          base
+	                          (html-escape slug))
+	                  nil)
+	              (if (not (editor-or-admin-p))
+	                  (format t "<p><a href=\"~A/~A/history\">History</a></p>~%" base (html-escape slug))
+	                  nil)
+	              (if (editor-or-admin-p)
+	                  (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
+	                  nil)
 	              (format t "<p><small>updated: ~A / slug: <code>~A</code> / rev: <code>~A</code></small></p>~%"
 	                      (html-escape updated-at)
 	                      (html-escape slug)
@@ -1570,8 +1603,80 @@
                         (format t "</div>~%"))))))
               (if (blank-text-p search-q)
                   nil
-                  (print-highlight-script search-q))
-              (print-layout-foot)))))))
+	                  (print-highlight-script search-q))
+	              (print-layout-foot)))))))
+
+(defun render-history (db slug)
+  (if (not (slug-safe-p slug))
+      (render-not-found)
+      (let ((page (fetch-page db slug)))
+        (if (null page)
+            (render-not-found)
+            (let ((rows (fetch-page-history db slug))
+                  (title (second page))
+                  (base (app-base)))
+              (print-headers-ok)
+              (print-layout-head (string-append "History: " title))
+              (format t "<h1>History: ~A</h1>~%" (html-escape title))
+              (format t "<p><a href=\"~A/~A\">View current page</a>" base (html-escape slug))
+              (if (editor-or-admin-p)
+                  (format t " | <a href=\"~A/~A/edit\">Edit</a>" base (html-escape slug))
+                  nil)
+              (format t "</p>~%")
+              (if (null rows)
+                  (format t "<p>履歴がありません。</p>~%")
+                  (progn
+                    (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
+                    (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Rev</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Edited By</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Summary</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Created At</th></tr></thead>~%")
+                    (format t "<tbody>~%")
+                    (dolist (row rows)
+                      (let ((rev-no (first row))
+                            (edited-by (second row))
+                            (edit-summary (third row))
+                            (created-at (fourth row)))
+                        (format t "<tr>~%")
+                        (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><a href=\"~A/~A/revisions/~A\">~A</a></td>~%"
+                                base
+                                (html-escape slug)
+                                (html-escape rev-no)
+                                (html-escape rev-no))
+                        (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape edited-by))
+                        (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape edit-summary))
+                        (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape created-at))
+                        (format t "</tr>~%")))
+                    (format t "</tbody></table>~%")))
+              (print-layout-foot))))))
+
+(defun render-revision-view (db slug rev-no)
+  (if (not (slug-safe-p slug))
+      (render-not-found)
+      (let ((rev (fetch-page-revision db slug rev-no))
+            (base (app-base)))
+        (if (null rev)
+            (render-not-found)
+            (let ((found-rev-no (first rev))
+                  (title (second rev))
+                  (body-md (third rev))
+                  (edited-by (fourth rev))
+                  (edit-summary (fifth rev))
+                  (created-at (sixth rev)))
+              (let ((body-html (markdown->html body-md)))
+                (print-headers-ok)
+                (print-layout-head (string-append "Revision " found-rev-no ": " title))
+                (format t "<h1>Revision ~A: ~A</h1>~%" (html-escape found-rev-no) (html-escape title))
+                (format t "<p><a href=\"~A/~A\">Current page</a> | <a href=\"~A/~A/history\">History</a></p>~%"
+                        base (html-escape slug) base (html-escape slug))
+                (format t "<p><small>edited_by: ~A / created_at: ~A</small></p>~%"
+                        (html-escape edited-by)
+                        (html-escape created-at))
+                (if (string= edit-summary "")
+                    nil
+                    (format t "<p><small>edit_summary: ~A</small></p>~%" (html-escape edit-summary)))
+                (format t "<h2>Preview (HTML)</h2>~%")
+                (format t "<article class=\"wiki-body\">~A</article>~%" body-html)
+                (format t "<h2>Markdown Source</h2>~%")
+                (format t "<pre>~A</pre>~%" (html-escape body-md))
+                (print-layout-foot)))))))
 
 (defun save-page (db slug)
   (if (or (not (slug-safe-p slug)) (reserved-slug-p slug))
@@ -2177,6 +2282,8 @@
                     (render-not-found)))
                ((string= (first segments) "files")
                 (render-media-file db (second segments)))
+               ((string= (second segments) "history")
+                (render-history db (first segments)))
                ((string= (second segments) "edit")
                 (if (string= method "POST")
                     (save-page db (first segments))
@@ -2190,6 +2297,9 @@
                 (if (string= method "POST")
                     (delete-media db (second segments))
                     (render-not-found)))
+               ((and (string= (second segments) "revisions")
+                     (not (blank-text-p (third segments))))
+                (render-revision-view db (first segments) (third segments)))
                (t
                 (render-not-found))))
              (t

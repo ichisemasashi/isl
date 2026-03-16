@@ -15,6 +15,8 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki` : ページ一覧
 - `/wiki/{slug}` : ページ表示（DBの Markdown を HTML 変換して表示）
 - `/wiki/{slug}/edit` : 編集画面（POSTで保存可能）
+- `/wiki/{slug}/history` : 編集履歴一覧
+- `/wiki/{slug}/revisions/{rev_no}` : 過去版表示
 - `/wiki/new` : 新規ページ作成（POSTで保存可能）
 - `/wiki/media` : メディア一覧（任意ファイル。画像/動画/音声は埋め込み表示）
 - `/wiki/media/new` : メディア追加（POSTで保存）
@@ -121,6 +123,8 @@ Include "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/conf/httpd-wiki.co
 http://localhost:8080/wiki
 http://localhost:8080/wiki/home
 http://localhost:8080/wiki/home/edit
+http://localhost:8080/wiki/home/history
+http://localhost:8080/wiki/home/revisions/1
 http://localhost:8080/wiki/new
 http://localhost:8080/wiki/media
 http://localhost:8080/wiki/media/new
