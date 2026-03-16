@@ -7,6 +7,15 @@
   (let ((v (getenv name)))
     (if (null v) "" v)))
 
+(defun wiki-root ()
+  (let ((v (getenv "ISL_ROOT")))
+    (if (or (null v) (= (length v) 0))
+        "/Volumes/SSD-PLU3/work/LISP/islisp/isl"
+        v)))
+
+(defun wiki-path (suffix)
+  (string-append (wiki-root) suffix))
+
 (defun request-method ()
   (let ((m (env-or-empty "REQUEST_METHOD")))
     (if (= (length m) 0) "GET" m)))
@@ -25,7 +34,7 @@
         script-name)))
 
 (defun wiki-config-path ()
-  "./examples/wiki/conf/wiki.conf")
+  (wiki-path "/examples/wiki/conf/wiki.conf"))
 
 (defun conf-trim-left (s)
   (let ((i 0)
@@ -234,7 +243,7 @@
       (string= slug "logout")))
 
 (defun media-root-dir ()
-  (wiki-config-get "media_dir" "./examples/webserver/runtime/docroot/public/wiki-files"))
+  (wiki-config-get "media_dir" (wiki-path "/examples/webserver/runtime/docroot/public/wiki-files")))
 
 (defun backup-root-dir ()
   (wiki-config-get "backup_dir" "/tmp/isl-wiki-backups"))
@@ -835,7 +844,7 @@
 (defglobal *markdown-temp-counter* 0)
 
 (defun md2html-bin ()
-  (wiki-config-get "md2html_bin" "./examples/md2html/md2html"))
+  (wiki-config-get "md2html_bin" (wiki-path "/examples/md2html/md2html")))
 
 (defun next-temp-base ()
   (setq *markdown-temp-counter* (+ *markdown-temp-counter* 1))
@@ -898,7 +907,7 @@
           (trim-ws (substring content-type (+ p (length marker)) (length content-type)))))))
 
 (defun multipart-helper-path ()
-  "./examples/wiki/app/multipart_extract.pl")
+  (wiki-path "/examples/wiki/app/multipart_extract.lsp"))
 
 (defun multipart-field-path (dir field-name)
   (string-append dir "/field-" field-name ".txt"))
@@ -2994,17 +3003,16 @@
               (render-bad-request "failed to receive upload body")
               (progn
                 (system (string-append "mkdir -p " (shell-quote work-dir)))
+                (setenv "ISL_ROOT" (wiki-root))
+                (setenv "WIKI_MULTIPART_INPUT" body-path)
+                (setenv "WIKI_MULTIPART_OUTDIR" work-dir)
+                (setenv "WIKI_MULTIPART_BOUNDARY" boundary)
                 (let ((parse-status
                        (system
                         (string-append
-                         "perl "
-                         (shell-quote (multipart-helper-path))
+                         (shell-quote (wiki-path "/bin/isl"))
                          " "
-                         (shell-quote body-path)
-                         " "
-                         (shell-quote work-dir)
-                         " "
-                         (shell-quote boundary)))))
+                         (shell-quote (multipart-helper-path))))))
                   (if (not (= parse-status 0))
                       (render-bad-request "failed to parse multipart upload")
                       (let* ((csrf-token (read-optional-file-text (multipart-field-path work-dir "csrf_token")))

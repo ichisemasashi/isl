@@ -5,10 +5,10 @@ Wiki システムを段階的に構築するための実装です。
 
 ## ファイル構成
 - `app/wiki.lsp`: Webアプリ本体（MVP 3画面）
-- `app/multipart_extract.pl`: `multipart/form-data` の単一ファイル抽出ヘルパ
+- `app/multipart_extract.lsp`: `multipart/form-data` の単一ファイル抽出ヘルパ
 - `cgi-bin/wiki.cgi`: Apache から呼ばれる CGI エントリ
 - `conf/httpd-wiki.conf`: httpd に include する設定例
-- `scripts/run-backup.sh`: 定期バックアップ用の運用スクリプト
+- `scripts/run-backup.lsp`: 定期バックアップ用の運用スクリプト
 - `db/001_init.sql`: PostgreSQL 初期スキーマ
 - `docs/markdown-policy.md`: Markdown変換方式の決定記録
 - `docs/restore-runbook.md`: 復元手順書
@@ -62,6 +62,7 @@ Wiki システムを段階的に構築するための実装です。
   - `[[home]]` -> `/wiki/home` へのリンク
   - `[[home|Home Page]]` -> 表示名つきリンク
  - 必要に応じて `ISL_WIKI_MD2HTML` で実行バイナリを上書き可能
+ - `cgi-bin/wiki.cgi` / `app/multipart_extract.lsp` / `scripts/run-backup.lsp` は ISL スクリプトとして実行される
 
 ## PostgreSQL スキーマ（MVP）
 
@@ -182,7 +183,7 @@ http://localhost:8080/wiki/login
 - `/wiki/admin/backup` は保存先、保持数、dry-run を指定でき、最近の履歴を表示する
 - バックアップ/リストアの結果は `backup_runs` に履歴記録される
 - 監視用に `/wiki/healthz`、運用統計用に `/wiki/admin/stats` を提供する
-- 定期バックアップは `scripts/run-backup.sh` を cron などから呼び出せる
+- 定期バックアップは `scripts/run-backup.lsp` を cron などから呼び出せる
 - 復元手順と検証コマンドは `docs/restore-runbook.md` を参照
 - `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
 - ページ作成/編集、メディア追加/削除、backup/restore は監査ログに記録される
