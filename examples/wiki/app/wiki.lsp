@@ -541,6 +541,123 @@
       (setq i (+ i 1)))
     (if (= (length out) 0) "file.bin" out)))
 
+(defun media-max-bytes ()
+  (let ((raw (wiki-config-get "media_max_bytes" "10485760")))
+    (let ((n (parse-int-safe raw)))
+      (if (null n) 10485760 n))))
+
+(defun dangerous-media-extension-p (ext)
+  (or (string= ext "html")
+      (string= ext "htm")
+      (string= ext "xhtml")
+      (string= ext "js")
+      (string= ext "mjs")
+      (string= ext "cjs")
+      (string= ext "svg")
+      (string= ext "svgz")
+      (string= ext "exe")
+      (string= ext "dll")
+      (string= ext "com")
+      (string= ext "bat")
+      (string= ext "cmd")
+      (string= ext "msi")
+      (string= ext "ps1")
+      (string= ext "sh")
+      (string= ext "bash")
+      (string= ext "zsh")
+      (string= ext "php")
+      (string= ext "pl")
+      (string= ext "py")
+      (string= ext "rb")
+      (string= ext "jar")))
+
+(defun allowed-media-extension-p (ext)
+  (or (string= ext "png")
+      (string= ext "jpg")
+      (string= ext "jpeg")
+      (string= ext "gif")
+      (string= ext "webp")
+      (string= ext "mp4")
+      (string= ext "webm")
+      (string= ext "mov")
+      (string= ext "mkv")
+      (string= ext "mp3")
+      (string= ext "wav")
+      (string= ext "ogg")
+      (string= ext "m4a")
+      (string= ext "flac")
+      (string= ext "pdf")
+      (string= ext "zip")
+      (string= ext "gz")
+      (string= ext "tgz")
+      (string= ext "tar")
+      (string= ext "7z")
+      (string= ext "txt")
+      (string= ext "md")
+      (string= ext "csv")
+      (string= ext "json")))
+
+(defun allowed-mime-for-ext-p (ext mime-type)
+  (cond
+   ((string= ext "png") (string= mime-type "image/png"))
+   ((or (string= ext "jpg") (string= ext "jpeg")) (string= mime-type "image/jpeg"))
+   ((string= ext "gif") (string= mime-type "image/gif"))
+   ((string= ext "webp") (string= mime-type "image/webp"))
+   ((string= ext "mp4") (string= mime-type "video/mp4"))
+   ((string= ext "webm") (string= mime-type "video/webm"))
+   ((string= ext "mov") (string= mime-type "video/quicktime"))
+   ((string= ext "mkv") (string= mime-type "video/x-matroska"))
+   ((string= ext "mp3") (string= mime-type "audio/mpeg"))
+   ((string= ext "wav") (or (string= mime-type "audio/wav")
+                            (string= mime-type "audio/x-wav")))
+   ((string= ext "ogg") (string= mime-type "audio/ogg"))
+   ((string= ext "m4a") (string= mime-type "audio/mp4"))
+   ((string= ext "flac") (or (string= mime-type "audio/flac")
+                             (string= mime-type "audio/x-flac")))
+   ((string= ext "pdf") (string= mime-type "application/pdf"))
+   ((string= ext "zip") (or (string= mime-type "application/zip")
+                            (string= mime-type "application/x-zip-compressed")))
+   ((or (string= ext "gz") (string= ext "tgz")) (or (string= mime-type "application/gzip")
+                                                    (string= mime-type "application/x-gzip")))
+   ((string= ext "tar") (string= mime-type "application/x-tar"))
+   ((string= ext "7z") (string= mime-type "application/x-7z-compressed"))
+   ((string= ext "txt") (string= mime-type "text/plain"))
+   ((string= ext "md") (or (string= mime-type "text/plain")
+                           (string= mime-type "text/markdown")))
+   ((string= ext "csv") (or (string= mime-type "text/csv")
+                            (string= mime-type "text/plain")))
+   ((string= ext "json") (or (string= mime-type "application/json")
+                             (string= mime-type "text/plain")))
+   (t nil)))
+
+(defun media-mime-allowed-p (mime-type)
+  (or (string= mime-type "image/png")
+      (string= mime-type "image/jpeg")
+      (string= mime-type "image/gif")
+      (string= mime-type "image/webp")
+      (string= mime-type "video/mp4")
+      (string= mime-type "video/webm")
+      (string= mime-type "video/quicktime")
+      (string= mime-type "video/x-matroska")
+      (string= mime-type "audio/mpeg")
+      (string= mime-type "audio/wav")
+      (string= mime-type "audio/x-wav")
+      (string= mime-type "audio/ogg")
+      (string= mime-type "audio/mp4")
+      (string= mime-type "audio/flac")
+      (string= mime-type "audio/x-flac")
+      (string= mime-type "application/pdf")
+      (string= mime-type "application/zip")
+      (string= mime-type "application/x-zip-compressed")
+      (string= mime-type "application/gzip")
+      (string= mime-type "application/x-gzip")
+      (string= mime-type "application/x-tar")
+      (string= mime-type "application/x-7z-compressed")
+      (string= mime-type "text/plain")
+      (string= mime-type "text/markdown")
+      (string= mime-type "text/csv")
+      (string= mime-type "application/json")))
+
 (defun valid-media-type-p (media-type)
   (or (string= media-type "image")
       (string= media-type "video")
@@ -549,7 +666,7 @@
 
 (defun infer-media-type (filename)
   (let ((ext (file-ext-lower filename)))
-    (if (or (string= ext "png") (string= ext "jpg") (string= ext "jpeg") (string= ext "gif") (string= ext "webp") (string= ext "svg"))
+    (if (or (string= ext "png") (string= ext "jpg") (string= ext "jpeg") (string= ext "gif") (string= ext "webp"))
         "image"
         (if (or (string= ext "mp4") (string= ext "webm") (string= ext "mov") (string= ext "mkv"))
             "video"
@@ -564,7 +681,6 @@
      ((or (string= ext "jpg") (string= ext "jpeg")) "image/jpeg")
      ((string= ext "gif") "image/gif")
      ((string= ext "webp") "image/webp")
-     ((string= ext "svg") "image/svg+xml")
      ((string= ext "mp4") "video/mp4")
      ((string= ext "webm") "video/webm")
      ((string= ext "mov") "video/quicktime")
@@ -1082,7 +1198,7 @@
   (let ((rows (postgres-query
                db
                (string-append
-                "select storage_path, mime_type from media_assets "
+                "select storage_path, mime_type, original_filename from media_assets "
                 "where stored_filename='" (sql-escape stored-filename) "' and deleted_at is null limit 1"))))
     (if (null rows) '() (first rows))))
 
@@ -2146,6 +2262,60 @@
           (delete-file tmp)
           (if (null n) 0 n)))))
 
+(defun detect-mime-type (path)
+  (let* ((tmp (string-append (next-temp-base) ".mime"))
+         (status (system (string-append "file --brief --mime-type " (shell-quote path) " > " (shell-quote tmp) " 2>/dev/null"))))
+    (if (not (= status 0))
+        (progn
+          (if (null (probe-file tmp)) nil (delete-file tmp))
+          "")
+        (let ((mime-type (trim-ws (read-file-text tmp))))
+          (delete-file tmp)
+          mime-type))))
+
+(defun safe-download-filename (name)
+  (sanitize-filename (basename name)))
+
+(defun inline-media-mime-p (mime-type)
+  (or (starts-with mime-type "image/")
+      (starts-with mime-type "video/")
+      (starts-with mime-type "audio/")))
+
+(defun validate-media-upload (path original-filename desired-mime)
+  (let* ((size (file-size-bytes path))
+         (ext (file-ext-lower original-filename))
+         (actual-mime (detect-mime-type path))
+         (expected-mime (infer-mime-type original-filename (infer-media-type original-filename))))
+    (cond
+     ((blank-text-p original-filename)
+      (list "error" "filename is required"))
+     ((dangerous-media-extension-p ext)
+      (list "error" "dangerous file extension is not allowed"))
+     ((not (allowed-media-extension-p ext))
+      (list "error" "file extension is not allowed"))
+     ((<= size 0)
+      (list "error" "empty file is not allowed"))
+     ((> size (media-max-bytes))
+      (list "error" (string-append "file exceeds max size of " (format nil "~A" (media-max-bytes)) " bytes")))
+     ((blank-text-p actual-mime)
+      (list "error" "failed to detect actual mime type"))
+     ((not (media-mime-allowed-p actual-mime))
+      (list "error" "detected mime type is not allowed"))
+     ((not (allowed-mime-for-ext-p ext actual-mime))
+      (list "error" "filename extension does not match detected mime type"))
+     ((and (not (blank-text-p expected-mime))
+           (not (string= expected-mime actual-mime))
+           (not (allowed-mime-for-ext-p ext actual-mime)))
+      (list "error" "inferred mime type does not match detected mime type"))
+     ((and (not (blank-text-p desired-mime))
+           (not (allowed-mime-for-ext-p ext desired-mime)))
+      (list "error" "declared mime type is not allowed for this extension"))
+     ((and (not (blank-text-p desired-mime))
+           (not (string= desired-mime actual-mime)))
+      (list "error" "declared mime type does not match detected mime type"))
+     (t
+      (list "ok" actual-mime)))))
+
 (defun parse-int-safe (s)
   (let ((i 0)
         (n 0))
@@ -2162,11 +2332,15 @@
             (setq i (+ i 1)))
           (if (eq n 'invalid) '() n)))))
 
-(defun render-media-file-stream (storage-path mime-type)
+(defun render-media-file-stream (storage-path mime-type download-name)
   (let ((size (file-size-bytes storage-path)))
     (format t "Status: 200 OK~%")
     (format t "Content-Type: ~A~%" (if (blank-text-p mime-type) "application/octet-stream" mime-type))
     (format t "Content-Length: ~A~%" size)
+    (format t "X-Content-Type-Options: nosniff~%")
+    (format t "Content-Disposition: ~A; filename=\"~A\"~%"
+            (if (inline-media-mime-p mime-type) "inline" "attachment")
+            (html-escape (safe-download-filename download-name)))
     (print-extra-headers)
     (format t "~%")
     (system (string-append "cat " (shell-quote storage-path)))))
@@ -2176,10 +2350,11 @@
     (if (null meta)
         (render-file-not-found)
         (let ((storage-path (first meta))
-              (mime-type (second meta)))
+              (mime-type (second meta))
+              (download-name (third meta)))
           (if (null (probe-file storage-path))
               (render-file-not-found)
-              (render-media-file-stream storage-path mime-type))))))
+              (render-media-file-stream storage-path mime-type download-name))))))
 
 (defun render-page-slug-datalist (rows)
   (format t "<datalist id=\"page-slugs\">~%")
@@ -2197,10 +2372,12 @@
     (print-layout-head "Add Media")
     (format t "<h1>Add Media</h1>~%")
     (format t "<p>ブラウザからファイルをアップロードして、メディアライブラリへ登録します。</p>~%")
+    (format t "<p><small>max size: <code>~A</code> bytes / allowed: png, jpg, jpeg, gif, webp, mp4, webm, mov, mkv, mp3, wav, ogg, m4a, flac, pdf, zip, gz, tgz, tar, 7z, txt, md, csv, json</small></p>~%"
+            (html-escape (format nil "~A" (media-max-bytes))))
     (render-page-slug-datalist rows)
     (format t "<form method=\"post\" action=\"~A/media/new\" enctype=\"multipart/form-data\">~%" base)
     (render-csrf-hidden-input)
-    (format t "  <p><label>Upload File<br><input type=\"file\" name=\"upload_file\" required></label></p>~%")
+    (format t "  <p><label>Upload File<br><input type=\"file\" name=\"upload_file\" accept=\".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mov,.mkv,.mp3,.wav,.ogg,.m4a,.flac,.pdf,.zip,.gz,.tgz,.tar,.7z,.txt,.md,.csv,.json\" required></label></p>~%")
     (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
     (format t "  <p><label>Attach To Page (optional)<br><input type=\"text\" name=\"page_slug\" value=\"~A\" style=\"width:100%\" list=\"page-slugs\" placeholder=\"home\"></label></p>~%"
             (html-escape prefill-page-slug))
@@ -2375,9 +2552,7 @@
                        (media-type (if (blank-text-p media-type-input)
                                        (infer-media-type base-name)
                                        media-type-input))
-                       (mime-type (if (blank-text-p mime-type-input)
-                                      (infer-mime-type base-name media-type)
-                                      mime-type-input))
+                       (validation (validate-media-upload source-path base-name mime-type-input))
                        (stored-name (string-append
                                      (format nil "~A" (get-universal-time))
                                      "-"
@@ -2388,19 +2563,21 @@
                        (public-url (media-delivery-url stored-name)))
                   (if (not (valid-media-type-p media-type))
                       (render-bad-request "media_type must be image/video/audio/file")
-                      (progn
-                        (ensure-media-dir)
-                        (let ((copy-status (system (string-append "cp " (shell-quote source-path) " " (shell-quote storage-path)))))
-                          (if (= copy-status 0)
-                              (progn
-                                (system (string-append "chmod 644 " (shell-quote storage-path)))
-                                (let ((err (persist-media-record db page-slug media-type title base-name stored-name mime-type storage-path public-url edit-summary)))
-                                  (if (string= err "")
-                                      (render-see-other (string-append (app-base) "/media"))
-                                      (progn
-                                        (safe-delete-file storage-path)
-                                        (render-bad-request err)))))
-                              (render-bad-request "file copy failed")))))))))))
+                      (if (not (string= (first validation) "ok"))
+                          (render-bad-request (second validation))
+                          (let ((mime-type (second validation)))
+                            (ensure-media-dir)
+                            (let ((copy-status (system (string-append "cp " (shell-quote source-path) " " (shell-quote storage-path)))))
+                              (if (= copy-status 0)
+                                  (progn
+                                    (system (string-append "chmod 644 " (shell-quote storage-path)))
+                                    (let ((err (persist-media-record db page-slug media-type title base-name stored-name mime-type storage-path public-url edit-summary)))
+                                      (if (string= err "")
+                                          (render-see-other (string-append (app-base) "/media"))
+                                          (progn
+                                            (safe-delete-file storage-path)
+                                            (render-bad-request err)))))
+                                  (render-bad-request "file copy failed"))))))))))))
 
 (defun create-media-from-multipart (db)
   (let* ((content-type (request-content-type))
@@ -2449,12 +2626,12 @@
                                         (if (blank-text-p media-type-input)
                                             (infer-media-type safe-name)
                                             media-type-input))
-                                       (mime-type
+                                       (declared-mime
                                         (if (blank-text-p mime-type-input)
-                                            (if (blank-text-p upload-content-type)
-                                                (infer-mime-type safe-name media-type)
-                                                upload-content-type)
+                                            upload-content-type
                                             mime-type-input))
+                                       (validation
+                                        (validate-media-upload upload-temp-path upload-filename declared-mime))
                                        (stored-name
                                         (string-append
                                          "upload-"
@@ -2465,29 +2642,32 @@
                                          safe-name)))
                                   (if (not (valid-media-type-p media-type))
                                       (render-bad-request "media_type must be image/video/audio/file")
-                                      (let* ((storage-path (move-upload-into-media-dir upload-temp-path stored-name))
-                                             (public-url (media-delivery-url stored-name))
-                                             (err
-                                              (if (blank-text-p storage-path)
-                                                  "failed to store uploaded file"
-                                                  (persist-media-record
-                                                   db
-                                                   page-slug
-                                                   media-type
-                                                   title
-                                                   upload-filename
-                                                   stored-name
-                                                   mime-type
-                                                   storage-path
-                                                   public-url
-                                                   edit-summary))))
-                                        (if (string= err "")
-                                            (render-see-other (string-append (app-base) "/media"))
-                                            (progn
-                                              (if (blank-text-p storage-path)
-                                                  nil
-                                                  (safe-delete-file storage-path))
-                                              (render-bad-request err)))))))))))))))))
+                                      (if (not (string= (first validation) "ok"))
+                                          (render-bad-request (second validation))
+                                          (let* ((mime-type (second validation))
+                                                 (storage-path (move-upload-into-media-dir upload-temp-path stored-name))
+                                                 (public-url (media-delivery-url stored-name))
+                                                 (err
+                                                  (if (blank-text-p storage-path)
+                                                      "failed to store uploaded file"
+                                                      (persist-media-record
+                                                       db
+                                                       page-slug
+                                                       media-type
+                                                       title
+                                                       upload-filename
+                                                       stored-name
+                                                       mime-type
+                                                       storage-path
+                                                       public-url
+                                                       edit-summary))))
+                                            (if (string= err "")
+                                                (render-see-other (string-append (app-base) "/media"))
+                                                (progn
+                                                  (if (blank-text-p storage-path)
+                                                      nil
+                                                      (safe-delete-file storage-path))
+                                                  (render-bad-request err))))))))))))))))))
 
 (defun render-admin-home ()
   (let ((base (app-base)))
