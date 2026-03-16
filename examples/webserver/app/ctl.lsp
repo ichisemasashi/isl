@@ -67,7 +67,7 @@
         (not (string= v "0")))))
 
 (defun ws-ctl-pid-running-p (pid)
-  (= (system (string-append "sh -c 'kill -0 " pid " >/dev/null 2>&1'")) 0))
+  (os-process-running-p pid))
 
 (defun ws-ctl-read-pid (pid-file)
   (if (null (probe-file pid-file))
@@ -91,20 +91,10 @@
       (delete-file pid-file)))
 
 (defun ws-ctl-sleep1 ()
-  (system "sh -c 'sleep 1'"))
+  (os-sleep-sec 1))
 
 (defun ws-ctl-port-owner-pid (port)
-  (if (not (ws-command-available-p "lsof"))
-      '()
-      (let* ((cmd (string-append
-                   "lsof -nP -iTCP:"
-                   (format nil "~A" port)
-                   " -sTCP:LISTEN -Fp | sed -n \"s/^p//p\" | head -n 1"))
-             (result (ws-command-output cmd))
-             (status (car result))
-             (out (ws-trim (second result)))
-             (n (if (= status 0) (ws-parse-int out) '())))
-        (if (null n) '() out))))
+  (os-lsof-listen-owner-pid port))
 
 (defun ws-ctl-cleanup-stale-pid-file (pid-file)
   (let ((pid (ws-ctl-read-pid pid-file)))
@@ -121,7 +111,7 @@
               (ws-log (format nil "removed stale pid file: ~A (pid=~A)" pid-file pid)))))))
 
 (defun ws-ctl-kill (pid sig)
-  (system (string-append "sh -c 'kill -" sig " " pid " >/dev/null 2>&1 || true'")))
+  (os-kill pid sig))
 
 (defun ws-ctl-wait-stopped (pid max-seconds)
   (let ((i 0))
@@ -289,10 +279,7 @@
 (defun ws-ctl-log-tail (path lines)
   (if (null (probe-file path))
       (format t "[missing] ~A~%" path)
-      (system (string-append "sh -c 'tail -n "
-                             (format nil "~A" lines)
-                             " " (ws-shell-quote path)
-                             "'"))))
+      (os-tail-file-to-stdout path lines)))
 
 (defun ws-ctl-logs ()
   (let* ((root (ws-root))

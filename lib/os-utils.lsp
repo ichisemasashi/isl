@@ -139,6 +139,12 @@
   (let ((v (osu-trim (osu-command-output "uname -s"))))
     (if (= (length v) 0) "unknown" v)))
 
+(defun os-process-running-p (pid)
+  (= (system (string-append "sh -c 'kill -0 "
+                            pid
+                            " >/dev/null 2>&1'"))
+     0))
+
 (defun os-mkdir-p (path)
   (= (system (string-append "mkdir -p " (osu-shell-quote path))) 0))
 
@@ -305,3 +311,31 @@
   (if (and (numberp seconds) (>= seconds 0))
       (= (system (string-append "sleep " (format nil "~A" seconds))) 0)
       nil))
+
+(defun os-kill (pid sig)
+  (= (system (string-append "sh -c 'kill -"
+                            sig
+                            " "
+                            pid
+                            " >/dev/null 2>&1 || true'"))
+     0))
+
+(defun os-lsof-listen-owner-pid (port)
+  (if (not (os-command-available-p "lsof"))
+      '()
+      (let* ((cmd (string-append
+                   "lsof -nP -iTCP:"
+                   (format nil "~A" port)
+                   " -sTCP:LISTEN -Fp | sed -n \"s/^p//p\" | head -n 1"))
+             (out (osu-trim (osu-command-output cmd)))
+             (n (osu-parse-int-safe out)))
+        (if (null n) '() out))))
+
+(defun os-tail-file-to-stdout (path lines)
+  (if (null (probe-file path))
+      nil
+      (= (system (string-append "tail -n "
+                                (format nil "~A" lines)
+                                " "
+                                (osu-shell-quote path)))
+         0)))
