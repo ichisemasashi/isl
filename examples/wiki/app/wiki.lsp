@@ -1019,6 +1019,10 @@
                  "limit 1"))))
           (if (null rows) '() (first rows))))))
 
+(defun latest-revision-no (db slug)
+  (let ((page (fetch-page db slug)))
+    (if (null page) "" (page-current-rev-no page))))
+
 (defun fetch-media-list (db)
   (postgres-query
    db
@@ -1217,6 +1221,26 @@
    (json-escape v3)
    "\"}"))
 
+(defun make-audit-meta-4 (k1 v1 k2 v2 k3 v3 k4 v4)
+  (string-append
+   "{\""
+   k1
+   "\":\""
+   (json-escape v1)
+   "\",\""
+   k2
+   "\":\""
+   (json-escape v2)
+   "\",\""
+   k3
+   "\":\""
+   (json-escape v3)
+   "\",\""
+   k4
+   "\":\""
+   (json-escape v4)
+   "\"}"))
+
 (defun write-audit-log (db action target-type target-id meta-json)
   (postgres-exec
    db
@@ -1375,6 +1399,56 @@
               (format t "<p><strong>Edit Summary</strong></p><pre>~A</pre>~%" (html-escape submitted-summary)))
           (print-layout-foot)))))
 
+(defun split-lines-keep-empty (text)
+  (let ((s (safe-text text))
+        (i 0)
+        (start 0)
+        (out '()))
+    (while (< i (length s))
+      (if (string= (substring s i (+ i 1)) "\n")
+          (progn
+            (setq out (cons (substring s start i) out))
+            (setq start (+ i 1)))
+          nil)
+      (setq i (+ i 1)))
+    (wiki-reverse (cons (substring s start (length s)) out))))
+
+(defun list-nth-or-empty (xs idx)
+  (let ((cur xs)
+        (i 0))
+    (while (and (< i idx) (not (null cur)))
+      (setq cur (cdr cur))
+      (setq i (+ i 1)))
+    (if (null cur) "" (car cur))))
+
+(defun max2 (a b)
+  (if (> a b) a b))
+
+(defun render-diff-table (left-text right-text)
+  (let* ((left-lines (split-lines-keep-empty left-text))
+         (right-lines (split-lines-keep-empty right-text))
+         (n (max2 (length left-lines) (length right-lines)))
+         (i 0))
+    (format t "<style>.diff-table{width:100%;border-collapse:collapse}.diff-table th,.diff-table td{border-bottom:1px solid #eee;padding:.35rem;vertical-align:top}.diff-same{background:#fff}.diff-change{background:#fff6d6}.diff-add{background:#e8f7e8}.diff-del{background:#fdeaea}.diff-code{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace}</style>~%")
+    (format t "<table class=\"diff-table\">~%")
+    (format t "<thead><tr><th>Line</th><th>Left</th><th>Right</th></tr></thead><tbody>~%")
+    (while (< i n)
+      (let* ((line-no (format nil "~A" (+ i 1)))
+             (left-line (list-nth-or-empty left-lines i))
+             (right-line (list-nth-or-empty right-lines i))
+             (klass (cond
+                     ((and (string= left-line "") (not (string= right-line ""))) "diff-add")
+                     ((and (not (string= left-line "")) (string= right-line "")) "diff-del")
+                     ((string= left-line right-line) "diff-same")
+                     (t "diff-change"))))
+        (format t "<tr class=\"~A\"><td>~A</td><td class=\"diff-code\">~A</td><td class=\"diff-code\">~A</td></tr>~%"
+                klass
+                (html-escape line-no)
+                (html-escape left-line)
+                (html-escape right-line)))
+      (setq i (+ i 1)))
+    (format t "</tbody></table>~%")))
+
 (defun render-redirect (location)
   (print-headers-301 location)
   (print-layout-head "Moved")
@@ -1451,6 +1525,7 @@
      ((string= (first segments) "login") "")
      ((string= (first segments) "logout") "viewer")
      ((string= (first segments) "admin") "admin")
+     ((and (= n 4) (string= (second segments) "revisions") (string= (fourth segments) "rollback")) "admin")
      ((and (= n 3) (string= (first segments) "media") (string= (third segments) "delete")) "admin")
      ((string= (first segments) "new") "editor")
      ((and (= n 2) (string= (second segments) "edit")) "editor")
@@ -1614,7 +1689,8 @@
             (render-not-found)
             (let ((rows (fetch-page-history db slug))
                   (title (second page))
-                  (base (app-base)))
+                  (base (app-base))
+                  (latest-rev (latest-revision-no db slug)))
               (print-headers-ok)
               (print-layout-head (string-append "History: " title))
               (format t "<h1>History: ~A</h1>~%" (html-escape title))
@@ -1627,7 +1703,7 @@
                   (format t "<p>履歴がありません。</p>~%")
                   (progn
                     (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
-                    (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Rev</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Edited By</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Summary</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Created At</th></tr></thead>~%")
+                    (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Rev</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Edited By</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Summary</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Created At</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Diff</th></tr></thead>~%")
                     (format t "<tbody>~%")
                     (dolist (row rows)
                       (let ((rev-no (first row))
@@ -1643,6 +1719,15 @@
                         (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape edited-by))
                         (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape edit-summary))
                         (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape created-at))
+                        (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">")
+                        (if (string= rev-no latest-rev)
+                            (format t "<small>latest</small>")
+                            (format t "<a href=\"~A/~A/compare/~A/~A\">vs latest</a>"
+                                    base
+                                    (html-escape slug)
+                                    (html-escape rev-no)
+                                    (html-escape latest-rev)))
+                        (format t "</td>~%")
                         (format t "</tr>~%")))
                     (format t "</tbody></table>~%")))
               (print-layout-foot))))))
@@ -1676,7 +1761,85 @@
                 (format t "<article class=\"wiki-body\">~A</article>~%" body-html)
                 (format t "<h2>Markdown Source</h2>~%")
                 (format t "<pre>~A</pre>~%" (html-escape body-md))
+                (if (admin-p)
+                    (progn
+                      (format t "<form method=\"post\" action=\"~A/~A/revisions/~A/rollback\" style=\"margin-top:1rem\">~%"
+                              base
+                              (html-escape slug)
+                              (html-escape found-rev-no))
+                      (render-csrf-hidden-input)
+                      (format t "<button type=\"submit\" onclick=\"return confirm('Rollback page to revision ~A?');\">Rollback To This Revision</button>~%" (html-escape found-rev-no))
+                      (format t "</form>~%"))
+                    nil)
                 (print-layout-foot)))))))
+
+(defun render-compare-view (db slug left-rev-no right-rev-no)
+  (if (not (slug-safe-p slug))
+      (render-not-found)
+      (let ((left-rev (fetch-page-revision db slug left-rev-no))
+            (right-rev (fetch-page-revision db slug right-rev-no))
+            (base (app-base)))
+        (if (or (null left-rev) (null right-rev))
+            (render-not-found)
+            (let ((left-title (second left-rev))
+                  (left-body (third left-rev))
+                  (right-title (second right-rev))
+                  (right-body (third right-rev)))
+              (print-headers-ok)
+              (print-layout-head (string-append "Compare Revisions: " slug))
+              (format t "<h1>Compare Revisions</h1>~%")
+              (format t "<p><a href=\"~A/~A/history\">History</a> | <a href=\"~A/~A\">Current page</a></p>~%"
+                      base (html-escape slug) base (html-escape slug))
+              (format t "<p><small>left rev: <code>~A</code> / right rev: <code>~A</code></small></p>~%"
+                      (html-escape left-rev-no)
+                      (html-escape right-rev-no))
+              (format t "<h2>Title</h2>~%")
+              (render-diff-table left-title right-title)
+              (format t "<h2>Body</h2>~%")
+              (render-diff-table left-body right-body)
+              (print-layout-foot))))))
+
+(defun rollback-page-to-revision (db slug rev-no)
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((rev (fetch-page-revision db slug rev-no)))
+          (if (null rev)
+              (render-not-found)
+              (let* ((title (second rev))
+                     (body-md (third rev))
+                     (target-rev-no (first rev))
+                     (sql
+                      (string-append
+                       "with updated as ("
+                       "  update pages "
+                       "     set title = '" (sql-escape title) "',"
+                       "         body_md = '" (sql-escape body-md) "',"
+                       "         last_edited_by = '" (sql-escape (current-username)) "',"
+                       "         current_rev_no = current_rev_no + 1 "
+                       "   where slug = '" (sql-escape slug) "' "
+                       "  returning id, current_rev_no"
+                       ") "
+                       "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+                       "select u.id, u.current_rev_no, '"
+                       (sql-escape title)
+                       "', '"
+                       (sql-escape body-md)
+                       "', '" (sql-escape (current-username)) "', '"
+                       (sql-escape (string-append "rollback to rev " target-rev-no))
+                       "' from updated u")))
+                (postgres-exec db sql)
+                (write-audit-log
+                 db
+                 "page.rollback"
+                 "page"
+                 slug
+                 (make-audit-meta-4
+                  "rollback_to_rev" target-rev-no
+                  "title" title
+                  "edited_by" (current-username)
+                  "edit_summary" (string-append "rollback to rev " target-rev-no)))
+                (render-see-other (string-append (app-base) "/" slug))))))))
 
 (defun save-page (db slug)
   (if (or (not (slug-safe-p slug)) (reserved-slug-p slug))
@@ -2300,6 +2463,20 @@
                ((and (string= (second segments) "revisions")
                      (not (blank-text-p (third segments))))
                 (render-revision-view db (first segments) (third segments)))
+               (t
+                (render-not-found))))
+             ((= n 4)
+              (cond
+               ((and (string= (second segments) "compare")
+                     (not (blank-text-p (third segments)))
+                     (not (blank-text-p (fourth segments))))
+                (render-compare-view db (first segments) (third segments) (fourth segments)))
+               ((and (string= (second segments) "revisions")
+                     (string= (fourth segments) "rollback")
+                     (not (blank-text-p (third segments))))
+                (if (string= method "POST")
+                    (rollback-page-to-revision db (first segments) (third segments))
+                    (render-not-found)))
                (t
                 (render-not-found))))
              (t

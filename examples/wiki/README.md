@@ -17,6 +17,7 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/{slug}/edit` : 編集画面（POSTで保存可能）
 - `/wiki/{slug}/history` : 編集履歴一覧
 - `/wiki/{slug}/revisions/{rev_no}` : 過去版表示
+- `/wiki/{slug}/compare/{left_rev_no}/{right_rev_no}` : 2リビジョン比較
 - `/wiki/new` : 新規ページ作成（POSTで保存可能）
 - `/wiki/media` : メディア一覧（任意ファイル。画像/動画/音声は埋め込み表示）
 - `/wiki/media/new` : メディア追加（POSTで保存）
@@ -125,6 +126,7 @@ http://localhost:8080/wiki/home
 http://localhost:8080/wiki/home/edit
 http://localhost:8080/wiki/home/history
 http://localhost:8080/wiki/home/revisions/1
+http://localhost:8080/wiki/home/compare/1/3
 http://localhost:8080/wiki/new
 http://localhost:8080/wiki/media
 http://localhost:8080/wiki/media/new
@@ -145,6 +147,8 @@ http://localhost:8080/wiki/login
 - ページ作成/編集、メディア追加/削除、backup/restore は監査ログに記録される
 - 監査ログは `/wiki/admin/audit` で最新100件を参照できる
 - 編集画面は `current_rev_no` を保持し、競合時は保存せず比較画面を表示する
+- 履歴一覧から各リビジョンの `vs latest` で最新版との差分を参照できる
+- ロールバックは `/wiki/{slug}/revisions/{rev_no}` から `admin` のみ実行でき、新しい履歴として保存される
 
 保存（POST）確認例:
 
