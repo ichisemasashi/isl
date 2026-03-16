@@ -75,10 +75,10 @@
                 "unknown")))))
 
 (defun ws-uname-s ()
-  (os-command-output "uname -s"))
+  (os-uname-s))
 
 (defun ws-validate-platform ()
-  (let ((required '("sh" "test" "dirname" "basename" "uname" "sleep" "kill" "date" "stat"))
+  (let ((required '("sh" "dirname" "basename" "sleep" "kill" "stat"))
         (os (ws-detect-os-family (ws-uname-s))))
     (while (not (null required))
       (if (ws-command-available-p (car required))
@@ -158,13 +158,10 @@
         (ws-canonicalize-absolute-path abs))))
 
 (defun ws-dir-exists-p (path)
-  (let ((cmd (string-append "test -d " (ws-shell-quote path))))
-    (= (system cmd) 0)))
+  (os-test-dir-p path))
 
 (defun ws-file-readable-p (path)
-  (let ((cmd (string-append "test -f " (ws-shell-quote path)
-                            " && test -r " (ws-shell-quote path))))
-    (= (system cmd) 0)))
+  (os-test-file-readable-p path))
 
 (defun ws-integer-value-p (x)
   (and (numberp x)

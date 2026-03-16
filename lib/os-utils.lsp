@@ -124,6 +124,21 @@
 (defun os-file-executable-p (path)
   (= (system (string-append "sh -c 'test -x " (osu-shell-quote path) " >/dev/null 2>&1'")) 0))
 
+(defun os-test-dir-p (path)
+  (= (system (string-append "test -d " (osu-shell-quote path))) 0))
+
+(defun os-test-file-readable-p (path)
+  (= (system (string-append "test -f " (osu-shell-quote path)
+                            " && test -r " (osu-shell-quote path)))
+     0))
+
+(defun os-test-symlink-p (path)
+  (= (system (string-append "test -L " (osu-shell-quote path))) 0))
+
+(defun os-uname-s ()
+  (let ((v (osu-trim (osu-command-output "uname -s"))))
+    (if (= (length v) 0) "unknown" v)))
+
 (defun os-mkdir-p (path)
   (= (system (string-append "mkdir -p " (osu-shell-quote path))) 0))
 
@@ -234,6 +249,23 @@
 
 (defun os-date-utc-iso8601 ()
   (os-date-utc-format "+%Y-%m-%dT%H:%M:%SZ"))
+
+(defun os-date-http-from-epoch (os-family epoch-sec)
+  (let* ((fmt "'%a, %d %b %Y %H:%M:%S GMT'")
+         (cmd (if (string= os-family "linux")
+                  (string-append "date -u -d @" (format nil "~A" epoch-sec) " +" fmt)
+                  (string-append "date -u -r " (format nil "~A" epoch-sec) " +" fmt))))
+    (osu-trim (osu-command-output cmd))))
+
+(defun os-epoch-from-http-date (os-family http-date)
+  (let* ((cmd (if (string= os-family "linux")
+                  (string-append "date -u -d " (osu-shell-quote http-date) " +%s")
+                  (string-append "date -ju -f '%a, %d %b %Y %H:%M:%S GMT' "
+                                 (osu-shell-quote http-date)
+                                 " +%s")))
+         (out (osu-trim (osu-command-output cmd)))
+         (n (osu-parse-int-safe out)))
+    (if (null n) '() n)))
 
 (defun os-generate-token ()
   (setq *os-utils-token-counter* (+ *os-utils-token-counter* 1))
