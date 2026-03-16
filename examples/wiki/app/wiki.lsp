@@ -675,6 +675,30 @@
         (setq line (read-line s #f)))
       acc)))
 
+(defun capture-request-body-to-file (path)
+  (system (string-append "cat > " (shell-quote path))))
+
+(defun request-content-type ()
+  (env-or-empty "CONTENT_TYPE"))
+
+(defun multipart-boundary (content-type)
+  (let ((marker "boundary="))
+    (let ((p (string-index marker content-type)))
+      (if (null p)
+          ""
+          (trim-ws (substring content-type (+ p (length marker)) (length content-type)))))))
+
+(defun multipart-helper-path ()
+  "./examples/wiki/app/multipart_extract.pl")
+
+(defun multipart-field-path (dir field-name)
+  (string-append dir "/field-" field-name ".txt"))
+
+(defun read-optional-file-text (path)
+  (if (null (probe-file path))
+      ""
+      (read-file-text path)))
+
 (defun hex-digit-value (ch)
   (let ((p (string-index ch "0123456789")))
     (if (null p)
@@ -1688,7 +1712,10 @@
 	                  (format t "<p><a href=\"~A/~A/history\">History</a></p>~%" base (html-escape slug))
 	                  nil)
 	              (if (editor-or-admin-p)
-	                  (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
+	                  (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new?page_slug=~A\">Attach Media To This Page</a></p>~%"
+                                  base
+                                  base
+                                  (html-escape (url-encode-lite slug)))
 	                  nil)
                   (if (editor-or-admin-p)
                       (progn
@@ -2154,22 +2181,51 @@
               (render-file-not-found)
               (render-media-file-stream storage-path mime-type))))))
 
-(defun render-media-new ()
-  (let ((base (app-base)))
+(defun render-page-slug-datalist (rows)
+  (format t "<datalist id=\"page-slugs\">~%")
+  (dolist (row rows)
+    (format t "<option value=\"~A\">~A</option>~%"
+            (html-escape (first row))
+            (html-escape (second row))))
+  (format t "</datalist>~%"))
+
+(defun render-media-new (db)
+  (let ((base (app-base))
+        (rows (fetch-pages db))
+        (prefill-page-slug (query-param "page_slug")))
     (print-headers-ok)
     (print-layout-head "Add Media")
     (format t "<h1>Add Media</h1>~%")
-    (format t "<p>サーバー上のファイルをストレージへコピーし、メタ情報をDBに保存します。</p>~%")
-    (format t "<form method=\"post\" action=\"~A/media/new\">~%" base)
+    (format t "<p>ブラウザからファイルをアップロードして、メディアライブラリへ登録します。</p>~%")
+    (render-page-slug-datalist rows)
+    (format t "<form method=\"post\" action=\"~A/media/new\" enctype=\"multipart/form-data\">~%" base)
     (render-csrf-hidden-input)
-    (format t "  <p><label>Source Path (server local)<br><input type=\"text\" name=\"source_path\" value=\"\" style=\"width:100%\" placeholder=\"/path/to/file.png\"></label></p>~%")
+    (format t "  <p><label>Upload File<br><input type=\"file\" name=\"upload_file\" required></label></p>~%")
     (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
-    (format t "  <p><label>Page Slug (optional)<br><input type=\"text\" name=\"page_slug\" value=\"\" style=\"width:100%\" placeholder=\"home\"></label></p>~%")
+    (format t "  <p><label>Attach To Page (optional)<br><input type=\"text\" name=\"page_slug\" value=\"~A\" style=\"width:100%\" list=\"page-slugs\" placeholder=\"home\"></label></p>~%"
+            (html-escape prefill-page-slug))
+    (format t "  <p><small>既存ページに紐付けると、そのページの添付一覧に表示されます。</small></p>~%")
     (format t "  <p><label>Media Type<br><select name=\"media_type\"><option value=\"\">auto</option><option value=\"image\">image</option><option value=\"video\">video</option><option value=\"audio\">audio</option><option value=\"file\">file</option></select></label></p>~%")
     (format t "  <p><label>MIME Type (optional)<br><input type=\"text\" name=\"mime_type\" value=\"\" style=\"width:100%\" placeholder=\"application/pdf\"></label></p>~%")
     (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"add media\" style=\"width:100%\"></label></p>~%")
     (format t "  <p><button type=\"submit\">Add Media</button></p>~%")
     (format t "</form>~%")
+    (if (admin-p)
+        (progn
+          (format t "<hr>~%")
+          (format t "<h2>Admin Only: Register From Server Path</h2>~%")
+          (format t "<form method=\"post\" action=\"~A/media/new\">~%" base)
+          (render-csrf-hidden-input)
+          (format t "  <p><label>Source Path (server local)<br><input type=\"text\" name=\"source_path\" value=\"\" style=\"width:100%\" placeholder=\"/path/to/file.png\"></label></p>~%")
+          (format t "  <p><label>Title<br><input type=\"text\" name=\"title\" value=\"\" style=\"width:100%\"></label></p>~%")
+          (format t "  <p><label>Attach To Page (optional)<br><input type=\"text\" name=\"page_slug\" value=\"~A\" style=\"width:100%\" list=\"page-slugs\" placeholder=\"home\"></label></p>~%"
+                  (html-escape prefill-page-slug))
+          (format t "  <p><label>Media Type<br><select name=\"media_type\"><option value=\"\">auto</option><option value=\"image\">image</option><option value=\"video\">video</option><option value=\"audio\">audio</option><option value=\"file\">file</option></select></label></p>~%")
+          (format t "  <p><label>MIME Type (optional)<br><input type=\"text\" name=\"mime_type\" value=\"\" style=\"width:100%\" placeholder=\"application/pdf\"></label></p>~%")
+          (format t "  <p><label>Edit Summary<br><input type=\"text\" name=\"edit_summary\" value=\"add media\" style=\"width:100%\"></label></p>~%")
+          (format t "  <p><button type=\"submit\">Register From Source Path</button></p>~%")
+          (format t "</form>~%"))
+        nil)
     (print-layout-foot)))
 
 (defun path-under-dir-p (path dir)
@@ -2241,6 +2297,197 @@
           "restore_media" (if restore-media "true" "false")))
         nil)
     result))
+
+(defun persist-media-record (db page-slug media-type title original-filename stored-name mime-type storage-path public-url edit-summary)
+  (let ((page-id-sql
+         (if (blank-text-p page-slug)
+             "NULL"
+             (if (null (fetch-page db page-slug))
+                 ""
+                 (string-append "(select id from pages where slug='" (sql-escape page-slug) "' limit 1)")))))
+    (if (string= page-id-sql "")
+        "page_slug not found"
+        (progn
+          (postgres-exec
+           db
+           (string-append
+            "insert into media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) values ("
+            page-id-sql ", '"
+            (sql-escape media-type) "', '"
+            (sql-escape title) "', '"
+            (sql-escape original-filename) "', '"
+            (sql-escape stored-name) "', '"
+            (sql-escape mime-type) "', '"
+            (sql-escape storage-path) "', '"
+            (sql-escape public-url) "', '" (sql-escape (current-username)) "')"))
+          (if (or (blank-text-p edit-summary) (blank-text-p page-slug))
+              nil
+              (postgres-exec
+               db
+               (string-append
+                "with updated as ("
+                "  update pages "
+                "     set current_rev_no = current_rev_no + 1,"
+                "         last_edited_by = '" (sql-escape (current-username)) "' "
+                "   where slug='" (sql-escape page-slug) "' "
+                "  returning id, title, body_md, current_rev_no"
+                ") "
+                "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
+                "select u.id, u.current_rev_no, u.title, u.body_md, '" (sql-escape (current-username)) "', '"
+                (sql-escape edit-summary)
+                "' from updated u")))
+          (write-audit-log
+           db
+           "media.create"
+           "media"
+           stored-name
+           (make-audit-meta-3
+            "title" title
+            "page_slug" page-slug
+            "stored_filename" stored-name))
+          ""))))
+
+(defun move-upload-into-media-dir (temp-path stored-name)
+  (let ((dest-path (string-append (media-root-dir) "/" stored-name)))
+    (ensure-media-dir)
+    (let ((mv-status (system (string-append "mv " (shell-quote temp-path) " " (shell-quote dest-path)))))
+      (if (= mv-status 0)
+          (progn
+            (system (string-append "chmod 644 " (shell-quote dest-path)))
+            dest-path)
+          ""))))
+
+(defun create-media-from-source-path (db raw-body)
+  (let* ((source-path (parse-form-field raw-body "source_path"))
+         (title (parse-form-field raw-body "title"))
+         (page-slug (parse-form-field raw-body "page_slug"))
+         (media-type-input (parse-form-field raw-body "media_type"))
+         (mime-type-input (parse-form-field raw-body "mime_type"))
+         (edit-summary (parse-form-field raw-body "edit_summary")))
+    (if (not (admin-p))
+        (render-forbidden "source_path mode is admin only")
+        (if (blank-text-p source-path)
+            (render-bad-request "source_path must not be blank")
+            (if (null (probe-file source-path))
+                (render-bad-request "source file not found")
+                (let* ((base-name (basename source-path))
+                       (safe-name (sanitize-filename base-name))
+                       (media-type (if (blank-text-p media-type-input)
+                                       (infer-media-type base-name)
+                                       media-type-input))
+                       (mime-type (if (blank-text-p mime-type-input)
+                                      (infer-mime-type base-name media-type)
+                                      mime-type-input))
+                       (stored-name (string-append
+                                     (format nil "~A" (get-universal-time))
+                                     "-"
+                                     (format nil "~A" *markdown-temp-counter*)
+                                     "-"
+                                     safe-name))
+                       (storage-path (string-append (media-root-dir) "/" stored-name))
+                       (public-url (media-delivery-url stored-name)))
+                  (if (not (valid-media-type-p media-type))
+                      (render-bad-request "media_type must be image/video/audio/file")
+                      (progn
+                        (ensure-media-dir)
+                        (let ((copy-status (system (string-append "cp " (shell-quote source-path) " " (shell-quote storage-path)))))
+                          (if (= copy-status 0)
+                              (progn
+                                (system (string-append "chmod 644 " (shell-quote storage-path)))
+                                (let ((err (persist-media-record db page-slug media-type title base-name stored-name mime-type storage-path public-url edit-summary)))
+                                  (if (string= err "")
+                                      (render-see-other (string-append (app-base) "/media"))
+                                      (progn
+                                        (safe-delete-file storage-path)
+                                        (render-bad-request err)))))
+                              (render-bad-request "file copy failed")))))))))))
+
+(defun create-media-from-multipart (db)
+  (let* ((content-type (request-content-type))
+         (boundary (multipart-boundary content-type))
+         (temp-base (next-temp-base))
+         (body-path (string-append temp-base ".body"))
+         (work-dir (string-append temp-base "-upload")))
+    (if (blank-text-p boundary)
+        (render-bad-request "multipart boundary not found")
+        (let ((capture-status (capture-request-body-to-file body-path)))
+          (if (not (= capture-status 0))
+              (render-bad-request "failed to receive upload body")
+              (progn
+                (system (string-append "mkdir -p " (shell-quote work-dir)))
+                (let ((parse-status
+                       (system
+                        (string-append
+                         "perl "
+                         (shell-quote (multipart-helper-path))
+                         " "
+                         (shell-quote body-path)
+                         " "
+                         (shell-quote work-dir)
+                         " "
+                         (shell-quote boundary)))))
+                  (if (not (= parse-status 0))
+                      (render-bad-request "failed to parse multipart upload")
+                      (let* ((csrf-token (read-optional-file-text (multipart-field-path work-dir "csrf_token")))
+                             (title (read-optional-file-text (multipart-field-path work-dir "title")))
+                             (page-slug (read-optional-file-text (multipart-field-path work-dir "page_slug")))
+                             (media-type-input (read-optional-file-text (multipart-field-path work-dir "media_type")))
+                             (mime-type-input (read-optional-file-text (multipart-field-path work-dir "mime_type")))
+                             (edit-summary (read-optional-file-text (multipart-field-path work-dir "edit_summary")))
+                             (upload-temp-path (string-append work-dir "/upload.bin"))
+                             (upload-filename (read-optional-file-text (string-append work-dir "/upload_filename.txt")))
+                             (upload-content-type (read-optional-file-text (string-append work-dir "/upload_content_type.txt"))))
+                        (if (or (blank-text-p csrf-token)
+                                (blank-text-p (current-csrf-token))
+                                (not (string= csrf-token (current-csrf-token))))
+                            (render-forbidden "invalid csrf_token")
+                            (if (or (blank-text-p upload-filename)
+                                    (null (probe-file upload-temp-path)))
+                                (render-bad-request "upload_file must be provided")
+                                (let* ((safe-name (sanitize-filename (basename upload-filename)))
+                                       (media-type
+                                        (if (blank-text-p media-type-input)
+                                            (infer-media-type safe-name)
+                                            media-type-input))
+                                       (mime-type
+                                        (if (blank-text-p mime-type-input)
+                                            (if (blank-text-p upload-content-type)
+                                                (infer-mime-type safe-name media-type)
+                                                upload-content-type)
+                                            mime-type-input))
+                                       (stored-name
+                                        (string-append
+                                         "upload-"
+                                         (format nil "~A" (get-universal-time))
+                                         "-"
+                                         (format nil "~A" *markdown-temp-counter*)
+                                         "-"
+                                         safe-name)))
+                                  (if (not (valid-media-type-p media-type))
+                                      (render-bad-request "media_type must be image/video/audio/file")
+                                      (let* ((storage-path (move-upload-into-media-dir upload-temp-path stored-name))
+                                             (public-url (media-delivery-url stored-name))
+                                             (err
+                                              (if (blank-text-p storage-path)
+                                                  "failed to store uploaded file"
+                                                  (persist-media-record
+                                                   db
+                                                   page-slug
+                                                   media-type
+                                                   title
+                                                   upload-filename
+                                                   stored-name
+                                                   mime-type
+                                                   storage-path
+                                                   public-url
+                                                   edit-summary))))
+                                        (if (string= err "")
+                                            (render-see-other (string-append (app-base) "/media"))
+                                            (progn
+                                              (if (blank-text-p storage-path)
+                                                  nil
+                                                  (safe-delete-file storage-path))
+                                              (render-bad-request err)))))))))))))))))
 
 (defun render-admin-home ()
   (let ((base (app-base)))
@@ -2360,89 +2607,15 @@
                 (print-layout-foot)))))))
 
 (defun create-media (db)
-  (let ((raw-body (read-form-body-or-render t)))
-    (if (null raw-body)
-        nil
-        (let* ((source-path (parse-form-field raw-body "source_path"))
-               (title (parse-form-field raw-body "title"))
-               (page-slug (parse-form-field raw-body "page_slug"))
-               (media-type-input (parse-form-field raw-body "media_type"))
-               (mime-type-input (parse-form-field raw-body "mime_type"))
-               (edit-summary (parse-form-field raw-body "edit_summary")))
-          (if (blank-text-p source-path)
-              (render-bad-request "source_path must not be blank")
-              (if (null (probe-file source-path))
-                  (render-bad-request "source file not found")
-                  (let* ((base-name (basename source-path))
-                         (safe-name (sanitize-filename base-name))
-                         (media-type (if (blank-text-p media-type-input)
-                                         (infer-media-type base-name)
-                                         media-type-input))
-                         (mime-type (if (blank-text-p mime-type-input)
-                                        (infer-mime-type base-name media-type)
-                                        mime-type-input))
-                         (stored-name (string-append
-                                       (format nil "~A" (get-universal-time))
-                                       "-"
-                                       (format nil "~A" *markdown-temp-counter*)
-                                       "-"
-                                       safe-name))
-                         (storage-path (string-append (media-root-dir) "/" stored-name))
-                         (public-url (media-delivery-url stored-name))
-                         (page-id-sql
-                          (if (blank-text-p page-slug)
-                              "NULL"
-                              (if (null (fetch-page db page-slug))
-                                  ""
-                                  (string-append "(select id from pages where slug='" (sql-escape page-slug) "' limit 1)")))))
-                    (if (string= page-id-sql "")
-                        (render-bad-request "page_slug not found")
-                        (if (not (valid-media-type-p media-type))
-                            (render-bad-request "media_type must be image/video/audio/file")
-                            (progn
-                              (ensure-media-dir)
-                              (let ((copy-status (system (string-append "cp " (shell-quote source-path) " " (shell-quote storage-path)))))
-                                (if (= copy-status 0)
-                                    (progn
-                                      (system (string-append "chmod 644 " (shell-quote storage-path)))
-	                                      (let ((sql (string-append
-	                                                  "insert into media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) values ("
-	                                                  page-id-sql ", '"
-	                                                  (sql-escape media-type) "', '"
-                                                  (sql-escape title) "', '"
-                                                  (sql-escape base-name) "', '"
-	                                                  (sql-escape stored-name) "', '"
-	                                                  (sql-escape mime-type) "', '"
-	                                                  (sql-escape storage-path) "', '"
-	                                                  (sql-escape public-url) "', '" (sql-escape (current-username)) "')")))
-	                                        (postgres-exec db sql)
-	                                        (if (blank-text-p edit-summary)
-	                                            nil
-	                                            (postgres-exec
-	                                             db
-	                                             (string-append
-	                                              "with updated as ("
-	                                              "  update pages "
-	                                              "     set current_rev_no = current_rev_no + 1,"
-	                                              "         last_edited_by = '" (sql-escape (current-username)) "' "
-	                                              "   where slug='" (sql-escape page-slug) "' "
-	                                              "  returning id, title, body_md, current_rev_no"
-	                                              ") "
-	                                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-	                                              "select u.id, u.current_rev_no, u.title, u.body_md, '" (sql-escape (current-username)) "', '"
-	                                              (sql-escape edit-summary)
-	                                              "' from updated u")))
-                                        (write-audit-log
-                                         db
-                                         "media.create"
-                                         "media"
-                                         stored-name
-                                         (make-audit-meta-3
-                                          "title" title
-                                          "page_slug" page-slug
-                                          "stored_filename" stored-name))
-                                        (render-see-other (string-append (app-base) "/media"))))
-                                    (render-bad-request "file copy failed")))))))))))))
+  (let ((content-type (request-content-type)))
+    (if (starts-with content-type "multipart/form-data")
+        (create-media-from-multipart db)
+        (if (starts-with content-type "application/x-www-form-urlencoded")
+            (let ((raw-body (read-form-body-or-render t)))
+              (if (null raw-body)
+                  nil
+                  (create-media-from-source-path db raw-body)))
+            (render-bad-request "CONTENT_TYPE must be multipart/form-data")))))
 
 (defun delete-media (db media-id)
   (let ((raw-body (read-form-body-or-render t)))
@@ -2653,7 +2826,7 @@
                 (if (string= (second segments) "new")
                     (if (string= method "POST")
                         (create-media db)
-                        (render-media-new))
+                        (render-media-new db))
                     (render-not-found)))
                ((string= (first segments) "files")
                 (render-media-file db (second segments)))

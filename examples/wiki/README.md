@@ -5,6 +5,7 @@ Wiki システムを段階的に構築するための実装です。
 
 ## ファイル構成
 - `app/wiki.lsp`: Webアプリ本体（MVP 3画面）
+- `app/multipart_extract.pl`: `multipart/form-data` の単一ファイル抽出ヘルパ
 - `cgi-bin/wiki.cgi`: Apache から呼ばれる CGI エントリ
 - `conf/httpd-wiki.conf`: httpd に include する設定例
 - `db/001_init.sql`: PostgreSQL 初期スキーマ
@@ -148,6 +149,8 @@ http://localhost:8080/wiki/login
 - `/wiki/{slug}/delete` は `editor` 以上、削除済みページ/メディアの復元は `admin` が必要
 - POST系操作はログイン済みユーザーのみ実行可能
 - 認証済みPOSTにはフォーム埋め込みの `csrf_token` が必須
+- `/wiki/media/new` はブラウザの `multipart/form-data` アップロードを受け付ける
+- 旧 `source_path` 登録は `admin` のみ利用可能
 - `/wiki/admin/backup` は確認語 `RUN BACKUP`、`/wiki/admin/restore` は `RESTORE WIKI` が必要
 - ページ作成/編集、メディア追加/削除、backup/restore は監査ログに記録される
 - 監査ログは `/wiki/admin/audit` で最新100件を参照できる
@@ -169,7 +172,13 @@ curl -i -X POST "http://localhost:8080/wiki/home/edit" \
   --data-urlencode "edit_summary=curl test"
 ```
 
-メディア追加（サーバー上のファイルを登録）例:
+メディア追加:
+
+- 通常は `/wiki/media/new` のブラウザフォームからアップロードします
+- 既存ページからは `Attach Media To This Page` で `page_slug` を引き継いで遷移できます
+- `source_path` を使う旧モードは `admin` 専用です
+
+管理者向け `source_path` 登録例:
 
 ```sh
 curl -i -X POST "http://localhost:8080/wiki/media/new" \
