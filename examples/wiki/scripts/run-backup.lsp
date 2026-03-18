@@ -1,6 +1,9 @@
-#!/Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl
+#!/Volumes/SD_ONE/work/dev/isl/bin/isl
 
 (load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/dbms/app/repr.lsp")
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/dbms/app/profile.lsp")
+(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/dbms/app/engine.lsp")
 
 (defun env-or-empty (name)
   (let ((v (getenv name)))
@@ -54,8 +57,8 @@
           nil))))
 
 (defun main ()
-  (let* ((db-url (let ((v (getenv "ISL_WIKI_DB_URL")))
-                   (if (null v) "postgresql://127.0.0.1:5432/isl_wiki" v)))
+  (let* ((db-root (let ((v (getenv "ISL_WIKI_DB_ROOT")))
+                    (if (null v) "./examples/dbms/storage/wiki" v)))
          (media-dir (let ((v (getenv "ISL_WIKI_MEDIA_DIR")))
                       (if (null v) "./examples/webserver/runtime/docroot/public/wiki-files" v)))
          (backup-dir (let ((v (getenv "ISL_WIKI_BACKUP_DIR")))
@@ -66,6 +69,8 @@
          (base (string-append backup-dir "/wiki-backup-" ts))
          (sql-path (string-append base ".sql"))
          (media-path (string-append base "-media.tar.gz")))
+    (setenv "DBMS_STORAGE_ROOT" db-root)
+    (dbms-set-active-profile *dbms-profile-wiki-compat-v1*)
     (os-mkdir-p backup-dir)
     (format t "backup_dir=~A~%" backup-dir)
     (format t "keep_count=~A~%" keep-count)
@@ -75,11 +80,8 @@
         (progn
           (format t "dry_run=true~%")
           (exit 0))
-        (let ((db-status (system (string-append "pg_dump --clean --if-exists "
-                                                (os-shell-quote db-url)
-                                                " > "
-                                                (os-shell-quote sql-path)))))
-          (if (not (= db-status 0))
+        (let ((db-result (dbms-wiki-backup sql-path)))
+          (if (not (string= (first db-result) "ok"))
               (exit 1)
               (let ((media-status (if (os-tar-create-gz media-path media-dir) 0 1)))
                 (if (not (= media-status 0))

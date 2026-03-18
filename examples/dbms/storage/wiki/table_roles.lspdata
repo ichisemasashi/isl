@@ -1,0 +1,1 @@
+(dbms-table-state "roles" ((dbms-row 1 (("name" "viewer") ("description" "Read-only wiki access"))) (dbms-row 2 (("name" "editor") ("description" "Can create and edit wiki content"))) (dbms-row 3 (("name" "admin") ("description" "Can manage wiki administration features")))) 4)

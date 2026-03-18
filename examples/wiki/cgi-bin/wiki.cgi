@@ -1,4 +1,4 @@
-#!/Volumes/SSD-PLU3/work/LISP/islisp/isl/bin/isl
+#!/Volumes/SD_ONE/work/dev/isl/bin/isl
 
 (defun env-or-empty (name)
   (let ((v (getenv name)))

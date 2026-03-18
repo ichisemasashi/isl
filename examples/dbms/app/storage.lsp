@@ -1,7 +1,13 @@
 ;; dbms/app/storage.lsp
 ;; 永続化層（MVP Core）。
 
-(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
+(load
+ (let ((v (getenv "ISL_ROOT")))
+   (string-append
+    (if (or (null v) (string= v ""))
+        "/Volumes/SSD-PLU3/work/LISP/islisp/isl"
+        v)
+    "/lib/os-utils.lsp")))
 (load "./examples/dbms/app/repr.lsp")
 
 (defglobal *dbms-storage-tmp-seq* 0)

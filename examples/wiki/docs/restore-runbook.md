@@ -11,7 +11,7 @@
 1. Restore the SQL dump:
 
 ```sh
-psql "$ISL_WIKI_DB_URL" -f /tmp/isl-wiki-backups/wiki-backup-XXXX.sql
+ISL_WIKI_DB_ROOT=./examples/dbms/storage/wiki ./bin/isl examples/wiki/scripts/run-backup.lsp
 ```
 
 2. Restore media files if required:
@@ -26,9 +26,9 @@ tar -xzf /tmp/isl-wiki-backups/wiki-backup-XXXX-media.tar.gz -C ./examples/webse
 ## Validation Commands
 
 ```sh
-psql "$ISL_WIKI_DB_URL" -c '\dt'
-psql "$ISL_WIKI_DB_URL" -c 'select count(*) as pages from pages;'
-psql "$ISL_WIKI_DB_URL" -c 'select count(*) as media_assets from media_assets;'
+ls -lh "$ISL_WIKI_DB_ROOT"
+cat "$ISL_WIKI_DB_ROOT/catalog.lspdata"
+ls "$ISL_WIKI_DB_ROOT"/table_*.lspdata
 ls -lh /tmp/isl-wiki-backups
 curl -i http://localhost:8080/wiki/healthz
 curl -i http://localhost:8080/wiki/home

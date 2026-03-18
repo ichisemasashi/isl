@@ -1,0 +1,1 @@
+(dbms-table-state "pages" ((dbms-row 1 (("slug" "home") ("title" "Home") ("body_md" "# Welcome\\n\\nThis is the first wiki page.") ("last_edited_by" "system") ("current_rev_no" 1) ("status" "published") ("id" 1) ("created_at" "3982803689") ("updated_at" "3982803689") ("deleted_at" NULL) ("deleted_by" NULL)))) 2)

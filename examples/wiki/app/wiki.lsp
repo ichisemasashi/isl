@@ -17,6 +17,9 @@
   (string-append (wiki-root) suffix))
 
 (load (wiki-path "/lib/os-utils.lsp"))
+(load (wiki-path "/examples/dbms/app/repr.lsp"))
+(load (wiki-path "/examples/dbms/app/profile.lsp"))
+(load (wiki-path "/examples/dbms/app/engine.lsp"))
 
 (defun request-method ()
   (let ((m (env-or-empty "REQUEST_METHOD")))
@@ -798,8 +801,203 @@
       (format t "<p><a href=\"~A\" download>Download file</a></p>~%"
               (html-escape media-url))))))
 
-(defun db-url ()
-  (wiki-config-get "db_url" "postgresql://127.0.0.1:5432/isl_wiki"))
+(defun db-root ()
+  (let ((v (getenv "ISL_WIKI_DB_ROOT")))
+    (if (or (null v) (= (length v) 0))
+        (wiki-config-get "db_root" "./examples/dbms/storage/wiki")
+        v)))
+
+(defun db-display-target ()
+  (db-root))
+
+(defun configure-dbms-root ()
+  (setenv "DBMS_STORAGE_ROOT" (db-root))
+  (dbms-set-active-profile *dbms-profile-wiki-compat-v1*))
+
+(defun db-result-error-message (result fallback)
+  (if (and (dbms-result-p result)
+           (eq (second result) 'error)
+           (dbms-error-p (third result)))
+      (third (third result))
+      fallback))
+
+(defun db-exec! (catalog sql)
+  (configure-dbms-root)
+  (let ((result (dbms-exec-sql (dbms-engine-init) sql)))
+    (if (and (dbms-result-p result)
+             (not (eq (second result) 'error)))
+        result
+        (error (db-result-error-message result "dbms exec failed") sql))))
+
+(defun db-table-rows (table-name)
+  (configure-dbms-root)
+  (let ((state (dbms-storage-load-table-rows table-name)))
+    (if (dbms-error-p state)
+        '()
+        (third state))))
+
+(defun db-row-value (row column-name)
+  (let ((v (dbms-row-get-value row column-name)))
+    (if (eq v 'NULL)
+        ""
+        (if (stringp v) v (format nil "~A" v)))))
+
+(defun db-row-nullable (row column-name)
+  (dbms-row-get-value row column-name))
+
+(defun db-now-text ()
+  (format nil "~A" (get-universal-time)))
+
+(defun db-bool-sql (flag)
+  (if flag "TRUE" "FALSE"))
+
+(defun db-text-sql (value)
+  (string-append "'" (sql-escape (safe-text value)) "'"))
+
+(defun db-nullable-text-sql (value)
+  (if (blank-text-p value)
+      "NULL"
+      (db-text-sql value)))
+
+(defun db-nullable-number-sql (value)
+  (if (null value)
+      "NULL"
+      (format nil "~A" value)))
+
+(defun visible-page-p (status)
+  (if (admin-p)
+      t
+      (if (editor-or-admin-p)
+          (or (string= status "draft") (string= status "published"))
+          (string= status "published"))))
+
+(defun value-string< (a b)
+  (string< (safe-text (format nil "~A" a)) (safe-text (format nil "~A" b))))
+
+(defun value< (a b)
+  (if (and (numberp a) (numberp b))
+      (< a b)
+      (value-string< a b)))
+
+(defun value> (a b)
+  (if (and (numberp a) (numberp b))
+      (> a b)
+      (value-string< b a)))
+
+(defun sort-rows-by-insert (row rows key-fn desc)
+  (if (null rows)
+      (list row)
+      (let ((left (funcall key-fn row))
+            (right (funcall key-fn (car rows))))
+        (if (if desc (value> left right) (value< left right))
+            (cons row rows)
+            (cons (car rows) (sort-rows-by-insert row (cdr rows) key-fn desc))))))
+
+(defun sort-rows-by (rows key-fn desc)
+  (if (null rows)
+      '()
+      (sort-rows-by-insert (car rows)
+                           (sort-rows-by (cdr rows) key-fn desc)
+                           key-fn
+                           desc)))
+
+(defun find-first-row (rows pred)
+  (if (null rows)
+      '()
+      (if (funcall pred (car rows))
+          (car rows)
+          (find-first-row (cdr rows) pred))))
+
+(defun filter-rows (rows pred)
+  (if (null rows)
+      '()
+      (if (funcall pred (car rows))
+          (cons (car rows) (filter-rows (cdr rows) pred))
+          (filter-rows (cdr rows) pred))))
+
+(defun table-row-by-id (table-name id)
+  (find-first-row
+   (db-table-rows table-name)
+   (lambda (row) (= (db-row-nullable row "id") id))))
+
+(defun find-page-row-any (slug)
+  (find-first-row
+   (db-table-rows "pages")
+   (lambda (row) (string= (db-row-value row "slug") slug))))
+
+(defun find-page-row-visible (slug)
+  (find-first-row
+   (db-table-rows "pages")
+   (lambda (row)
+     (and (string= (db-row-value row "slug") slug)
+          (string= (db-row-value row "deleted_at") "")
+          (visible-page-p (db-row-value row "status"))))))
+
+(defun find-user-row (username)
+  (find-first-row
+   (db-table-rows "users")
+   (lambda (row) (string= (db-row-value row "username") username))))
+
+(defun user-id-by-username (username)
+  (let ((row (find-user-row username)))
+    (if (null row) '() (db-row-nullable row "id"))))
+
+(defun page-id-by-slug (slug)
+  (let ((row (find-page-row-any slug)))
+    (if (null row) '() (db-row-nullable row "id"))))
+
+(defun string-contains-ci-p (needle haystack)
+  (not (null (string-index (ascii-downcase-string needle)
+                           (ascii-downcase-string haystack)))))
+
+(defun ensure-wiki-dbms-schema (catalog)
+  (dolist (sql
+           (list
+            "CREATE TABLE IF NOT EXISTS pages (id BIGSERIAL PRIMARY KEY, slug TEXT NOT NULL, title TEXT NOT NULL, body_md TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(), last_edited_by TEXT, current_rev_no INTEGER NOT NULL, deleted_at TIMESTAMPTZ, deleted_by TEXT, status TEXT NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS page_revisions (id BIGSERIAL PRIMARY KEY, page_id BIGINT NOT NULL, rev_no INTEGER NOT NULL, title TEXT NOT NULL, body_md TEXT NOT NULL, edited_by TEXT, edit_summary TEXT, created_at TIMESTAMPTZ DEFAULT now());"
+            "CREATE TABLE IF NOT EXISTS media_assets (id BIGSERIAL PRIMARY KEY, page_id BIGINT, media_type TEXT NOT NULL, title TEXT, original_filename TEXT NOT NULL, stored_filename TEXT NOT NULL, mime_type TEXT NOT NULL, storage_path TEXT NOT NULL, public_url TEXT NOT NULL, created_by TEXT, created_at TIMESTAMPTZ DEFAULT now(), deleted_at TIMESTAMPTZ, deleted_by TEXT);"
+            "CREATE TABLE IF NOT EXISTS roles (name TEXT PRIMARY KEY, description TEXT NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS users (id BIGSERIAL PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, role_name TEXT NOT NULL, enabled BOOL NOT NULL, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(), last_login_at TIMESTAMPTZ);"
+            "CREATE TABLE IF NOT EXISTS user_sessions (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, session_token TEXT NOT NULL, csrf_token TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now(), last_seen_at TIMESTAMPTZ DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ);"
+            "CREATE TABLE IF NOT EXISTS audit_logs (id BIGSERIAL PRIMARY KEY, actor_user_id BIGINT, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT, meta_json TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now());"
+            "CREATE TABLE IF NOT EXISTS page_tags (id BIGSERIAL PRIMARY KEY, page_id BIGINT NOT NULL, tag TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now());"
+            "CREATE TABLE IF NOT EXISTS backup_runs (id BIGSERIAL PRIMARY KEY, triggered_by_user_id BIGINT, mode TEXT NOT NULL, status TEXT NOT NULL, backup_dir TEXT, keep_count INTEGER, dry_run BOOL NOT NULL, sql_path TEXT, media_path TEXT, message TEXT, created_at TIMESTAMPTZ DEFAULT now(), completed_at TIMESTAMPTZ);"))
+    (db-exec! catalog sql))
+  (if (null (find-first-row (db-table-rows "roles") (lambda (row) (string= (db-row-value row "name") "viewer"))))
+      (db-exec! catalog "INSERT INTO roles (name, description) VALUES ('viewer', 'Read-only wiki access');")
+      nil)
+  (if (null (find-first-row (db-table-rows "roles") (lambda (row) (string= (db-row-value row "name") "editor"))))
+      (db-exec! catalog "INSERT INTO roles (name, description) VALUES ('editor', 'Can create and edit wiki content');")
+      nil)
+  (if (null (find-first-row (db-table-rows "roles") (lambda (row) (string= (db-row-value row "name") "admin"))))
+      (db-exec! catalog "INSERT INTO roles (name, description) VALUES ('admin', 'Can manage wiki administration features');")
+      nil)
+  (if (null (find-user-row "admin"))
+      (db-exec! catalog
+                "INSERT INTO users (username, display_name, password_hash, role_name, enabled) VALUES ('admin', 'Administrator', 'admin', 'admin', TRUE);")
+      nil)
+  (if (null (find-page-row-any "home"))
+      (progn
+        (db-exec! catalog
+                  "INSERT INTO pages (slug, title, body_md, last_edited_by, current_rev_no, status) VALUES ('home', 'Home', '# Welcome\\n\\nThis is the first wiki page.', 'system', 1, 'published');")
+        (let ((page-id (page-id-by-slug "home")))
+          (if (not (null page-id))
+              (db-exec! catalog
+                        (string-append
+                         "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
+                         (format nil "~A" page-id)
+                         ", 1, 'Home', '# Welcome\\n\\nThis is the first wiki page.', 'system', 'Initial page');"))
+              nil)))
+      nil))
+
+(defun db-open ()
+  (configure-dbms-root)
+  (handler-case
+    (progn
+      (ensure-wiki-dbms-schema (dbms-engine-init))
+      t)
+    (error (e)
+      t)))
 
 (defglobal *markdown-temp-counter* 0)
 
@@ -1118,7 +1316,8 @@
          (base (next-temp-base))
          (md-path (string-append base ".md"))
          (html-path (string-append base ".html"))
-         (cmd (string-append (shell-quote (md2html-bin))
+         (cmd (string-append "ISL_ROOT=" (shell-quote (wiki-root)) " "
+                             (shell-quote (md2html-bin))
                              " -o " (shell-quote html-path)
                              " " (shell-quote md-path))))
     (write-file-text md-path normalized-md)
@@ -1131,97 +1330,109 @@
           (progn
             (safe-delete-file md-path)
             (safe-delete-file html-path)
-            (error "md2html conversion failed" cmd status))))))
+            (string-append "<pre>" (html-escape normalized-md) "</pre>"))))))
 
 (defun fetch-pages (db)
-  (postgres-query
-   db
-   (string-append
-    "select p.slug, p.title, to_char(p.updated_at, 'YYYY-MM-DD HH24:MI:SS'), p.status "
-    "from pages p "
-    "where p.deleted_at is null "
-    "  and " (visible-page-status-sql "p") " "
-    "order by p.slug")))
+  (mapcar
+   (lambda (row)
+     (list (db-row-value row "slug")
+           (db-row-value row "title")
+           (db-row-value row "updated_at")
+           (db-row-value row "status")))
+   (sort-rows-by
+    (filter-rows
+     (db-table-rows "pages")
+     (lambda (row)
+       (and (string= (db-row-value row "deleted_at") "")
+            (visible-page-p (db-row-value row "status")))))
+    (lambda (row) (db-row-value row "slug"))
+    nil)))
 
 (defun fetch-pages-by-query (db q)
-  (postgres-query
-   db
-   (string-append
-    "select p.slug, p.title, to_char(p.updated_at, 'YYYY-MM-DD HH24:MI:SS'), "
-    "coalesce(ts_headline('simple', p.body_md, plainto_tsquery('simple', '" (sql-escape q) "'), "
-    "'MaxFragments=2,MinWords=6,MaxWords=20,StartSel=<mark>,StopSel=</mark>'), ''), "
-    "coalesce((select string_agg(pt.tag, ', ' order by pt.tag) from page_tags pt where pt.page_id = p.id), ''), "
-    "p.status "
-    "from pages p "
-    "where p.deleted_at is null "
-    "  and " (visible-page-status-sql "p") " "
-    "  and (p.search_vector @@ plainto_tsquery('simple', '" (sql-escape q) "') "
-    "       or position(lower('" (sql-escape q) "') in lower(p.title)) > 0) "
-    "order by "
-    "  case when position(lower('" (sql-escape q) "') in lower(p.title)) > 0 then 0 else 1 end, "
-    "  ts_rank_cd(p.search_vector, plainto_tsquery('simple', '" (sql-escape q) "')) desc, "
-    "  p.updated_at desc, p.slug")))
+  (fetch-pages-by-query-filtered db q "" ""))
 
 (defun fetch-pages-by-query-filtered (db q tag status)
-  (postgres-query
-   db
-   (string-append
-    "select p.slug, p.title, to_char(p.updated_at, 'YYYY-MM-DD HH24:MI:SS'), "
-    "coalesce(ts_headline('simple', p.body_md, plainto_tsquery('simple', '" (sql-escape q) "'), "
-    "'MaxFragments=2,MinWords=6,MaxWords=20,StartSel=<mark>,StopSel=</mark>'), ''), "
-    "coalesce((select string_agg(pt.tag, ', ' order by pt.tag) from page_tags pt where pt.page_id = p.id), ''), "
-    "p.status "
-    "from pages p "
-    "where p.deleted_at is null "
-    "  and " (visible-page-status-sql "p") " "
-    (if (blank-text-p status)
-        ""
-        (string-append "  and p.status = '" (sql-escape status) "' "))
-    (if (blank-text-p tag)
-        ""
-        (string-append "  and exists (select 1 from page_tags ptf where ptf.page_id = p.id and ptf.tag = '" (sql-escape tag) "') "))
-    "  and (p.search_vector @@ plainto_tsquery('simple', '" (sql-escape q) "') "
-    "       or position(lower('" (sql-escape q) "') in lower(p.title)) > 0) "
-    "order by "
-    "  case when position(lower('" (sql-escape q) "') in lower(p.title)) > 0 then 0 else 1 end, "
-    "  ts_rank_cd(p.search_vector, plainto_tsquery('simple', '" (sql-escape q) "')) desc, "
-    "  p.updated_at desc, p.slug")))
+  (let ((matched '())
+        (needle (ascii-downcase-string q)))
+    (dolist (row (db-table-rows "pages"))
+      (let ((page-id (db-row-nullable row "id"))
+            (page-status (db-row-value row "status")))
+        (if (and (string= (db-row-value row "deleted_at") "")
+                 (visible-page-p page-status)
+                 (or (blank-text-p status) (string= page-status status))
+                 (or (blank-text-p tag)
+                     (not (null (find-first-row
+                                 (db-table-rows "page_tags")
+                                 (lambda (tag-row)
+                                   (and (= (db-row-nullable tag-row "page_id") page-id)
+                                        (string= (db-row-value tag-row "tag") tag))))))
+                 )
+                 (or (blank-text-p needle)
+                     (string-contains-ci-p needle (db-row-value row "title"))
+                     (string-contains-ci-p needle (db-row-value row "body_md"))))
+            (setq matched (cons row matched))
+            nil)))
+    (setq matched
+          (sort-rows-by matched
+                        (lambda (row)
+                          (if (string-contains-ci-p needle (db-row-value row "title")) 0 1))
+                        nil))
+    (setq matched (sort-rows-by matched (lambda (row) (db-row-value row "updated_at")) t))
+    (mapcar
+     (lambda (row)
+       (list (db-row-value row "slug")
+             (db-row-value row "title")
+             (db-row-value row "updated_at")
+             ""
+             (fetch-page-tags-text db (db-row-value row "slug"))
+             (db-row-value row "status")))
+     matched)))
 
 (defun fetch-search-tags (db)
-  (postgres-query
-   db
-   (string-append
-    "select distinct tag from page_tags order by tag")))
+  (let ((seen '())
+        (out '()))
+    (dolist (row (db-table-rows "page_tags"))
+      (let ((tag (db-row-value row "tag")))
+        (if (null (find-first-row seen (lambda (v) (string= v tag))))
+            (progn
+              (setq seen (cons tag seen))
+              (setq out (cons (list tag) out)))
+            nil)))
+    (sort-rows-by out (lambda (row) (first row)) nil)))
 
 (defun fetch-page (db slug)
-  (let* ((sql (string-append
-                "select slug, title, body_md, current_rev_no, status "
-                "from pages where slug='" (sql-escape slug) "' and deleted_at is null "
-                "  and " (visible-page-status-sql "pages") " limit 1"))
-         (rows (postgres-query db sql)))
-    (if (null rows)
+  (let ((row (find-page-row-visible slug)))
+    (if (null row)
         '()
-        (first rows))))
+        (list (db-row-value row "slug")
+              (db-row-value row "title")
+              (db-row-value row "body_md")
+              (db-row-value row "current_rev_no")
+              (db-row-value row "status")))))
 
 (defun fetch-page-any (db slug)
-  (let* ((sql (string-append
-                "select slug, title, body_md, current_rev_no, "
-                "coalesce(to_char(deleted_at, 'YYYY-MM-DD HH24:MI:SS'), ''), coalesce(deleted_by, ''), status "
-                "from pages where slug='" (sql-escape slug) "' limit 1"))
-         (rows (postgres-query db sql)))
-    (if (null rows)
+  (let ((row (find-page-row-any slug)))
+    (if (null row)
         '()
-        (first rows))))
+        (list (db-row-value row "slug")
+              (db-row-value row "title")
+              (db-row-value row "body_md")
+              (db-row-value row "current_rev_no")
+              (db-row-value row "deleted_at")
+              (db-row-value row "deleted_by")
+              (db-row-value row "status")))))
 
 (defun fetch-page-tags (db slug)
-  (postgres-query
-   db
-   (string-append
-    "select pt.tag "
-    "from page_tags pt "
-    "join pages p on p.id = pt.page_id "
-    "where p.slug='" (sql-escape slug) "' "
-    "order by pt.tag")))
+  (let ((page-id (page-id-by-slug slug))
+        (out '()))
+    (if (null page-id)
+        '()
+        (progn
+          (dolist (row (db-table-rows "page_tags"))
+            (if (= (db-row-nullable row "page_id") page-id)
+                (setq out (cons (list (db-row-value row "tag")) out))
+                nil))
+          (sort-rows-by out (lambda (row) (first row)) nil)))))
 
 (defun fetch-page-tags-text (db slug)
   (let ((rows (fetch-page-tags db slug))
@@ -1236,27 +1447,26 @@
     out))
 
 (defun fetch-page-id-any (db slug)
-  (postgres-query-one
-   db
-   (string-append
-    "select id from pages where slug='" (sql-escape slug) "' limit 1")))
+  (let ((row (find-page-row-any slug)))
+    (if (null row) "" (format nil "~A" (db-row-nullable row "id")))))
 
 (defun fetch-page-updated-at (db slug)
-  (postgres-query-one
-   db
-   (string-append
-    "select to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') "
-    "from pages where slug='" (sql-escape slug) "' limit 1")))
+  (let ((row (find-page-row-any slug)))
+    (if (null row) "" (db-row-value row "updated_at"))))
 
 (defun fetch-latest-edit-summary (db slug)
-  (postgres-query-one
-   db
-   (string-append
-    "select coalesce(edit_summary, '') "
-    "from page_revisions r "
-    "join pages p on p.id = r.page_id "
-    "where p.slug='" (sql-escape slug) "' "
-    "order by r.rev_no desc limit 1")))
+  (let ((page-id (page-id-by-slug slug))
+        (best '()))
+    (if (null page-id)
+        ""
+        (progn
+          (dolist (row (db-table-rows "page_revisions"))
+            (if (and (= (db-row-nullable row "page_id") page-id)
+                     (or (null best)
+                         (> (db-row-nullable row "rev_no") (db-row-nullable best "rev_no"))))
+                (setq best row)
+                nil))
+          (if (null best) "" (db-row-value best "edit_summary"))))))
 
 (defun page-current-rev-no (page-row)
   (if (null page-row) "" (fourth page-row)))
@@ -1286,221 +1496,312 @@
     (if (blank-text-p page-id)
         nil
         (progn
-          (postgres-exec db (string-append "delete from page_tags where page_id=" page-id))
+          (db-exec! db (string-append "DELETE FROM page_tags WHERE page_id=" page-id ";"))
           (dolist (tag tags)
-            (postgres-exec
+            (db-exec!
              db
              (string-append
-              "insert into page_tags (page_id, tag) values ("
-              page-id ", '" (sql-escape tag) "')")))))))
+              "INSERT INTO page_tags (page_id, tag) VALUES ("
+              page-id ", '" (sql-escape tag) "');")))))))
 
 (defun fetch-page-history (db slug)
-  (postgres-query
-   db
-   (string-append
-    "select r.rev_no, coalesce(r.edited_by, ''), coalesce(r.edit_summary, ''), "
-    "to_char(r.created_at, 'YYYY-MM-DD HH24:MI:SS') "
-    "from page_revisions r "
-    "join pages p on p.id = r.page_id "
-    "where p.slug='" (sql-escape slug) "' "
-    "order by r.rev_no desc")))
+  (let ((page-id (page-id-by-slug slug))
+        (out '()))
+    (if (null page-id)
+        '()
+        (progn
+          (dolist (row (db-table-rows "page_revisions"))
+            (if (= (db-row-nullable row "page_id") page-id)
+                (setq out (cons (list (db-row-value row "rev_no")
+                                      (db-row-value row "edited_by")
+                                      (db-row-value row "edit_summary")
+                                      (db-row-value row "created_at"))
+                                out))
+                nil))
+          (sort-rows-by out (lambda (row) (first row)) t)))))
 
 (defun fetch-page-revision (db slug rev-no)
   (let ((n (parse-int-safe rev-no)))
     (if (null n)
         '()
-        (let ((rows
-               (postgres-query
-                db
-                (string-append
-                 "select r.rev_no, r.title, r.body_md, coalesce(r.edited_by, ''), "
-                 "coalesce(r.edit_summary, ''), to_char(r.created_at, 'YYYY-MM-DD HH24:MI:SS') "
-                 "from page_revisions r "
-                 "join pages p on p.id = r.page_id "
-                 "where p.slug='" (sql-escape slug) "' "
-                 "  and r.rev_no=" (format nil "~A" n) " "
-                 "limit 1"))))
-          (if (null rows) '() (first rows))))))
+        (let ((page-id (page-id-by-slug slug))
+              (row '()))
+          (if (null page-id)
+              '()
+              (progn
+                (setq row
+                      (find-first-row
+                       (db-table-rows "page_revisions")
+                       (lambda (rev-row)
+                         (and (= (db-row-nullable rev-row "page_id") page-id)
+                              (= (db-row-nullable rev-row "rev_no") n)))))
+                (if (null row)
+                    '()
+                    (list (db-row-value row "rev_no")
+                          (db-row-value row "title")
+                          (db-row-value row "body_md")
+                          (db-row-value row "edited_by")
+                          (db-row-value row "edit_summary")
+                          (db-row-value row "created_at")))))))))
 
 (defun latest-revision-no (db slug)
   (let ((page (fetch-page db slug)))
     (if (null page) "" (page-current-rev-no page))))
 
 (defun fetch-media-list (db)
-  (postgres-query
-   db
-   (string-append
-    "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
-    "coalesce((select p.slug from pages p where p.id = m.page_id), '') "
-    "from media_assets m where m.deleted_at is null order by m.id desc")))
+  (let ((out '()))
+    (dolist (row (db-table-rows "media_assets"))
+      (if (string= (db-row-value row "deleted_at") "")
+          (let ((page-row (table-row-by-id "pages" (db-row-nullable row "page_id"))))
+            (setq out (cons (list (db-row-value row "id")
+                                  (db-row-value row "media_type")
+                                  (db-row-value row "title")
+                                  (db-row-value row "stored_filename")
+                                  (db-row-value row "mime_type")
+                                  (if (null page-row) "" (db-row-value page-row "slug")))
+                            out)))
+          nil))
+    (sort-rows-by out (lambda (row) (first row)) t)))
 
 (defun fetch-media-for-page (db slug)
-  (postgres-query
-   db
-   (string-append
-    "select m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type "
-    "from media_assets m "
-    "join pages p on p.id = m.page_id "
-    "where p.slug='" (sql-escape slug) "' "
-    "  and p.deleted_at is null "
-    "  and m.deleted_at is null "
-    "order by m.id desc")))
+  (let ((page-id (page-id-by-slug slug))
+        (out '()))
+    (if (null page-id)
+        '()
+        (progn
+          (dolist (row (db-table-rows "media_assets"))
+            (if (and (= (db-row-nullable row "page_id") page-id)
+                     (string= (db-row-value row "deleted_at") ""))
+                (setq out (cons (list (db-row-value row "media_type")
+                                      (db-row-value row "title")
+                                      (db-row-value row "stored_filename")
+                                      (db-row-value row "mime_type"))
+                                out))
+                nil))
+          (sort-rows-by out (lambda (row) (third row)) t)))))
 
 (defun fetch-media-file-meta (db stored-filename)
-  (let ((rows (postgres-query
-               db
-               (string-append
-                "select storage_path, mime_type, original_filename from media_assets "
-                "where stored_filename='" (sql-escape stored-filename) "' and deleted_at is null limit 1"))))
-    (if (null rows) '() (first rows))))
+  (let ((row
+         (find-first-row
+          (db-table-rows "media_assets")
+          (lambda (media-row)
+            (and (string= (db-row-value media-row "stored_filename") stored-filename)
+                 (string= (db-row-value media-row "deleted_at") ""))))))
+    (if (null row)
+        '()
+        (list (db-row-value row "storage_path")
+              (db-row-value row "mime_type")
+              (db-row-value row "original_filename")))))
 
 (defun fetch-media-by-id (db media-id)
-  (let ((mid (parse-int-safe media-id)))
+  (let* ((mid (parse-int-safe media-id))
+         (row (if (null mid)
+                  '()
+                  (find-first-row
+                   (db-table-rows "media_assets")
+                   (lambda (media-row)
+                     (and (= (db-row-nullable media-row "id") mid)
+                          (string= (db-row-value media-row "deleted_at") "")))))))
     (if (null mid)
         '()
-        (let ((rows
-               (postgres-query
-                db
-                (string-append
-                 "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
-                 "coalesce(m.storage_path, ''), coalesce((select p.slug from pages p where p.id = m.page_id), '') "
-                 "from media_assets m "
-                 "where m.id = " (format nil "~A" mid) " and m.deleted_at is null limit 1"))))
-          (if (null rows) '() (first rows))))))
+        (if (null row)
+            '()
+            (let ((page-row (table-row-by-id "pages" (db-row-nullable row "page_id"))))
+              (list (db-row-value row "id")
+                    (db-row-value row "media_type")
+                    (db-row-value row "title")
+                    (db-row-value row "stored_filename")
+                    (db-row-value row "mime_type")
+                    (db-row-value row "storage_path")
+                    (if (null page-row) "" (db-row-value page-row "slug"))))))))
 
 (defun fetch-media-by-id-any (db media-id)
-  (let ((mid (parse-int-safe media-id)))
+  (let* ((mid (parse-int-safe media-id))
+         (row (if (null mid)
+                  '()
+                  (find-first-row
+                   (db-table-rows "media_assets")
+                   (lambda (media-row)
+                     (= (db-row-nullable media-row "id") mid))))))
     (if (null mid)
         '()
-        (let ((rows
-               (postgres-query
-                db
-                (string-append
-                 "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
-                 "coalesce(m.storage_path, ''), coalesce((select p.slug from pages p where p.id = m.page_id), ''), "
-                 "coalesce(to_char(m.deleted_at, 'YYYY-MM-DD HH24:MI:SS'), ''), coalesce(m.deleted_by, '') "
-                 "from media_assets m "
-                 "where m.id = " (format nil "~A" mid) " limit 1"))))
-          (if (null rows) '() (first rows))))))
+        (if (null row)
+            '()
+            (let ((page-row (table-row-by-id "pages" (db-row-nullable row "page_id"))))
+              (list (db-row-value row "id")
+                    (db-row-value row "media_type")
+                    (db-row-value row "title")
+                    (db-row-value row "stored_filename")
+                    (db-row-value row "mime_type")
+                    (db-row-value row "storage_path")
+                    (if (null page-row) "" (db-row-value page-row "slug"))
+                    (db-row-value row "deleted_at")
+                    (db-row-value row "deleted_by")))))))
 
 (defun fetch-deleted-pages (db)
-  (postgres-query
-   db
-   (string-append
-    "select slug, title, to_char(deleted_at, 'YYYY-MM-DD HH24:MI:SS'), coalesce(deleted_by, '') "
-    "from pages "
-    "where deleted_at is not null "
-    "order by deleted_at desc, slug")))
+  (let ((out '()))
+    (dolist (row (db-table-rows "pages"))
+      (if (not (string= (db-row-value row "deleted_at") ""))
+          (setq out (cons (list (db-row-value row "slug")
+                                (db-row-value row "title")
+                                (db-row-value row "deleted_at")
+                                (db-row-value row "deleted_by"))
+                          out))
+          nil))
+    (sort-rows-by out (lambda (row) (third row)) t)))
 
 (defun fetch-deleted-media (db)
-  (postgres-query
-   db
-   (string-append
-    "select m.id, m.media_type, coalesce(m.title, ''), m.stored_filename, m.mime_type, "
-    "coalesce((select p.slug from pages p where p.id = m.page_id), ''), "
-    "to_char(m.deleted_at, 'YYYY-MM-DD HH24:MI:SS'), coalesce(m.deleted_by, '') "
-    "from media_assets m "
-    "where m.deleted_at is not null "
-    "order by m.deleted_at desc, m.id desc")))
+  (let ((out '()))
+    (dolist (row (db-table-rows "media_assets"))
+      (if (not (string= (db-row-value row "deleted_at") ""))
+          (let ((page-row (table-row-by-id "pages" (db-row-nullable row "page_id"))))
+            (setq out (cons (list (db-row-value row "id")
+                                  (db-row-value row "media_type")
+                                  (db-row-value row "title")
+                                  (db-row-value row "stored_filename")
+                                  (db-row-value row "mime_type")
+                                  (if (null page-row) "" (db-row-value page-row "slug"))
+                                  (db-row-value row "deleted_at")
+                                  (db-row-value row "deleted_by"))
+                            out)))
+          nil))
+    (sort-rows-by out (lambda (row) (seventh row)) t)))
 
 (defun fetch-audit-logs (db)
-  (postgres-query
-   db
-   (string-append
-    "select a.id, to_char(a.created_at, 'YYYY-MM-DD HH24:MI:SS'), "
-    "coalesce(u.username, '[deleted-user]'), a.action, a.target_type, coalesce(a.target_id, ''), a.meta_json "
-    "from audit_logs a "
-    "left join users u on u.id = a.actor_user_id "
-    "order by a.created_at desc, a.id desc "
-    "limit 100")))
+  (let ((out '()))
+    (dolist (row (db-table-rows "audit_logs"))
+      (let ((user-row (table-row-by-id "users" (db-row-nullable row "actor_user_id"))))
+        (setq out (cons (list (db-row-value row "id")
+                              (db-row-value row "created_at")
+                              (if (null user-row) "[deleted-user]" (db-row-value user-row "username"))
+                              (db-row-value row "action")
+                              (db-row-value row "target_type")
+                              (db-row-value row "target_id")
+                              (db-row-value row "meta_json"))
+                        out))))
+    (sort-rows-by out (lambda (row) (second row)) t)))
 
 (defun fetch-backup-runs (db)
-  (postgres-query
-   db
-   (string-append
-    "select b.id, b.mode, b.status, coalesce(b.backup_dir, ''), coalesce(b.keep_count::text, ''), "
-    "case when b.dry_run then 'true' else 'false' end, "
-    "coalesce(b.sql_path, ''), coalesce(b.media_path, ''), coalesce(b.message, ''), "
-    "to_char(b.created_at, 'YYYY-MM-DD HH24:MI:SS'), coalesce(to_char(b.completed_at, 'YYYY-MM-DD HH24:MI:SS'), ''), "
-    "coalesce(u.username, '[system]') "
-    "from backup_runs b "
-    "left join users u on u.id = b.triggered_by_user_id "
-    "order by b.created_at desc, b.id desc "
-    "limit 50")))
+  (let ((out '()))
+    (dolist (row (db-table-rows "backup_runs"))
+      (let ((user-row (table-row-by-id "users" (db-row-nullable row "triggered_by_user_id"))))
+        (setq out (cons (list (db-row-value row "id")
+                              (db-row-value row "mode")
+                              (db-row-value row "status")
+                              (db-row-value row "backup_dir")
+                              (db-row-value row "keep_count")
+                              (if (eq (db-row-nullable row "dry_run") t) "true" "false")
+                              (db-row-value row "sql_path")
+                              (db-row-value row "media_path")
+                              (db-row-value row "message")
+                              (db-row-value row "created_at")
+                              (db-row-value row "completed_at")
+                              (if (null user-row) "[system]" (db-row-value user-row "username")))
+                        out))))
+    (sort-rows-by out (lambda (row) (tenth row)) t)))
 
 (defun fetch-backup-stats (db)
-  (list
-   (postgres-query-one db "select count(*) from pages where deleted_at is null")
-   (postgres-query-one db "select count(*) from pages where deleted_at is not null")
-   (postgres-query-one db "select count(*) from media_assets where deleted_at is null")
-   (postgres-query-one db "select count(*) from media_assets where deleted_at is not null")
-   (postgres-query-one db "select count(*) from backup_runs")
-   (postgres-query-one db "select coalesce(to_char(max(created_at), 'YYYY-MM-DD HH24:MI:SS'), '') from backup_runs where mode='backup' and status in ('ok','dry-run')")))
+  (let ((pages-active 0)
+        (pages-deleted 0)
+        (media-active 0)
+        (media-deleted 0)
+        (backup-runs 0)
+        (last-backup ""))
+    (dolist (row (db-table-rows "pages"))
+      (if (string= (db-row-value row "deleted_at") "")
+          (setq pages-active (+ pages-active 1))
+          (setq pages-deleted (+ pages-deleted 1))))
+    (dolist (row (db-table-rows "media_assets"))
+      (if (string= (db-row-value row "deleted_at") "")
+          (setq media-active (+ media-active 1))
+          (setq media-deleted (+ media-deleted 1))))
+    (dolist (row (db-table-rows "backup_runs"))
+      (setq backup-runs (+ backup-runs 1))
+      (if (and (string= (db-row-value row "mode") "backup")
+               (or (string= (db-row-value row "status") "ok")
+                   (string= (db-row-value row "status") "dry-run"))
+               (or (string= last-backup "")
+                   (value> (db-row-value row "created_at") last-backup)))
+          (setq last-backup (db-row-value row "created_at"))
+          nil))
+    (list (format nil "~A" pages-active)
+          (format nil "~A" pages-deleted)
+          (format nil "~A" media-active)
+          (format nil "~A" media-deleted)
+          (format nil "~A" backup-runs)
+          last-backup)))
 
 (defun fetch-user-for-login (db username password)
-  (let ((rows
-         (postgres-query
-          db
-          (string-append
-           "select username, display_name, role_name "
-           "from users "
-           "where enabled = true "
-           "  and username='" (sql-escape username) "' "
-           "  and password_hash = crypt('" (sql-escape password) "', password_hash) "
-           "limit 1"))))
-    (if (null rows) '() (first rows))))
+  (let ((row (find-user-row username)))
+    (if (or (null row)
+            (not (eq (db-row-nullable row "enabled") t))
+            (not (string= (db-row-value row "password_hash") password)))
+        '()
+        (list (db-row-value row "username")
+              (db-row-value row "display_name")
+              (db-row-value row "role_name")))))
 
 (defun fetch-user-by-session-token (db token)
-  (let ((rows
-         (postgres-query
-          db
-          (string-append
-           "select u.username, u.display_name, u.role_name, s.session_token, s.csrf_token "
-           "from user_sessions s "
-           "join users u on u.id = s.user_id "
-           "where s.session_token='" (sql-escape token) "' "
-           "  and s.revoked_at is null "
-           "  and s.expires_at > now() "
-           "  and u.enabled = true "
-           "limit 1"))))
-    (if (null rows) '() (first rows))))
+  (let ((session-row
+         (find-first-row
+          (db-table-rows "user_sessions")
+          (lambda (row)
+            (and (string= (db-row-value row "session_token") token)
+                 (string= (db-row-value row "revoked_at") "")
+                 (> (parse-int-safe (db-row-value row "expires_at")) (get-universal-time)))))))
+    (if (null session-row)
+        '()
+        (let ((user-row (table-row-by-id "users" (db-row-nullable session-row "user_id"))))
+          (if (or (null user-row) (not (eq (db-row-nullable user-row "enabled") t)))
+              '()
+              (list (db-row-value user-row "username")
+                    (db-row-value user-row "display_name")
+                    (db-row-value user-row "role_name")
+                    (db-row-value session-row "session_token")
+                    (db-row-value session-row "csrf_token")))))))
 
 (defun create-user-session (db username token csrf-token)
-  (postgres-exec
-   db
-   (string-append
-    "insert into user_sessions (user_id, session_token, csrf_token, expires_at) "
-    "select id, '" (sql-escape token) "', '" (sql-escape csrf-token) "', now() + interval '" (sql-escape (session-duration-days)) " days' "
-    "from users where username='" (sql-escape username) "' limit 1")))
+  (let ((user-id (user-id-by-username username))
+        (days (parse-int-safe (session-duration-days))))
+    (if (null user-id)
+        nil
+        (db-exec!
+         db
+         (string-append
+          "INSERT INTO user_sessions (user_id, session_token, csrf_token, expires_at) VALUES ("
+          (format nil "~A" user-id) ", "
+          (db-text-sql token) ", "
+          (db-text-sql csrf-token) ", "
+          (db-text-sql (format nil "~A" (+ (get-universal-time) (* 86400 days))))
+          ");")))))
 
 (defun revoke-session-token (db token)
   (if (blank-text-p token)
       nil
-      (postgres-exec
+      (db-exec!
        db
        (string-append
-        "update user_sessions "
-        "set revoked_at = now() "
-        "where session_token='" (sql-escape token) "' "
-        "  and revoked_at is null"))))
+        "UPDATE user_sessions SET revoked_at = "
+        (db-text-sql (db-now-text))
+        " WHERE session_token=" (db-text-sql token) ";"))))
 
 (defun touch-session-token (db token)
   (if (blank-text-p token)
       nil
-      (postgres-exec
+      (db-exec!
        db
        (string-append
-        "update user_sessions "
-        "set last_seen_at = now() "
-        "where session_token='" (sql-escape token) "' "
-        "  and revoked_at is null"))))
+        "UPDATE user_sessions SET last_seen_at = "
+        (db-text-sql (db-now-text))
+        " WHERE session_token=" (db-text-sql token) ";"))))
 
 (defun update-last-login-at (db username)
-  (postgres-exec
+  (db-exec!
    db
    (string-append
-    "update users set last_login_at = now() "
-    "where username='" (sql-escape username) "'")))
+    "UPDATE users SET last_login_at = "
+    (db-text-sql (db-now-text))
+    " WHERE username=" (db-text-sql username) ";")))
 
 (defun load-current-user (db)
   (let ((token (session-cookie-value)))
@@ -1546,7 +1847,8 @@
 (defun audit-actor-id-sql ()
   (if (blank-text-p (current-username))
       "NULL"
-      (string-append "(select id from users where username='" (sql-escape (current-username)) "' limit 1)")))
+      (let ((user-id (user-id-by-username (current-username))))
+        (if (null user-id) "NULL" (format nil "~A" user-id)))))
 
 (defun make-audit-meta-1 (k1 v1)
   (string-append
@@ -1605,10 +1907,10 @@
    "\"}"))
 
 (defun write-audit-log (db action target-type target-id meta-json)
-  (postgres-exec
+  (db-exec!
    db
    (string-append
-    "insert into audit_logs (actor_user_id, action, target_type, target_id, meta_json) values ("
+    "INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, meta_json) VALUES ("
     (audit-actor-id-sql) ", '"
     (sql-escape action) "', '"
     (sql-escape target-type) "', "
@@ -1617,7 +1919,7 @@
         (string-append "'" (sql-escape target-id) "'"))
     ", '"
     (sql-escape meta-json)
-    "')")))
+    "');")))
 
 (defun print-extra-headers ()
   (dolist (header (wiki-reverse *response-extra-headers*))
@@ -2240,26 +2542,27 @@
               (let* ((title (second rev))
                      (body-md (third rev))
                      (target-rev-no (first rev))
-                     (sql
-                      (string-append
-                       "with updated as ("
-                       "  update pages "
-                       "     set title = '" (sql-escape title) "',"
-                       "         body_md = '" (sql-escape body-md) "',"
-                       "         last_edited_by = '" (sql-escape (current-username)) "',"
-                       "         current_rev_no = current_rev_no + 1 "
-                       "   where slug = '" (sql-escape slug) "' "
-                       "  returning id, current_rev_no"
-                       ") "
-                       "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-                       "select u.id, u.current_rev_no, '"
-                       (sql-escape title)
-                       "', '"
-                       (sql-escape body-md)
-                       "', '" (sql-escape (current-username)) "', '"
-                       (sql-escape (string-append "rollback to rev " target-rev-no))
-                       "' from updated u")))
-                (postgres-exec db sql)
+                     (page-id (page-id-by-slug slug))
+                     (next-rev (+ (parse-int-safe (page-current-rev-no (fetch-page-any db slug))) 1)))
+                (db-exec!
+                 db
+                 (string-append
+                  "UPDATE pages SET title=" (db-text-sql title)
+                  ", body_md=" (db-text-sql body-md)
+                  ", last_edited_by=" (db-text-sql (current-username))
+                  ", current_rev_no=" (format nil "~A" next-rev)
+                  " WHERE slug=" (db-text-sql slug) ";"))
+                (db-exec!
+                 db
+                 (string-append
+                  "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
+                  (format nil "~A" page-id) ", "
+                  (format nil "~A" next-rev) ", "
+                  (db-text-sql title) ", "
+                  (db-text-sql body-md) ", "
+                  (db-text-sql (current-username)) ", "
+                  (db-text-sql (string-append "rollback to rev " target-rev-no))
+                  ");"))
                 (write-audit-log
                  db
                  "page.rollback"
@@ -2293,47 +2596,47 @@
                         (render-bad-request "title must not be blank")
                         (if (not (valid-page-status-p status))
                             (render-bad-request "status must be draft/published/private")
-                        (if (or (blank-text-p expected-rev)
-                                (not (string= expected-rev actual-rev)))
-                            (render-edit-conflict db slug title body-md edit-summary expected-rev actual-rev)
-                            (let ((sql
+                            (if (or (blank-text-p expected-rev)
+                                    (not (string= expected-rev actual-rev)))
+                                (render-edit-conflict db slug title body-md edit-summary expected-rev actual-rev)
+                                (let* ((page-id (page-id-by-slug slug))
+                                       (next-rev (+ (parse-int-safe actual-rev) 1)))
+                                  (db-exec!
+                                   db
                                    (string-append
-                                    "with updated as ("
-                                    "  update pages "
-                                    "     set title = '" (sql-escape title) "',"
-                                    "         body_md = '" (sql-escape body-md) "',"
-                                    "         status = '" (sql-escape status) "',"
-                                    "         last_edited_by = '" (sql-escape (current-username)) "',"
-                                    "         current_rev_no = current_rev_no + 1 "
-                                    "   where slug = '" (sql-escape slug) "' "
-                                    "     and current_rev_no = " (sql-escape expected-rev) " "
-                                    "  returning id, current_rev_no"
-                                    ") "
-                                    "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-                                    "select u.id, u.current_rev_no, '"
-                                    (sql-escape title)
-                                    "', '"
-                                    (sql-escape body-md)
-                                    "', '" (sql-escape (current-username)) "', '"
-                                    (sql-escape edit-summary)
-                                    "' "
-                                    "from updated u"))))
-                              (postgres-exec db sql)
-                              (sync-page-tags db slug (split-tags-input tags-raw))
-                              (write-audit-log
-                               db
-                               "page.update"
-                               "page"
-                               slug
-                               (make-audit-meta-2 "title" title "edit_summary" edit-summary))
-                              (write-structured-log
-                               "info"
-                               "page.update"
-                               (make-log-fields-3
-                                "slug" slug
-                                "title" title
-                                "edit_summary" edit-summary))
-                              (render-see-other (string-append (app-base) "/" slug))))))))))))
+                                    "UPDATE pages SET title=" (db-text-sql title)
+                                    ", body_md=" (db-text-sql body-md)
+                                    ", status=" (db-text-sql status)
+                                    ", last_edited_by=" (db-text-sql (current-username))
+                                    ", current_rev_no=" (format nil "~A" next-rev)
+                                    " WHERE slug=" (db-text-sql slug)
+                                    " AND current_rev_no=" expected-rev ";"))
+                                  (db-exec!
+                                   db
+                                   (string-append
+                                    "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
+                                    (format nil "~A" page-id) ", "
+                                    (format nil "~A" next-rev) ", "
+                                    (db-text-sql title) ", "
+                                    (db-text-sql body-md) ", "
+                                    (db-text-sql (current-username)) ", "
+                                    (db-text-sql edit-summary)
+                                    ");"))
+                                  (sync-page-tags db slug (split-tags-input tags-raw))
+                                  (write-audit-log
+                                   db
+                                   "page.update"
+                                   "page"
+                                   slug
+                                   (make-audit-meta-2 "title" title "edit_summary" edit-summary))
+                                  (write-structured-log
+                                   "info"
+                                   "page.update"
+                                   (make-log-fields-3
+                                    "slug" slug
+                                    "title" title
+                                    "edit_summary" edit-summary))
+                                  (render-see-other (string-append (app-base) "/" slug)))))))))))))
 
 (defun create-page (db)
   (let ((raw-body (read-form-body-or-render t)))
@@ -2351,38 +2654,44 @@
                   (render-bad-request "title must not be blank")
                   (if (not (valid-page-status-p status))
                       (render-bad-request "status must be draft/published/private")
-                  (if (null (fetch-page-any db slug))
-	                      (let ((sql
-		                             (string-append
-		                              "with inserted as ("
-		                              "  insert into pages (slug, title, body_md, status, last_edited_by, current_rev_no) "
-		                              "  values ('" (sql-escape slug) "', '"
-		                              (sql-escape title) "', '"
-		                              (sql-escape body-md) "', '"
-                                      (sql-escape status) "', '" (sql-escape (current-username)) "', 1) "
-		                              "  returning id, title, body_md, current_rev_no"
-		                              ") "
-		                              "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-		                              "select i.id, i.current_rev_no, i.title, i.body_md, '" (sql-escape (current-username)) "', '"
-		                              (sql-escape edit-summary)
-		                              "' from inserted i")))
-                        (postgres-exec db sql)
-                        (sync-page-tags db slug (split-tags-input tags-raw))
-                        (write-audit-log
-                         db
-                         "page.create"
-                         "page"
-                         slug
-                         (make-audit-meta-2 "title" title "edit_summary" edit-summary))
-                        (write-structured-log
-                         "info"
-                         "page.create"
-                         (make-log-fields-3
-                          "slug" slug
-                          "title" title
-                          "edit_summary" edit-summary))
-                        (render-see-other (string-append (app-base) "/" slug)))
-                      (render-bad-request "slug already exists (or is soft-deleted; restore it from admin)")))))))))
+                      (if (null (fetch-page-any db slug))
+                          (let ((page-id '()))
+                            (db-exec!
+                             db
+                             (string-append
+                              "INSERT INTO pages (slug, title, body_md, status, last_edited_by, current_rev_no) VALUES ("
+                              (db-text-sql slug) ", "
+                              (db-text-sql title) ", "
+                              (db-text-sql body-md) ", "
+                              (db-text-sql status) ", "
+                              (db-text-sql (current-username)) ", 1);"))
+                            (setq page-id (page-id-by-slug slug))
+                            (db-exec!
+                             db
+                             (string-append
+                              "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
+                              (format nil "~A" page-id) ", 1, "
+                              (db-text-sql title) ", "
+                              (db-text-sql body-md) ", "
+                              (db-text-sql (current-username)) ", "
+                              (db-text-sql edit-summary)
+                              ");"))
+                            (sync-page-tags db slug (split-tags-input tags-raw))
+                            (write-audit-log
+                             db
+                             "page.create"
+                             "page"
+                             slug
+                             (make-audit-meta-2 "title" title "edit_summary" edit-summary))
+                            (write-structured-log
+                             "info"
+                             "page.create"
+                             (make-log-fields-3
+                              "slug" slug
+                              "title" title
+                              "edit_summary" edit-summary))
+                            (render-see-other (string-append (app-base) "/" slug)))
+                          (render-bad-request "slug already exists (or is soft-deleted; restore it from admin)")))))))))
 
 (defun render-media-index (db)
   (let ((rows (fetch-media-list db))
@@ -2649,19 +2958,21 @@
          (string= (substring path (length base) (+ (length base) 1)) "/"))))
 
 (defun write-backup-run-record (db mode status backup-dir keep-count dry-run sql-path media-path message)
-  (postgres-exec
+  (db-exec!
    db
    (string-append
-    "insert into backup_runs (triggered_by_user_id, mode, status, backup_dir, keep_count, dry_run, sql_path, media_path, message, completed_at) values ("
+    "INSERT INTO backup_runs (triggered_by_user_id, mode, status, backup_dir, keep_count, dry_run, sql_path, media_path, message, completed_at) VALUES ("
     (audit-actor-id-sql) ", '"
     (sql-escape mode) "', '"
     (sql-escape status) "', "
-    (if (blank-text-p backup-dir) "NULL" (string-append "'" (sql-escape backup-dir) "'")) ", "
-    (if (null keep-count) "NULL" (format nil "~A" keep-count)) ", "
-    (if dry-run "true" "false") ", "
-    (if (blank-text-p sql-path) "NULL" (string-append "'" (sql-escape sql-path) "'")) ", "
-    (if (blank-text-p media-path) "NULL" (string-append "'" (sql-escape media-path) "'")) ", "
-    (if (blank-text-p message) "NULL" (string-append "'" (sql-escape message) "'")) ", now())")))
+    (db-nullable-text-sql backup-dir) ", "
+    (db-nullable-number-sql keep-count) ", "
+    (db-bool-sql dry-run) ", "
+    (db-nullable-text-sql sql-path) ", "
+    (db-nullable-text-sql media-path) ", "
+    (db-nullable-text-sql message) ", "
+    (db-text-sql (db-now-text))
+    ");")))
 
 (defun cleanup-old-backups (dir keep-count)
   (if (or (null keep-count) (<= keep-count 0))
@@ -2680,25 +2991,23 @@
     (ensure-media-dir)
     (if (not (path-under-dir-p backup-dir "/tmp"))
         (list "error" "" "" "backup_dir must be under /tmp")
-        (let* ((ts (format nil "~A" (get-universal-time)))
-               (base (string-append backup-dir "/wiki-backup-" ts))
-               (sql-path (string-append base ".sql"))
-               (media-path (string-append base "-media.tar.gz"))
-               (db-cmd (string-append "pg_dump --clean --if-exists " (shell-quote (db-url)) " > " (shell-quote sql-path)))
-               (media-cmd (string-append "tar -czf " (shell-quote media-path) " -C " (shell-quote (media-root-dir)) " .")))
+	        (let* ((ts (format nil "~A" (get-universal-time)))
+	               (base (string-append backup-dir "/wiki-backup-" ts))
+	               (sql-path (string-append base ".sql"))
+	               (media-path (string-append base "-media.tar.gz")))
           (if dry-run
               (list "dry-run" sql-path media-path "backup dry-run only")
               (progn
                 (os-mkdir-p backup-dir)
-                (let ((db-status (system db-cmd)))
-                  (if (= db-status 0)
+                (let ((db-result (dbms-wiki-backup sql-path)))
+                  (if (string= (first db-result) "ok")
                       (let ((media-status (if (os-tar-create-gz media-path (media-root-dir)) 0 1)))
                         (if (= media-status 0)
                             (progn
                               (cleanup-old-backups backup-dir keep-count)
                               (list "ok" sql-path media-path "backup completed"))
                             (list "error" sql-path media-path "media backup failed")))
-                      (list "error" sql-path media-path "database backup failed")))))))))
+                      (list "error" sql-path media-path (second db-result))))))))))
 
 (defun run-backup-with-audit (db target-dir keep-count dry-run)
   (let ((result (run-backup target-dir keep-count dry-run)))
@@ -2730,9 +3039,9 @@
           (not (path-under-dir-p sql-path (backup-root-dir)))
           (null (probe-file sql-path)))
       (list "error" "invalid sql_path")
-      (let ((db-status (system (string-append "psql " (shell-quote (db-url)) " -f " (shell-quote sql-path)))))
-        (if (not (= db-status 0))
-            (list "error" "database restore failed")
+      (let ((db-result (dbms-wiki-restore sql-path)))
+        (if (not (string= (first db-result) "ok"))
+            (list "error" (second db-result))
             (if (or (blank-text-p media-path) (not restore-media))
                 (list "ok" "database restored")
                 (if (or (not (path-under-dir-p media-path (backup-root-dir)))
@@ -2797,43 +3106,45 @@
         (format t "</tbody></table>~%"))))
 
 (defun persist-media-record (db page-slug media-type title original-filename stored-name mime-type storage-path public-url edit-summary)
-  (let ((page-id-sql
-         (if (blank-text-p page-slug)
-             "NULL"
-             (if (null (fetch-page db page-slug))
-                 ""
-                 (string-append "(select id from pages where slug='" (sql-escape page-slug) "' limit 1)")))))
-    (if (string= page-id-sql "")
+  (let ((page-id (if (blank-text-p page-slug) '() (page-id-by-slug page-slug))))
+    (if (and (not (blank-text-p page-slug)) (null page-id))
         "page_slug not found"
         (progn
-          (postgres-exec
+          (db-exec!
            db
            (string-append
-            "insert into media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) values ("
-            page-id-sql ", '"
-            (sql-escape media-type) "', '"
-            (sql-escape title) "', '"
-            (sql-escape original-filename) "', '"
-            (sql-escape stored-name) "', '"
-            (sql-escape mime-type) "', '"
-            (sql-escape storage-path) "', '"
-            (sql-escape public-url) "', '" (sql-escape (current-username)) "')"))
+            "INSERT INTO media_assets (page_id, media_type, title, original_filename, stored_filename, mime_type, storage_path, public_url, created_by) VALUES ("
+            (if (null page-id) "NULL" (format nil "~A" page-id)) ", "
+            (db-text-sql media-type) ", "
+            (db-text-sql title) ", "
+            (db-text-sql original-filename) ", "
+            (db-text-sql stored-name) ", "
+            (db-text-sql mime-type) ", "
+            (db-text-sql storage-path) ", "
+            (db-text-sql public-url) ", "
+            (db-text-sql (current-username))
+            ");"))
           (if (or (blank-text-p edit-summary) (blank-text-p page-slug))
               nil
-              (postgres-exec
+              (let ((page (fetch-page-any db page-slug))
+                    (next-rev (+ (parse-int-safe (page-current-rev-no (fetch-page-any db page-slug))) 1)))
+                (db-exec!
                db
                (string-append
-                "with updated as ("
-                "  update pages "
-                "     set current_rev_no = current_rev_no + 1,"
-                "         last_edited_by = '" (sql-escape (current-username)) "' "
-                "   where slug='" (sql-escape page-slug) "' "
-                "  returning id, title, body_md, current_rev_no"
-                ") "
-                "insert into page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) "
-                "select u.id, u.current_rev_no, u.title, u.body_md, '" (sql-escape (current-username)) "', '"
-                (sql-escape edit-summary)
-                "' from updated u")))
+                "UPDATE pages SET current_rev_no=" (format nil "~A" next-rev)
+                ", last_edited_by=" (db-text-sql (current-username))
+                " WHERE slug=" (db-text-sql page-slug) ";"))
+                (db-exec!
+                 db
+                 (string-append
+                  "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
+                  (format nil "~A" page-id) ", "
+                  (format nil "~A" next-rev) ", "
+                  (db-text-sql (second page)) ", "
+                  (db-text-sql (third page)) ", "
+                  (db-text-sql (current-username)) ", "
+                  (db-text-sql edit-summary)
+                  ");"))))
           (write-audit-log
            db
            "media.create"
@@ -3012,12 +3323,7 @@
     (print-layout-foot)))
 
 (defun render-healthz (db)
-  (let ((db-ok t))
-    (if (null db)
-        (setq db-ok nil)
-        (handler-case
-          (postgres-query-one db "select 'ok'")
-          (error (e) (setq db-ok nil))))
+  (let ((db-ok (not (null db))))
     (print-headers-json-ok)
     (format t "{\"status\":\"~A\",\"request_id\":\"~A\",\"db\":\"~A\",\"media_dir\":\"~A\",\"backup_dir\":\"~A\"}~%"
             (if db-ok "ok" "error")
@@ -3142,10 +3448,10 @@
     (format t "  <p><button type=\"submit\">Run Restore</button></p>~%")
     (format t "</form>~%")
     (format t "<h2>Validation Commands</h2>~%")
-    (format t "<pre>ls -lh ~A\npsql ~A -c '\\dt'\npsql ~A -c 'select count(*) from pages;'</pre>~%"
+    (format t "<pre>ls -lh ~A\nls -lh ~A\ncat ~A/catalog.lspdata</pre>~%"
             (html-escape (backup-root-dir))
-            (html-escape (db-url))
-            (html-escape (db-url)))
+            (html-escape (db-root))
+            (html-escape (db-root)))
     (format t "<p><small>See <code>examples/wiki/docs/restore-runbook.md</code> for the full restore checklist.</small></p>~%")
     (print-layout-foot)))
 
@@ -3202,12 +3508,12 @@
               (let ((stored-filename (fourth media))
                     (storage-path (sixth media))
                     (page-slug (seventh media)))
-                (postgres-exec
+                (db-exec!
                  db
                  (string-append
-                  "update media_assets "
-                  "set deleted_at = now(), deleted_by = '" (sql-escape (current-username)) "' "
-                  "where id=" (format nil "~A" mid) " and deleted_at is null"))
+                  "UPDATE media_assets SET deleted_at=" (db-text-sql (db-now-text))
+                  ", deleted_by=" (db-text-sql (current-username))
+                  " WHERE id=" (format nil "~A" mid) ";"))
                 (write-audit-log
                  db
                  "media.delete"
@@ -3227,12 +3533,12 @@
           (if (null page)
               (render-not-found)
               (let ((title (second page)))
-                (postgres-exec
+                (db-exec!
                  db
                  (string-append
-                  "update pages "
-                  "set deleted_at = now(), deleted_by = '" (sql-escape (current-username)) "' "
-                  "where slug='" (sql-escape slug) "' and deleted_at is null"))
+                  "UPDATE pages SET deleted_at=" (db-text-sql (db-now-text))
+                  ", deleted_by=" (db-text-sql (current-username))
+                  " WHERE slug=" (db-text-sql slug) ";"))
                 (write-audit-log
                  db
                  "page.delete"
@@ -3251,12 +3557,11 @@
           (if (or (null page) (string= (fifth page) ""))
               (render-not-found)
               (let ((title (second page)))
-                (postgres-exec
+                (db-exec!
                  db
                  (string-append
-                  "update pages "
-                  "set deleted_at = NULL, deleted_by = NULL "
-                  "where slug='" (sql-escape slug) "' and deleted_at is not null"))
+                  "UPDATE pages SET deleted_at = NULL, deleted_by = NULL WHERE slug="
+                  (db-text-sql slug) ";"))
                 (write-audit-log
                  db
                  "page.restore"
@@ -3276,12 +3581,11 @@
           (if (or (null mid) (null media) (string= (eighth media) ""))
               (render-not-found)
               (let ((stored-filename (fourth media)))
-                (postgres-exec
+                (db-exec!
                  db
                  (string-append
-                  "update media_assets "
-                  "set deleted_at = NULL, deleted_by = NULL "
-                  "where id=" (format nil "~A" mid) " and deleted_at is not null"))
+                  "UPDATE media_assets SET deleted_at = NULL, deleted_by = NULL WHERE id="
+                  (format nil "~A" mid) ";"))
                 (write-audit-log
                  db
                  "media.restore"
@@ -3359,7 +3663,7 @@
     (clear-response-extra-headers)
     (init-request-id)
     (setq db (handler-case
-               (postgres-open (db-url))
+               (db-open)
                (error (e) '())))
     (if (null db)
         (if (and (= n 1) (string= (first segments) "healthz"))
@@ -3478,7 +3782,7 @@
                    (t
                     (render-not-found)))
                   nil))
-          (postgres-close db)))))
+          nil))))
 
 (handler-case
   (render-app)

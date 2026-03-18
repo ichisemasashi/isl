@@ -24,7 +24,7 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/new` : 新規ページ作成（POSTで保存可能）
 - `/wiki/media` : メディア一覧（任意ファイル。画像/動画/音声は埋め込み表示）
 - `/wiki/media/new` : メディア追加（POSTで保存）
-- `/wiki/search?q=...` : 文書検索（PostgreSQL全文検索 + タイトル優先）
+- `/wiki/search?q=...` : 文書検索（`dbms` 上でのタイトル/本文検索 + タイトル優先）
   - 検索結果からページへ遷移すると、`q` の一致箇所をハイライト表示
 - `/wiki/admin` : 管理メニュー
 - `/wiki/admin/backup` : DB + メディアのバックアップ作成
@@ -64,9 +64,9 @@ Wiki システムを段階的に構築するための実装です。
  - 必要に応じて `ISL_WIKI_MD2HTML` で実行バイナリを上書き可能
  - `cgi-bin/wiki.cgi` / `app/multipart_extract.lsp` / `scripts/run-backup.lsp` は ISL スクリプトとして実行される
 
-## PostgreSQL スキーマ（MVP）
+## DBMS ストレージ（MVP）
 
-`db/001_init.sql` で次を作成します。
+起動時に `dbms` ストレージ配下へ次を自動作成します。
 - `pages`: 各ページの現在値（`slug`, `title`, `body_md`）
 - `page_revisions`: 編集履歴（世代番号 `rev_no` つき）
 - `media_assets`（`db/002_media_assets.sql`）: メタ情報（実ファイルはストレージ保存）
@@ -76,20 +76,10 @@ Wiki システムを段階的に構築するための実装です。
 - 履歴は `page_revisions` に追記
 - `slug` は URL セーフ形式（英小文字・数字・ハイフン）に制限
 
-適用例:
+設定例:
 
 ```sh
-createdb isl_wiki
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/001_init.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/002_media_assets.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/003_media_assets_allow_file_type.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/004_auth.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/005_session_csrf.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/006_audit_logs.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/007_page_lock_version.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/008_soft_delete.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/009_search.sql
-psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/010_backup_runs.sql
+export ISL_WIKI_DB_ROOT='./examples/dbms/storage/wiki'
 ```
 
 `004_auth.sql` は次を作成します。
@@ -110,13 +100,13 @@ psql -d isl_wiki -f /Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/db/010_
 
 初回ログイン後に必ず変更してください。
 
-接続文字列は環境変数 `ISL_WIKI_DB_URL` で指定できます。
-未指定時は `postgresql://127.0.0.1:5432/isl_wiki` を使います。
+ストレージルートは環境変数 `ISL_WIKI_DB_ROOT` で指定できます。
+未指定時は `./examples/dbms/storage/wiki` を使います。
 
 例:
 
 ```sh
-export ISL_WIKI_DB_URL='postgresql://USER:PASSWORD@127.0.0.1:5432/isl_wiki'
+export ISL_WIKI_DB_ROOT='./examples/dbms/storage/wiki'
 export ISL_WIKI_MEDIA_BASE_URL='/wiki/files'   # 任意。未指定時は自動で「現在のベースURL/files」
 export ISL_WIKI_BACKUP_DIR='/tmp/isl-wiki-backups'
 ```
