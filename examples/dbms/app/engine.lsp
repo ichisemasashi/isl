@@ -2606,9 +2606,13 @@
               (dbms-make-result 'error catalog2)
               (let ((saved-catalog (dbms-engine-save-catalog catalog2))
                     (saved-table (dbms-engine-save-table-rows (dbms-table-def-name table-def2) '()))
-                    (saved-idx (if (dbms-tx-active-p)
-                                   t
-                                   (dbms-engine-rebuild-table-indexes-from-def (dbms-table-def-name table-def2) table-def2 '()))))
+                    (saved-idx
+                     (if (dbms-tx-active-p)
+                         t
+                         (dbms-engine-rebuild-table-indexes-from-def
+                          (dbms-table-def-name table-def2)
+                          table-def2
+                          '()))))
                 (dbms-debug-stderr "create-table save-called")
                 (if (dbms-error-p saved-catalog)
                     (dbms-make-result 'error saved-catalog)
@@ -2618,7 +2622,7 @@
                             (dbms-make-result 'error saved-idx)
                             (progn
                               (dbms-debug-stderr "create-table ok")
-                              (dbms-make-result-ok 'ok))))))))))
+                              (dbms-make-result-ok 'ok)))))))))))
 
 (defun dbms-engine-create-table-wiki (catalog stmt)
   (let* ((payload (third stmt))
