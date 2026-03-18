@@ -998,8 +998,13 @@
   (configure-dbms-root)
   (debug-stderr "db-open begin")
   (handler-case
-    (progn
-      (ensure-wiki-dbms-schema (dbms-engine-init))
+    (let ((catalog '()))
+      (debug-stderr "dbms-engine-init begin")
+      (setq catalog (dbms-engine-init))
+      (debug-stderr "dbms-engine-init ok")
+      (debug-stderr "ensure-wiki-dbms-schema begin")
+      (ensure-wiki-dbms-schema catalog)
+      (debug-stderr "ensure-wiki-dbms-schema ok")
       (debug-stderr "db-open ok")
       t)
     (error (e)
