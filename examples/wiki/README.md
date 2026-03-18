@@ -135,7 +135,7 @@ export ISL_WIKI_DB_ROOT='./examples/dbms/storage/wiki'
 
 ```sh
 export ISL_WIKI_DB_ROOT='./examples/dbms/storage/wiki'
-export ISL_WIKI_MEDIA_BASE_URL='/wiki/files'   # 任意。未指定時は自動で「現在のベースURL/files」
+export ISL_WIKI_MEDIA_BASE_URL='/public/wiki-files'   # 任意。Apache / webserver の静的配信先に合わせる
 export ISL_WIKI_BACKUP_DIR='/tmp/isl-wiki-backups'
 ```
 
@@ -146,13 +146,60 @@ export ISL_WIKI_BACKUP_DIR='/tmp/isl-wiki-backups'
 ## Apache 設定
 
 `conf/httpd-wiki.conf` の `ScriptAliasMatch` を include し、`mod_cgi` を有効化してください。  
-メディアURLはデフォルトで現在のベースURLに追従し（`/wiki/files/...` または `/cgi-bin/wiki.cgi/files/...`）、CGI経由で配信されます。
+メディアURLは `conf/wiki.conf` の既定値どおり `/public/wiki-files/...` で静的配信します。
 
 ```apache
 Include "/Volumes/SD_ONE/work/dev/isl/examples/wiki/conf/httpd-wiki.conf"
 ```
 
-必要なら `conf/httpd-wiki.conf` 内のパスも、このワークスペースに合わせて更新してください。
+`conf/httpd-wiki.conf` はこのワークスペース (`/Volumes/SD_ONE/work/dev/isl`) に合わせたパスへ更新済みです。
+
+## webserver での起動
+
+`examples/webserver` を使う場合は、Wiki 用 CGI ランチャー
+`examples/webserver/runtime/cgi-bin/wiki.cgi` をそのまま利用できます。
+
+前提:
+- リポジトリルートで実行する
+- `ISL_ROOT` を設定する
+- `examples/webserver/runtime/docroot/public/wiki-files` をメディア保存先として使う
+
+```sh
+cd /Volumes/SD_ONE/work/dev/isl
+export ISL_ROOT=/Volumes/SD_ONE/work/dev/isl
+export ISL_WIKI_DB_ROOT=./examples/dbms/storage/wiki
+export WEBSERVER_ROOT=/Volumes/SD_ONE/work/dev/isl/examples/webserver
+export WEBSERVER_CONFIG=$WEBSERVER_ROOT/conf/webserver.conf.lsp
+```
+
+起動:
+
+```sh
+WEBSERVER_CMD=start \
+WEBSERVER_TRANSPORT=http \
+WEBSERVER_PID_FILE=/tmp/webserver.pid \
+WEBSERVER_SERVER_LOG=/tmp/webserver.log \
+./bin/isl examples/webserver/app/ctl.lsp
+```
+
+停止:
+
+```sh
+WEBSERVER_CMD=stop \
+WEBSERVER_PID_FILE=/tmp/webserver.pid \
+./bin/isl examples/webserver/app/ctl.lsp
+```
+
+起動後の確認:
+
+```text
+http://localhost:18080/cgi-bin/wiki.cgi
+http://localhost:18080/cgi-bin/wiki.cgi/healthz
+```
+
+補足:
+- メディアURLは `http://localhost:18080/public/wiki-files/...` で配信されます
+- `WEBSERVER_CMD=-t ./bin/isl examples/webserver/app/ctl.lsp` で設定検証できます
 
 ## 現在の動作確認
 

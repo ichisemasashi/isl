@@ -1,4 +1,12 @@
-(load "/Volumes/SSD-PLU3/work/LISP/islisp/isl/lib/os-utils.lsp")
+(defun ws-isl-root ()
+  (let ((v (getenv "ISL_ROOT")))
+    (if (null v)
+        (if (not (null (probe-file "./lib/os-utils.lsp")))
+            "."
+            "/Volumes/SD_ONE/work/dev/isl")
+        v)))
+
+(load (string-append (ws-isl-root) "/lib/os-utils.lsp"))
 
 (defun ws-log (msg)
   (format t "webserver: ~A~%" msg))
