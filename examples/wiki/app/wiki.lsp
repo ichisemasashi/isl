@@ -402,6 +402,10 @@
                      :if-does-not-exist :create)
     (format s "~A~%" line)))
 
+(defun debug-stderr (msg)
+  (with-open-file (s "/dev/stderr" :direction :output :if-exists :append)
+    (format s "wiki-debug: ~A~%" msg)))
+
 (defun write-structured-log (level event fields-json)
   (append-log-line
    (string-append
@@ -992,11 +996,14 @@
 
 (defun db-open ()
   (configure-dbms-root)
+  (debug-stderr "db-open begin")
   (handler-case
     (progn
       (ensure-wiki-dbms-schema (dbms-engine-init))
+      (debug-stderr "db-open ok")
       t)
     (error (e)
+      (debug-stderr (format nil "db-open error ~A" e))
       t)))
 
 (defglobal *markdown-temp-counter* 0)
@@ -3660,22 +3667,27 @@
          (segments (path-segments))
          (n (length segments))
          (db '()))
+    (debug-stderr (format nil "render-app begin method=~A path=~A" method raw-path))
     (clear-response-extra-headers)
     (init-request-id)
     (setq db (handler-case
                (db-open)
                (error (e) '())))
+    (debug-stderr (format nil "render-app db=~A" (if (null db) "null" "ok")))
     (if (null db)
         (if (and (= n 1) (string= (first segments) "healthz"))
             (render-healthz '())
             (error "database unavailable"))
         (progn
+          (debug-stderr "load-current-user begin")
           (load-current-user db)
+          (debug-stderr "load-current-user ok")
           (if (and (string= method "GET") (needs-canonical-redirect-p raw-path))
               (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
               (if (ensure-authorized method segments)
                   (cond
                    ((= n 0)
+                    (debug-stderr "render-index begin")
                     (render-index db))
                    ((= n 1)
                     (cond
