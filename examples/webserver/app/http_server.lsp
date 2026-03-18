@@ -668,8 +668,8 @@
       (let ((root (ws-example-root)))
         (string-append
          "cd " (ws-shell-quote root)
-         " && ISL_ROOT=" (ws-shell-quote root)
-         " && exec " (ws-shell-quote (ws-gosh-bin))
+         " && exec env ISL_ROOT=" (ws-shell-quote root)
+         " " (ws-shell-quote (ws-gosh-bin))
          " " (ws-shell-quote (string-append root "/bin/isl"))
          " " (ws-shell-quote (string-append root "/examples/wiki/app/wiki.lsp"))
          " < " (ws-shell-quote stdin-path)
