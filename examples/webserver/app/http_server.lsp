@@ -186,8 +186,8 @@
 (defun ws-request-get (req key)
   (ws-config-get (cdr req) key))
 
-(defun ws-now-epoch ()
-  (format nil "~A" (get-universal-time)))
+(defun ws-now-log-ts ()
+  (os-date-utc-iso8601))
 
 (defun ws-access-log-path ()
   (ws-env-or "WEBSERVER_ACCESS_LOG" "/tmp/webserver-access.log"))
@@ -220,8 +220,8 @@
   (handler-case
     (ws-append-line
      (ws-access-log-path)
-     (format nil "~A method=~A path=~A status=~A duration_ms=~A"
-             (ws-now-epoch) method path status duration-ms))
+     (format nil "~A webserver: access method=~A path=~A status=~A duration_ms=~A"
+             (ws-now-log-ts) method path status duration-ms))
     (error (e) #f)))
 
 (defun ws-reason (status)
@@ -662,6 +662,8 @@
                (ws-shell-quote script-path)
                " < " (ws-shell-quote stdin-path)
                " > " (ws-shell-quote stdout-path))))
+    (ws-log (format nil "cgi start method=~A target=~A script=~A path_info=~A timeout_sec=~A"
+                    method target script-path path-info timeout-sec))
     (ws-write-file-raw stdin-path body)
     (setenv "REQUEST_METHOD" method)
     (setenv "QUERY_STRING" query)
@@ -695,6 +697,8 @@
                      (resp-body (second parts))
                      (resp-headers (ws-parse-cgi-headers hdr-text))
                      (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
+                (ws-log (format nil "cgi done method=~A script=~A status=~A bytes=~A"
+                                method script-path resp-status (ws-byte-length resp-body)))
                 (ws-delete-file-if-exists stdin-path)
                 (ws-delete-file-if-exists stdout-path)
                 (list 'ok resp-status resp-headers resp-body)))))))

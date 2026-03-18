@@ -8,8 +8,14 @@
 
 (load (string-append (ws-isl-root) "/lib/os-utils.lsp"))
 
+(defun ws-log-ts ()
+  (os-date-utc-iso8601))
+
+(defun ws-log-line (msg)
+  (format nil "~A webserver: ~A" (ws-log-ts) msg))
+
 (defun ws-log (msg)
-  (format t "webserver: ~A~%" msg))
+  (format t "~A~%" (ws-log-line msg)))
 
 (defun ws-error-log-path ()
   (ws-env-or "WEBSERVER_ERROR_LOG" "/tmp/webserver-error.log"))
@@ -19,7 +25,7 @@
     (format s "~A~%" line)))
 
 (defun ws-log-error (msg)
-  (let ((line (format nil "webserver: error: ~A" msg)))
+  (let ((line (ws-log-line (format nil "error: ~A" msg))))
     (format t "~A~%" line)
     (handler-case
       (ws-append-line (ws-error-log-path) line)
