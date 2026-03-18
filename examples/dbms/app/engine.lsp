@@ -2618,7 +2618,7 @@
                             (dbms-make-result 'error saved-idx)
                             (progn
                               (dbms-debug-stderr "create-table ok")
-                            (dbms-make-result-ok 'ok))))))))))
+                              (dbms-make-result-ok 'ok))))))))))
 
 (defun dbms-engine-create-table-wiki (catalog stmt)
   (let* ((payload (third stmt))
