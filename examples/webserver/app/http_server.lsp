@@ -679,6 +679,15 @@
        " < " (ws-shell-quote stdin-path)
        " > " (ws-shell-quote stdout-path))))
 
+(defun ws-timeout-wrapper-command (cmd timeout-sec)
+  (string-append
+   "perl -e "
+   (ws-shell-quote "alarm shift @ARGV; exec @ARGV")
+   " "
+   (format nil "~A" timeout-sec)
+   " sh -c "
+   (ws-shell-quote cmd)))
+
 (defun ws-run-cgi-script (cfg req script-path script-name path-info)
   (let* ((target (ws-request-get req 'target))
          (method (ws-request-get req 'method))
@@ -703,9 +712,12 @@
     (setenv "SERVER_PROTOCOL" version)
     (setenv "SERVER_PORT" (format nil "~A" (ws-config-get cfg 'listen_port)))
     (setenv "GATEWAY_INTERFACE" "CGI/1.1")
-    (let* ((exec-result (system-timeout cmd timeout-sec))
+    (let* ((exec-result (if (ws-example-wiki-cgi-p script-path)
+                            (list (system (ws-timeout-wrapper-command cmd timeout-sec))
+                                  #f)
+                            (system-timeout cmd timeout-sec)))
            (status (car exec-result))
-           (timedout (second exec-result)))
+           (timedout (or (second exec-result) (= status 142))))
       (if timedout
           (progn
             (ws-log-error (format nil "cgi timeout method=~A script=~A timeout_sec=~A"
