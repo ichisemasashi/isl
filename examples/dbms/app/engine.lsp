@@ -2628,10 +2628,15 @@
   (let* ((payload (third stmt))
          (table-def (dbms-assoc-get payload "table-def"))
          (if-not-exists (dbms-assoc-get payload "if-not-exists"))
-         (exists (dbms-catalog-find-table catalog (dbms-table-def-name table-def))))
+         (exists '()))
+    (dbms-debug-stderr (format nil "create-table-wiki begin name=~A" (dbms-table-def-name table-def)))
+    (setq exists (dbms-catalog-find-table catalog (dbms-table-def-name table-def)))
+    (dbms-debug-stderr (format nil "create-table-wiki exists=~A" (if (null exists) "no" "yes")))
     (if (and (not (null exists)) if-not-exists)
         (dbms-make-result-ok 'ok)
-        (dbms-engine-create-table catalog (dbms-make-stmt 'create-table table-def)))))
+        (progn
+          (dbms-debug-stderr "create-table-wiki delegate")
+          (dbms-engine-create-table catalog (dbms-make-stmt 'create-table table-def))))))
 
 (defun dbms-engine-create-index (catalog stmt)
   (let* ((payload (third stmt))
