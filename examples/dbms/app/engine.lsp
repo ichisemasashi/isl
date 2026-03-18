@@ -4422,11 +4422,15 @@
                 result))))))
 
 (defun dbms-exec-sql (catalog sql-text)
+  (dbms-debug-stderr "exec-sql parse begin")
   (let ((ast (dbms-parse-sql sql-text))
         (effective-catalog (dbms-engine-current-catalog)))
+    (dbms-debug-stderr "exec-sql parse done")
     (if (dbms-error-p ast)
         (dbms-make-result 'error ast)
         (let ((stmts (dbms-ast-statements ast)))
           (if (or (null stmts) (not (= (length stmts) 1)))
               (dbms-make-result-error 'dbms/parse-error "single statement required" sql-text)
-              (dbms-engine-dispatch effective-catalog (first stmts)))))))
+              (progn
+                (dbms-debug-stderr (format nil "exec-sql dispatch kind=~A" (second (first stmts))))
+                (dbms-engine-dispatch effective-catalog (first stmts))))))))
