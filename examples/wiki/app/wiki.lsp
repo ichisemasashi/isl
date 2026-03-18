@@ -827,10 +827,16 @@
 
 (defun db-exec! (catalog sql)
   (configure-dbms-root)
+  (debug-stderr (format nil "db-exec begin ~A"
+                        (if (> (length sql) 80)
+                            (substring sql 0 80)
+                            sql)))
   (let ((result (dbms-exec-sql (dbms-engine-init) sql)))
     (if (and (dbms-result-p result)
              (not (eq (second result) 'error)))
-        result
+        (progn
+          (debug-stderr "db-exec ok")
+          result)
         (error (db-result-error-message result "dbms exec failed") sql))))
 
 (defun db-table-rows (table-name)
