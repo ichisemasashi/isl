@@ -7,6 +7,10 @@
 (load "./examples/dbms/app/storage.lsp")
 (load "./examples/dbms/app/sql_parser.lsp")
 
+(defun dbms-debug-stderr (msg)
+  (with-open-file (s "/dev/stderr" :direction :output :if-exists :append)
+    (format s "dbms-debug: ~A~%" msg)))
+
 (defglobal *dbms-tx-state* (dbms-tx-state-idle))
 (defglobal *dbms-next-tx-id* 1)
 (defglobal *dbms-tx-snapshot-catalog* '())
@@ -2589,6 +2593,7 @@
 (defun dbms-engine-create-table (catalog stmt)
   (let* ((table-def (third stmt))
          (created (dbms-catalog-create-table catalog table-def)))
+    (dbms-debug-stderr (format nil "create-table begin name=~A" (dbms-table-def-name table-def)))
     (if (dbms-error-p created)
         (dbms-make-result 'error created)
         (let* ((normalized (dbms-catalog-find-table created (dbms-table-def-name table-def)))
@@ -2596,6 +2601,7 @@
                                table-def
                                (dbms-ensure-constraint-indexes-on-table-def normalized)))
                (catalog2 (dbms-catalog-replace-table-def created table-def2)))
+          (dbms-debug-stderr "create-table catalog-ready")
           (if (dbms-error-p catalog2)
               (dbms-make-result 'error catalog2)
               (let ((saved-catalog (dbms-engine-save-catalog catalog2))
@@ -2603,12 +2609,15 @@
                     (saved-idx (if (dbms-tx-active-p)
                                    t
                                    (dbms-engine-rebuild-table-indexes-from-def (dbms-table-def-name table-def2) table-def2 '()))))
+                (dbms-debug-stderr "create-table save-called")
                 (if (dbms-error-p saved-catalog)
                     (dbms-make-result 'error saved-catalog)
                     (if (dbms-error-p saved-table)
                         (dbms-make-result 'error saved-table)
                         (if (dbms-error-p saved-idx)
                             (dbms-make-result 'error saved-idx)
+                            (progn
+                              (dbms-debug-stderr "create-table ok")
                             (dbms-make-result-ok 'ok))))))))))
 
 (defun dbms-engine-create-table-wiki (catalog stmt)
