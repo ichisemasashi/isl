@@ -9,7 +9,7 @@ Wiki システムを段階的に構築するための実装です。
 - `cgi-bin/wiki.cgi`: Apache から呼ばれる CGI エントリ
 - `conf/httpd-wiki.conf`: httpd に include する設定例
 - `scripts/run-backup.lsp`: 定期バックアップ用の運用スクリプト
-- `db/001_init.sql`: PostgreSQL 初期スキーマ
+- `db/*.sql`: 旧 PostgreSQL 版のスキーマ資産
 - `docs/markdown-policy.md`: Markdown変換方式の決定記録
 - `docs/restore-runbook.md`: 復元手順書
 - `docs/url-naming-conventions.md`: URL / 命名規約の固定
@@ -60,16 +60,48 @@ Wiki システムを段階的に構築するための実装です。
 - 入出力は一時ファイル経由
 - Wiki内リンク記法を前処理:
   - `[[home]]` -> `/wiki/home` へのリンク
-  - `[[home|Home Page]]` -> 表示名つきリンク
+ - `[[home|Home Page]]` -> 表示名つきリンク
  - 必要に応じて `ISL_WIKI_MD2HTML` で実行バイナリを上書き可能
  - `cgi-bin/wiki.cgi` / `app/multipart_extract.lsp` / `scripts/run-backup.lsp` は ISL スクリプトとして実行される
 
-## DBMS ストレージ（MVP）
+## 起動方法
+
+前提:
+- リポジトリルートを `ISL_ROOT` に設定する
+- `Apache httpd` で `mod_cgi` を有効にする
+- `examples/md2html/md2html` を利用可能にしておく
+
+最小設定:
+
+```sh
+cd /Volumes/SD_ONE/work/dev/isl
+export ISL_ROOT=/Volumes/SD_ONE/work/dev/isl
+export ISL_WIKI_DB_ROOT=./examples/dbms/storage/wiki
+```
+
+Apache 設定:
+
+```apache
+Include "/Volumes/SD_ONE/work/dev/isl/examples/wiki/conf/httpd-wiki.conf"
+```
+
+起動後の確認:
+
+```text
+http://localhost:8080/wiki
+http://localhost:8080/wiki/healthz
+```
+
+補足:
+- `dbms` のテーブル作成と初期データ投入は初回アクセス時に自動実行されます
+- PostgreSQL 用の SQL を事前に流す必要はありません
+
+## DBMS ストレージ
 
 起動時に `dbms` ストレージ配下へ次を自動作成します。
 - `pages`: 各ページの現在値（`slug`, `title`, `body_md`）
 - `page_revisions`: 編集履歴（世代番号 `rev_no` つき）
-- `media_assets`（`db/002_media_assets.sql`）: メタ情報（実ファイルはストレージ保存）
+- `media_assets`: メタ情報（実ファイルはストレージ保存）
 
 設計方針:
 - 読み取りは `pages` から単純に取得
@@ -82,17 +114,13 @@ Wiki システムを段階的に構築するための実装です。
 export ISL_WIKI_DB_ROOT='./examples/dbms/storage/wiki'
 ```
 
-`004_auth.sql` は次を作成します。
+認証・監査・補助テーブルとして次も自動作成します。
 - `roles`
 - `users`
 - `user_sessions`
-
-`005_session_csrf.sql` は `user_sessions.csrf_token` を追加します。
-`006_audit_logs.sql` は `audit_logs` を追加します。
-`007_page_lock_version.sql` は `pages.current_rev_no` を追加します。
-`008_soft_delete.sql` は `pages` / `media_assets` に論理削除カラムを追加します。
-`009_search.sql` は `pages.status`, `page_tags`, `pages.search_vector` を追加します。
-`010_backup_runs.sql` は `backup_runs` を追加します。
+- `audit_logs`
+- `page_tags`
+- `backup_runs`
 
 初期管理者:
 - username: `admin`
@@ -121,8 +149,10 @@ export ISL_WIKI_BACKUP_DIR='/tmp/isl-wiki-backups'
 メディアURLはデフォルトで現在のベースURLに追従し（`/wiki/files/...` または `/cgi-bin/wiki.cgi/files/...`）、CGI経由で配信されます。
 
 ```apache
-Include "/Volumes/SSD-PLU3/work/LISP/islisp/isl/examples/wiki/conf/httpd-wiki.conf"
+Include "/Volumes/SD_ONE/work/dev/isl/examples/wiki/conf/httpd-wiki.conf"
 ```
+
+必要なら `conf/httpd-wiki.conf` 内のパスも、このワークスペースに合わせて更新してください。
 
 ## 現在の動作確認
 
@@ -166,7 +196,7 @@ http://localhost:8080/wiki/login
 - 500画面には内部例外の詳細を直接表示せず、詳細はサーバーログ確認前提にした
 - 検索フォームは既存クエリを再表示する
 - 検索はタイトル一致優先で並び、本文スニペットを表示する
-- 検索は PostgreSQL 全文検索を利用し、`tag` と `status` で絞り込みできる
+- 検索は `dbms` 上でタイトル/本文の部分一致を利用し、`tag` と `status` で絞り込みできる
 - ページ作成/編集画面で `status` と `tags` を編集できる
 - 公開状態は `published=全員`, `draft=editor以上`, `private=adminのみ` で表示制御される
 - 一覧と検索結果にはページの `status` が反映される
