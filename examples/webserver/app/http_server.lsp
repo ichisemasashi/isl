@@ -647,6 +647,37 @@
       (setq xs (cdr xs)))
     (ws-reverse out)))
 
+(defun ws-example-root ()
+  (ws-env-or "ISL_ROOT" "/Volumes/SD_ONE/work/dev/isl"))
+
+(defun ws-example-wiki-cgi-p (script-path)
+  (string= script-path
+           (ws-normalize-path
+            (string-append (ws-example-root)
+                           "/examples/webserver/runtime/cgi-bin/wiki.cgi"))))
+
+(defun ws-gosh-bin ()
+  (if (os-file-executable-p "/opt/homebrew/bin/gosh")
+      "/opt/homebrew/bin/gosh"
+      (if (os-file-executable-p "/usr/local/bin/gosh")
+          "/usr/local/bin/gosh"
+          "gosh")))
+
+(defun ws-cgi-command (script-path stdin-path stdout-path)
+  (if (ws-example-wiki-cgi-p script-path)
+      (let ((root (ws-example-root)))
+        (string-append
+         "cd " (ws-shell-quote root)
+         " && exec " (ws-shell-quote (ws-gosh-bin))
+         " " (ws-shell-quote (string-append root "/bin/isl"))
+         " " (ws-shell-quote (string-append root "/examples/wiki/app/wiki.lsp"))
+         " < " (ws-shell-quote stdin-path)
+         " > " (ws-shell-quote stdout-path)))
+      (string-append
+       (ws-shell-quote script-path)
+       " < " (ws-shell-quote stdin-path)
+       " > " (ws-shell-quote stdout-path))))
+
 (defun ws-run-cgi-script (cfg req script-path script-name path-info)
   (let* ((target (ws-request-get req 'target))
          (method (ws-request-get req 'method))
@@ -658,10 +689,7 @@
          (stdin-path (ws-temp-file "webserver-cgi-in" ".tmp"))
          (stdout-path (ws-temp-file "webserver-cgi-out" ".tmp"))
          (timeout-sec (ws-cgi-timeout-seconds))
-         (cmd (string-append
-               (ws-shell-quote script-path)
-               " < " (ws-shell-quote stdin-path)
-               " > " (ws-shell-quote stdout-path))))
+         (cmd (ws-cgi-command script-path stdin-path stdout-path)))
     (ws-log (format nil "cgi start method=~A target=~A script=~A path_info=~A timeout_sec=~A"
                     method target script-path path-info timeout-sec))
     (ws-write-file-raw stdin-path body)

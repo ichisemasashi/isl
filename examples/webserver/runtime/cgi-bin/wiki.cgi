@@ -1,9 +1,11 @@
-#!/bin/sh
-set -eu
+#!/opt/homebrew/bin/gosh
 
-ROOT_DIR="/Volumes/SD_ONE/work/dev/isl"
-export ISL_ROOT="$ROOT_DIR"
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+(define root
+  (or (sys-getenv "ISL_ROOT")
+      "/Volumes/SD_ONE/work/dev/isl"))
 
-cd "$ROOT_DIR"
-exec "$ROOT_DIR/bin/isl" "$ROOT_DIR/examples/wiki/app/wiki.lsp"
+(sys-setenv "ISL_ROOT" root #t)
+(add-load-path "/Volumes/SD_ONE/work/dev/isl/src")
+(use isl.main)
+(exit (main (list (car (command-line))
+                  (string-append root "/examples/wiki/app/wiki.lsp"))))
