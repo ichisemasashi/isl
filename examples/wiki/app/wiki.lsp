@@ -2240,9 +2240,13 @@
                   nil))))))
 
 (defun render-index (db)
+  (debug-stderr "render-index fetch-pages begin")
   (let ((rows (fetch-pages db))
         (base (app-base)))
+    (debug-stderr (format nil "render-index fetch-pages ok count=~A" (length rows)))
+    (debug-stderr "render-index headers begin")
     (print-headers-ok)
+    (debug-stderr "render-index headers ok")
     (print-layout-head "Wiki Index")
     (format t "<h1>Wiki Pages</h1>~%")
     (if (editor-or-admin-p)
