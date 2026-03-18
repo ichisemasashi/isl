@@ -154,6 +154,7 @@
             (string= (ws-ascii-downcase conn-value) "keep-alive")))))
 
 (defun ws-read-http-request (conn)
+  (ws-log "request read begin")
   (let ((line (ws-read-request-line conn)))
     (if (eq line 'eof)
         'eof
@@ -1023,6 +1024,7 @@
 (defun ws-spawn-connection-worker (cfg conn active-mutex active-box)
   (thread-spawn
    (lambda ()
+     (ws-log "worker start")
      (handler-case
        (ws-handle-connection cfg conn)
        (error (e)
@@ -1068,6 +1070,7 @@
                (error (e)
                  (ws-log-error (format nil "accept failed: ~A" e))
                  (throw 'ws-error e)))))
+        (ws-log "accept ok")
         (setq accepted (+ accepted 1))
         (let ((allow nil))
           (ws-with-mutex
