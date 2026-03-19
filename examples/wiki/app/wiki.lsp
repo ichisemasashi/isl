@@ -1797,30 +1797,42 @@
 (defun revoke-session-token (db token)
   (if (blank-text-p token)
       nil
-      (db-exec!
-       db
-       (string-append
-        "UPDATE user_sessions SET revoked_at = "
-        (db-text-sql (db-now-text))
-        " WHERE session_token=" (db-text-sql token) ";"))))
+      (handler-case
+        (db-exec!
+         db
+         (string-append
+          "UPDATE user_sessions SET revoked_at = "
+          (db-text-sql (db-now-text))
+          " WHERE session_token=" (db-text-sql token) ";"))
+        (error (e)
+          (write-error-log (format nil "session revoke warning: ~A" e))
+          nil))))
 
 (defun touch-session-token (db token)
   (if (blank-text-p token)
       nil
-      (db-exec!
-       db
-       (string-append
-        "UPDATE user_sessions SET last_seen_at = "
-        (db-text-sql (db-now-text))
-        " WHERE session_token=" (db-text-sql token) ";"))))
+      (handler-case
+        (db-exec!
+         db
+         (string-append
+          "UPDATE user_sessions SET last_seen_at = "
+          (db-text-sql (db-now-text))
+          " WHERE session_token=" (db-text-sql token) ";"))
+        (error (e)
+          (write-error-log (format nil "session touch warning: ~A" e))
+          nil))))
 
 (defun update-last-login-at (db username)
-  (db-exec!
-   db
-   (string-append
-    "UPDATE users SET last_login_at = "
-    (db-text-sql (db-now-text))
-    " WHERE username=" (db-text-sql username) ";")))
+  (handler-case
+    (db-exec!
+     db
+     (string-append
+      "UPDATE users SET last_login_at = "
+      (db-text-sql (db-now-text))
+      " WHERE username=" (db-text-sql username) ";"))
+    (error (e)
+      (write-error-log (format nil "login last_login_at warning: ~A" e))
+      nil)))
 
 (defun load-current-user (db)
   (let ((token (session-cookie-value)))
@@ -2197,9 +2209,13 @@
                           (csrf-token (issue-csrf-token))
                           (dest (if (blank-text-p next) (app-base) next)))
                       (create-user-session db (first user) token csrf-token)
+                      (write-error-log "login-debug: create-user-session done")
                       (update-last-login-at db (first user))
+                      (write-error-log "login-debug: update-last-login-at done")
                       (setq *wiki-current-user* (list (first user) (second user) (third user) token csrf-token))
+                      (write-error-log "login-debug: current-user set")
                       (set-session-cookie-header token)
+                      (write-error-log "login-debug: session-cookie set")
                       (render-see-other dest)))))))))
 
 (defun handle-logout (db)

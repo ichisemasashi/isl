@@ -2318,6 +2318,38 @@
             (and (not (null col))
                  (eq (dbms-column-def-type col) 'TIMESTAMPTZ))))))
 
+(defun dbms-engine-build-updated-row (table-name table-def table-cols row set-pairs auto-touch-updated-at)
+  (let ((lock-r (dbms-engine-acquire-row-x-lock-if-needed table-name table-def row)))
+    (if (dbms-error-p lock-r)
+        lock-r
+        (let ((newvals (dbms-row-values row))
+              (sr set-pairs)
+              (failed '()))
+          (while (and (null failed) (not (null sr)))
+            (let* ((col-name (first (car sr)))
+                   (expr (second (car sr)))
+                   (col-def (dbms-find-column-def table-cols col-name))
+                   (ev (dbms-eval-expr expr row table-cols)))
+              (if (dbms-error-p ev)
+                  (setq failed ev)
+                  (let ((et (first ev))
+                        (evv (second ev))
+                        (target-type (dbms-column-def-type col-def)))
+                    (if (dbms-type-compatible-p target-type et)
+                        (setq newvals (dbms-row-values-set newvals col-name evv))
+                        (setq failed
+                              (dbms-make-error 'dbms/type-mismatch
+                                               "update value type mismatch"
+                                               (list col-name target-type et))))))
+            (setq sr (cdr sr)))
+          (if (dbms-error-p failed)
+              failed
+              (progn
+                (if auto-touch-updated-at
+                    (setq newvals (dbms-row-values-set newvals "updated_at" (dbms-current-timestamptz)))
+                    nil)
+                (dbms-make-row (dbms-row-id row) newvals))))))))
+
 (defun dbms-rows-filter-by-predicate (rows pred table-columns)
   (let ((rest rows)
         (out '())
@@ -2967,37 +2999,13 @@
                 (if (dbms-error-p ok)
                     (setq failed ok)
                     (if ok
-                        (let ((lock-r (dbms-engine-acquire-row-x-lock-if-needed table-name table-def row)))
-                          (if (dbms-error-p lock-r)
-                              (setq failed lock-r)
-                              (let ((newvals (dbms-row-values row))
-                                    (sr set-pairs))
-                                (while (and (null failed) (not (null sr)))
-                                  (let* ((col-name (first (car sr)))
-                                         (expr (second (car sr)))
-                                         (col-def (dbms-find-column-def table-cols col-name))
-                                         (ev (dbms-eval-expr expr row table-cols)))
-                                    (if (dbms-error-p ev)
-                                        (setq failed ev)
-                                        (let ((et (first ev))
-                                              (evv (second ev))
-                                              (target-type (dbms-column-def-type col-def)))
-                                          (if (dbms-type-compatible-p target-type et)
-                                              (setq newvals (dbms-row-values-set newvals col-name evv))
-                                              (setq failed
-                                                    (dbms-make-error 'dbms/type-mismatch
-                                                                     "update value type mismatch"
-                                                                     (list col-name target-type et))))))
-                                  (setq sr (cdr sr)))
-                                (if (and (null failed) auto-touch-updated-at)
-                                    (setq newvals (dbms-row-values-set newvals "updated_at" (dbms-current-timestamptz)))
-                                    nil)
-                                (if (null failed)
-                                    (let ((new-row (dbms-make-row (dbms-row-id row) newvals)))
-                                      (setq updated (cons new-row updated))
-                                      (setq touched (cons new-row touched))
-                                      (setq affected (+ affected 1)))
-                                    nil)))
+                        (let ((new-row (dbms-engine-build-updated-row table-name table-def table-cols row set-pairs auto-touch-updated-at)))
+                          (if (dbms-error-p new-row)
+                              (setq failed new-row)
+                              (progn
+                                (setq updated (cons new-row updated))
+                                (setq touched (cons new-row touched))
+                                (setq affected (+ affected 1)))))
                         (setq updated (cons row updated)))))
               (setq rest (cdr rest))))
           (if (dbms-error-p failed)
@@ -3019,7 +3027,7 @@
                                                     table-name table-def updated-rows)))
                                       (if (dbms-error-p rebuild)
                                           (dbms-make-result 'error rebuild)
-                                          (dbms-make-result-count affected)))))))))))))))))
+                                          (dbms-make-result-count affected)))))))))))))))
 
 (defun dbms-collect-referencing-fks (catalog target-table)
   (let ((pairs (dbms-catalog-tables catalog))
