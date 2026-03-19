@@ -1,10 +1,10 @@
-# wiki (Apache CGI + ISL)
+# wiki (dbms + ISL)
 
-このディレクトリは、`Apache(httpd)` から `ISL` スクリプトを CGI で実行し、
-Wiki システムを段階的に構築するための実装です。
+このディレクトリは、`dbms` を永続化先として使う Wiki 実装です。  
+現在の推奨起動方法は `examples/webserver` 経由です。`webserver` 側で `wiki` を常駐アプリとして扱うため、従来の CGI 起動より体感速度が改善します。
 
 ## ファイル構成
-- `app/wiki.lsp`: Webアプリ本体（MVP 3画面）
+- `app/wiki.lsp`: Webアプリ本体
 - `app/multipart_extract.lsp`: `multipart/form-data` の単一ファイル抽出ヘルパ
 - `cgi-bin/wiki.cgi`: Apache から呼ばれる CGI エントリ
 - `conf/httpd-wiki.conf`: httpd に include する設定例
@@ -26,7 +26,10 @@ Wiki システムを段階的に構築するための実装です。
 - `/wiki/media/new` : メディア追加（POSTで保存）
 - `/wiki/search?q=...` : 文書検索（`dbms` 上でのタイトル/本文検索 + タイトル優先）
   - 検索結果からページへ遷移すると、`q` の一致箇所をハイライト表示
-- `/wiki/admin` : 管理メニュー
+- `/wiki/admin` : システム管理メニュー
+- `/wiki/admin/users` : ユーザー管理
+- `/wiki/admin/pages` : 記事管理
+- `/wiki/admin/media` : メディア管理
 - `/wiki/admin/backup` : DB + メディアのバックアップ作成
 - `/wiki/admin/restore` : バックアップからリストア
 - `/wiki/admin/stats` : 管理用JSON統計
@@ -37,7 +40,7 @@ Wiki システムを段階的に構築するための実装です。
 認可:
 - `viewer`: 閲覧のみ
 - `editor`: ページ作成 / 編集 / メディア追加
-- `admin`: editor権限に加えて管理画面 / backup / restore
+- `admin`: editor権限に加えて管理画面 / backup / restore / user management
 
 `wiki.lsp` は `PATH_INFO` でルーティングします。
 
@@ -68,7 +71,6 @@ Wiki システムを段階的に構築するための実装です。
 
 前提:
 - リポジトリルートを `ISL_ROOT` に設定する
-- `Apache httpd` で `mod_cgi` を有効にする
 - `examples/md2html/md2html` を利用可能にしておく
 
 最小設定:
@@ -78,6 +80,77 @@ cd /Volumes/SD_ONE/work/dev/isl
 export ISL_ROOT=/Volumes/SD_ONE/work/dev/isl
 export ISL_WIKI_DB_ROOT=./examples/dbms/storage/wiki
 ```
+
+補足:
+- `dbms` のテーブル作成と初期データ投入は初回アクセス時に自動実行されます
+- PostgreSQL 用の SQL を事前に流す必要はありません
+- 初期管理者は `admin / admin` です
+
+## 推奨: webserver で起動
+
+`examples/webserver` では、`wiki.cgi` を毎回 CGI プロセスとして起動せず、`wiki` アプリを `webserver` プロセス内で再利用する構成になっています。通常はこちらを使ってください。
+
+前提:
+- リポジトリルートで実行する
+- `ISL_ROOT` を設定する
+- `examples/webserver/runtime/docroot/public/wiki-files` をメディア保存先として使う
+
+```sh
+cd /Volumes/SD_ONE/work/dev/isl
+export ISL_ROOT=/Volumes/SD_ONE/work/dev/isl
+export ISL_WIKI_DB_ROOT=./examples/dbms/storage/wiki
+export WEBSERVER_ROOT=/Volumes/SD_ONE/work/dev/isl/examples/webserver
+export WEBSERVER_CONFIG=$WEBSERVER_ROOT/conf/webserver.conf.lsp
+```
+
+起動:
+
+```sh
+WEBSERVER_CMD=start \
+WEBSERVER_TRANSPORT=http \
+WEBSERVER_PID_FILE=/tmp/webserver.pid \
+WEBSERVER_SERVER_LOG=/tmp/webserver.log \
+./bin/isl examples/webserver/app/ctl.lsp
+```
+
+停止:
+
+```sh
+WEBSERVER_CMD=stop \
+WEBSERVER_PID_FILE=/tmp/webserver.pid \
+./bin/isl examples/webserver/app/ctl.lsp
+```
+
+起動後の確認:
+
+```text
+http://localhost:18080/cgi-bin/wiki.cgi
+http://localhost:18080/cgi-bin/wiki.cgi/healthz
+http://localhost:18080/cgi-bin/wiki.cgi/admin
+http://localhost:18080/cgi-bin/wiki.cgi/admin/users
+http://localhost:18080/cgi-bin/wiki.cgi/admin/pages
+http://localhost:18080/cgi-bin/wiki.cgi/admin/media
+```
+
+ログイン確認:
+
+1. `http://localhost:18080/cgi-bin/wiki.cgi/login` を開く
+2. `admin / admin` でログインする
+3. トップに以下が表示されることを確認する
+   - `Current User: Administrator (@admin, admin)`
+   - `Logout`
+   - `System Management`
+   - `Articles`
+   - `Media Management`
+
+補足:
+- メディアURLは `http://localhost:18080/public/wiki-files/...` で配信されます
+- `WEBSERVER_CMD=-t ./bin/isl examples/webserver/app/ctl.lsp` で設定検証できます
+- 起動後に変更が反映されない場合は `stop` 後に再度 `start` してください
+
+## Apache で起動
+
+Apache を使う場合は従来どおり CGI で動作します。互換用の起動手順として残しています。
 
 Apache 設定:
 
@@ -91,10 +164,6 @@ Include "/Volumes/SD_ONE/work/dev/isl/examples/wiki/conf/httpd-wiki.conf"
 http://localhost:8080/wiki
 http://localhost:8080/wiki/healthz
 ```
-
-補足:
-- `dbms` のテーブル作成と初期データ投入は初回アクセス時に自動実行されます
-- PostgreSQL 用の SQL を事前に流す必要はありません
 
 ## DBMS ストレージ
 
@@ -154,53 +223,6 @@ Include "/Volumes/SD_ONE/work/dev/isl/examples/wiki/conf/httpd-wiki.conf"
 
 `conf/httpd-wiki.conf` はこのワークスペース (`/Volumes/SD_ONE/work/dev/isl`) に合わせたパスへ更新済みです。
 
-## webserver での起動
-
-`examples/webserver` を使う場合は、Wiki 用 CGI ランチャー
-`examples/webserver/runtime/cgi-bin/wiki.cgi` をそのまま利用できます。
-
-前提:
-- リポジトリルートで実行する
-- `ISL_ROOT` を設定する
-- `examples/webserver/runtime/docroot/public/wiki-files` をメディア保存先として使う
-
-```sh
-cd /Volumes/SD_ONE/work/dev/isl
-export ISL_ROOT=/Volumes/SD_ONE/work/dev/isl
-export ISL_WIKI_DB_ROOT=./examples/dbms/storage/wiki
-export WEBSERVER_ROOT=/Volumes/SD_ONE/work/dev/isl/examples/webserver
-export WEBSERVER_CONFIG=$WEBSERVER_ROOT/conf/webserver.conf.lsp
-```
-
-起動:
-
-```sh
-WEBSERVER_CMD=start \
-WEBSERVER_TRANSPORT=http \
-WEBSERVER_PID_FILE=/tmp/webserver.pid \
-WEBSERVER_SERVER_LOG=/tmp/webserver.log \
-./bin/isl examples/webserver/app/ctl.lsp
-```
-
-停止:
-
-```sh
-WEBSERVER_CMD=stop \
-WEBSERVER_PID_FILE=/tmp/webserver.pid \
-./bin/isl examples/webserver/app/ctl.lsp
-```
-
-起動後の確認:
-
-```text
-http://localhost:18080/cgi-bin/wiki.cgi
-http://localhost:18080/cgi-bin/wiki.cgi/healthz
-```
-
-補足:
-- メディアURLは `http://localhost:18080/public/wiki-files/...` で配信されます
-- `WEBSERVER_CMD=-t ./bin/isl examples/webserver/app/ctl.lsp` で設定検証できます
-
 ## 現在の動作確認
 
 ```text
@@ -215,6 +237,9 @@ http://localhost:8080/wiki/media
 http://localhost:8080/wiki/media/new
 http://localhost:8080/wiki/search?q=welcome
 http://localhost:8080/wiki/admin
+http://localhost:8080/wiki/admin/users
+http://localhost:8080/wiki/admin/pages
+http://localhost:8080/wiki/admin/media
 http://localhost:8080/wiki/admin/backup
 http://localhost:8080/wiki/admin/restore
 http://localhost:8080/wiki/admin/stats
@@ -227,7 +252,7 @@ http://localhost:8080/wiki/login
 
 注意:
 - `/wiki/new`, `/wiki/{slug}/edit`, `/wiki/media/new` は `editor` 以上が必要
-- `/wiki/admin`, `/wiki/admin/backup`, `/wiki/admin/restore` は `admin` が必要
+- `/wiki/admin`, `/wiki/admin/users`, `/wiki/admin/pages`, `/wiki/admin/media`, `/wiki/admin/backup`, `/wiki/admin/restore` は `admin` が必要
 - `/wiki/{slug}/delete` は `editor` 以上、削除済みページ/メディアの復元は `admin` が必要
 - POST系操作はログイン済みユーザーのみ実行可能
 - 認証済みPOSTにはフォーム埋め込みの `csrf_token` が必須
@@ -260,6 +285,8 @@ http://localhost:8080/wiki/login
 - ロールバックは `/wiki/{slug}/revisions/{rev_no}` から `admin` のみ実行でき、新しい履歴として保存される
 - 論理削除されたページは一覧/検索/通常表示から除外され、`/wiki/admin/deleted-pages` から復元できる
 - 論理削除されたメディアは一覧/配信から除外され、`/wiki/admin/deleted-media` から復元できる
+- 管理ヘッダにはログイン中ユーザー名と `Logout` が表示される
+- 一覧・履歴・管理画面の日時は人間が読める形式で表示される
 
 保存（POST）確認例:
 
