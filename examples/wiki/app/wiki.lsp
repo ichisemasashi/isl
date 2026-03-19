@@ -402,10 +402,6 @@
                      :if-does-not-exist :create)
     (format s "~A~%" line)))
 
-(defun debug-stderr (msg)
-  (with-open-file (s "/dev/stderr" :direction :output :if-exists :append)
-    (format s "wiki-debug: ~A~%" msg)))
-
 (defun write-structured-log (level event fields-json)
   (append-log-line
    (string-append
@@ -827,16 +823,10 @@
 
 (defun db-exec! (catalog sql)
   (configure-dbms-root)
-  (debug-stderr (format nil "db-exec begin ~A"
-                        (if (> (length sql) 80)
-                            (substring sql 0 80)
-                            sql)))
-  (let ((result (dbms-exec-sql (dbms-engine-init) sql)))
+  (let ((result (dbms-exec-sql catalog sql)))
     (if (and (dbms-result-p result)
              (not (eq (second result) 'error)))
-        (progn
-          (debug-stderr "db-exec ok")
-          result)
+        result
         (error (db-result-error-message result "dbms exec failed") sql))))
 
 (defun db-table-rows (table-name)
@@ -1000,22 +990,33 @@
               nil)))
       nil))
 
+(defun db-table-exists-p (catalog table-name)
+  (not (null (dbms-catalog-find-table catalog table-name))))
+
+(defun wiki-dbms-schema-ready-p (catalog)
+  (and (db-table-exists-p catalog "pages")
+       (db-table-exists-p catalog "page_revisions")
+       (db-table-exists-p catalog "media_assets")
+       (db-table-exists-p catalog "roles")
+       (db-table-exists-p catalog "users")
+       (db-table-exists-p catalog "user_sessions")
+       (db-table-exists-p catalog "audit_logs")
+       (db-table-exists-p catalog "page_tags")
+       (db-table-exists-p catalog "backup_runs")))
+
 (defun db-open ()
   (configure-dbms-root)
-  (debug-stderr "db-open begin")
   (handler-case
     (let ((catalog '()))
-      (debug-stderr "dbms-engine-init begin")
       (setq catalog (dbms-engine-init))
-      (debug-stderr "dbms-engine-init ok")
-      (debug-stderr "ensure-wiki-dbms-schema begin")
-      (ensure-wiki-dbms-schema catalog)
-      (debug-stderr "ensure-wiki-dbms-schema ok")
-      (debug-stderr "db-open ok")
+      (if (wiki-dbms-schema-ready-p catalog)
+          t
+          (progn
+            (ensure-wiki-dbms-schema catalog)
+            t))
       t)
     (error (e)
-      (debug-stderr (format nil "db-open error ~A" e))
-      t)))
+      '())))
 
 (defglobal *markdown-temp-counter* 0)
 
@@ -2240,13 +2241,9 @@
                   nil))))))
 
 (defun render-index (db)
-  (debug-stderr "render-index fetch-pages begin")
   (let ((rows (fetch-pages db))
         (base (app-base)))
-    (debug-stderr (format nil "render-index fetch-pages ok count=~A" (length rows)))
-    (debug-stderr "render-index headers begin")
     (print-headers-ok)
-    (debug-stderr "render-index headers ok")
     (print-layout-head "Wiki Index")
     (format t "<h1>Wiki Pages</h1>~%")
     (if (editor-or-admin-p)
@@ -3682,27 +3679,22 @@
          (segments (path-segments))
          (n (length segments))
          (db '()))
-    (debug-stderr (format nil "render-app begin method=~A path=~A" method raw-path))
     (clear-response-extra-headers)
     (init-request-id)
     (setq db (handler-case
                (db-open)
                (error (e) '())))
-    (debug-stderr (format nil "render-app db=~A" (if (null db) "null" "ok")))
     (if (null db)
         (if (and (= n 1) (string= (first segments) "healthz"))
             (render-healthz '())
             (error "database unavailable"))
         (progn
-          (debug-stderr "load-current-user begin")
           (load-current-user db)
-          (debug-stderr "load-current-user ok")
           (if (and (string= method "GET") (needs-canonical-redirect-p raw-path))
               (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
               (if (ensure-authorized method segments)
                   (cond
                    ((= n 0)
-                    (debug-stderr "render-index begin")
                     (render-index db))
                    ((= n 1)
                     (cond

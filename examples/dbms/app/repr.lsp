@@ -2,6 +2,7 @@
 ;; DBMS内部の共通データ表現。
 
 (defglobal *dbms-repr-version* 1)
+(defglobal *dbms-catalog-find-cache* '())
 
 (defglobal *dbms-error-codes*
   '(dbms/parse-error
@@ -201,8 +202,25 @@
             pair
             (dbms-find-table-pair table-name (cdr table-pairs))))))
 
+(defun dbms-catalog-find-cache-hit (catalog table-name)
+  (if (and (listp *dbms-catalog-find-cache*)
+           (= (length *dbms-catalog-find-cache*) 3)
+           (eq (first *dbms-catalog-find-cache*) catalog)
+           (string= (second *dbms-catalog-find-cache*) table-name))
+      (third *dbms-catalog-find-cache*)
+      '()))
+
+(defun dbms-catalog-find-cache-put! (catalog table-name pair)
+  (setq *dbms-catalog-find-cache* (list catalog table-name pair))
+  pair)
+
 (defun dbms-catalog-find-table-def (catalog table-name)
-  (let ((pair (dbms-find-table-pair table-name (dbms-catalog-tables catalog))))
+  (let ((pair (dbms-catalog-find-cache-hit catalog table-name)))
+    (if (null pair)
+        (setq pair (dbms-catalog-find-cache-put! catalog
+                                                 table-name
+                                                 (dbms-find-table-pair table-name (dbms-catalog-tables catalog))))
+        nil)
     (if (null pair)
         '()
         (second pair))))

@@ -14,6 +14,14 @@
 (defglobal *dbms-audit-archive-seq* 0)
 (defglobal *dbms-backup-generation-seq* 0)
 
+(defun dbms-storage-reverse (xs)
+  (let ((rest xs)
+        (out '()))
+    (while (not (null rest))
+      (setq out (cons (car rest) out))
+      (setq rest (cdr rest)))
+    out))
+
 (defun dbms-storage-root ()
   (let ((v (getenv "DBMS_STORAGE_ROOT")))
     (if (or (null v) (string= v ""))
@@ -133,9 +141,9 @@
                     (string= (format nil "~A" v) "#<eof>"))
                 (setq done t)
                 (progn
-                  (setq out (append out (list v)))
+                  (setq out (cons v out))
                   (setq v (read s)))))
-          out))))
+          (dbms-storage-reverse out)))))
 
 (defun dbms-storage-digits-only-p (s)
   (let ((i 0)
@@ -180,6 +188,9 @@
   (if (or (<= n 0) (null xs))
       xs
       (dbms-storage-list-drop (cdr xs) (- n 1))))
+
+(defun dbms-storage-list-append1 (xs x)
+  (dbms-storage-reverse (cons x (dbms-storage-reverse xs))))
 
 ;; ------------------------------------------------------------------
 ;; LT-001: replication metadata + WAL shipping helpers
@@ -691,10 +702,10 @@
     (while (and (not done) (not (null raw)))
       (if (dbms-wal-record-p (car raw))
           (progn
-            (setq out (append out (list (car raw))))
+            (setq out (cons (car raw) out))
             (setq raw (cdr raw)))
           (setq done t)))
-    out))
+    (dbms-storage-reverse out)))
 
 (defun dbms-storage-wal-max-txid ()
   (let ((records (dbms-storage-load-wal-records))
@@ -736,7 +747,7 @@
                 (null op))
             (dbms-make-error 'dbms/invalid-representation "invalid wal record fields" record)
             (progn
-              (setq records (append records (list record)))
+              (setq records (dbms-storage-list-append1 records record))
               (let ((saved (dbms-storage-atomic-replace (dbms-storage-wal-path) records)))
                 (if (dbms-error-p saved)
                     saved
@@ -965,10 +976,10 @@
           (while (and (not done) (not (null raw)))
             (if (dbms-wal-record-p (car raw))
                 (progn
-                  (setq out (append out (list (car raw))))
+                  (setq out (cons (car raw) out))
                   (setq raw (cdr raw)))
                 (setq done t)))
-          out))))
+          (dbms-storage-reverse out)))))
 
 (defun dbms-storage-save-wal-records (records)
   (if (not (listp records))
@@ -988,10 +999,10 @@
         (out '()))
     (while (not (null rest))
       (if (> (dbms-wal-record-lsn (car rest)) lsn)
-          (setq out (append out (list (car rest))))
+          (setq out (cons (car rest) out))
           nil)
       (setq rest (cdr rest)))
-    out))
+    (dbms-storage-reverse out)))
 
 (defun dbms-storage-create-checkpoint ()
   (let* ((last-lsn (dbms-storage-wal-max-lsn))
@@ -1347,9 +1358,10 @@
             (committed '()))
         (while (not (null rest))
           (if (<= (dbms-wal-record-lsn (car rest)) target-lsn)
-              (setq selected (append selected (list (car rest))))
+              (setq selected (cons (car rest) selected))
               nil)
           (setq rest (cdr rest)))
+        (setq selected (dbms-storage-reverse selected))
         (setq committed (dbms-storage-wal-committed-txids selected))
         (dolist (r selected)
           (if (dbms-error-p failed)

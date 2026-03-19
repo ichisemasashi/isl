@@ -117,7 +117,7 @@
                                     (if (dbms-sql-string-in-list-p upper *dbms-sql-keywords*)
                                         (dbms-sql-make-token 'keyword lexeme upper)
                                         (dbms-sql-make-token 'identifier lexeme lexeme)))))))
-                  (setq tokens (append tokens (list tok)))
+                  (setq tokens (cons tok tokens))
                   (setq last-token tok))))
 
              ((dbms-sql-digit-char-p ch)
@@ -127,7 +127,7 @@
                   (setq i (+ i 1)))
                 (let* ((lexeme (substring sql-text start i))
                        (tok (dbms-sql-make-token 'number lexeme (dbms-sql-parse-int lexeme))))
-                  (setq tokens (append tokens (list tok)))
+                  (setq tokens (cons tok tokens))
                   (setq last-token tok))))
 
              ((string= ch "'")
@@ -146,7 +146,7 @@
                            (lexeme (substring sql-text start (+ i 1)))
                            (tok (dbms-sql-make-token 'string lexeme body)))
                       (setq i (+ i 1))
-                      (setq tokens (append tokens (list tok)))
+                      (setq tokens (cons tok tokens))
                       (setq last-token tok)))))
 
              ((and (string= ch "-")
@@ -159,7 +159,7 @@
                   (setq i (+ i 1)))
                 (let* ((lexeme (substring sql-text start i))
                        (tok (dbms-sql-make-token 'number lexeme (dbms-sql-parse-int lexeme))))
-                  (setq tokens (append tokens (list tok)))
+                  (setq tokens (cons tok tokens))
                   (setq last-token tok))))
 
              ((and (< (+ i 1) n)
@@ -168,19 +168,19 @@
               (let* ((lexeme (substring sql-text i (+ i 2)))
                      (tok (dbms-sql-make-token 'operator lexeme lexeme)))
                 (setq i (+ i 2))
-                (setq tokens (append tokens (list tok)))
+                (setq tokens (cons tok tokens))
                 (setq last-token tok)))
 
              ((dbms-sql-string-in-list-p ch *dbms-sql-operator-1ch*)
               (let ((tok (dbms-sql-make-token 'operator ch ch)))
                 (setq i (+ i 1))
-                (setq tokens (append tokens (list tok)))
+                (setq tokens (cons tok tokens))
                 (setq last-token tok)))
 
              ((dbms-sql-string-in-list-p ch *dbms-sql-symbols*)
               (let ((tok (dbms-sql-make-token 'symbol ch ch)))
                 (setq i (+ i 1))
-                (setq tokens (append tokens (list tok)))
+                (setq tokens (cons tok tokens))
                 (setq last-token tok)))
 
              (t
@@ -189,5 +189,5 @@
                                      "invalid token"
                                      (substring sql-text i (+ i 1))))))))
         (if (null error-result)
-            tokens
+            (dbms-reverse tokens)
             error-result))))

@@ -102,11 +102,11 @@
                 nil))
         (if (and (= depth 0) (dbms-token-is-symbol-p tok ","))
             (progn
-              (setq out (append out (list cur)))
+              (setq out (cons (dbms-reverse cur) out))
               (setq cur '()))
-            (setq cur (append cur (list tok)))))
+            (setq cur (cons tok cur))))
       (setq rest (cdr rest)))
-    (append out (list cur))))
+    (dbms-reverse (cons (dbms-reverse cur) out))))
 
 (defun dbms-find-top-level-keyword-index (tokens kw-upper)
   (let ((rest tokens)
@@ -173,10 +173,10 @@
                         (if (or (dbms-error-p r)
                                 (not (null (dbms-parser-ok-rest r))))
                             (setq failed (dbms-parser-error "invalid function arguments" g))
-                            (setq args (append args (list (dbms-parser-ok-value r))))))))
+                            (setq args (cons (dbms-parser-ok-value r) args)))))))
                 (if (dbms-error-p failed)
                     failed
-                    (dbms-parser-ok (list 'dbms-expr 'function name args) rest))))))))
+                    (dbms-parser-ok (list 'dbms-expr 'function name (dbms-reverse args)) rest)))))))
 
 (defun dbms-parse-expr (tokens)
   (if (null tokens)
@@ -247,9 +247,9 @@
                   (if (and (dbms-token-is-symbol-p tok ")") (> depth 0))
                       (setq depth (- depth 1))
                       nil))
-              (setq seg (append seg (list tok)))
+              (setq seg (cons tok seg))
               (setq rest (cdr rest))))))
-    (list seg rest stop)))
+    (list (dbms-reverse seg) rest stop)))
 
 (defun dbms-read-parenthesized-tokens (tokens)
   (if (or (null tokens) (not (dbms-token-is-symbol-p (first tokens) "(")))
@@ -263,7 +263,7 @@
             (if (dbms-token-is-symbol-p tok "(")
                 (progn
                   (setq depth (+ depth 1))
-                  (setq inner (append inner (list tok)))
+                  (setq inner (cons tok inner))
                   (setq rest (cdr rest)))
                 (if (dbms-token-is-symbol-p tok ")")
                     (if (= depth 1)
@@ -272,14 +272,14 @@
                           (setq rest (cdr rest)))
                         (progn
                           (setq depth (- depth 1))
-                          (setq inner (append inner (list tok)))
+                          (setq inner (cons tok inner))
                           (setq rest (cdr rest))))
                     (progn
-                      (setq inner (append inner (list tok)))
+                      (setq inner (cons tok inner))
                       (setq rest (cdr rest))))))
           )
         (if done
-            (dbms-parser-ok inner rest)
+            (dbms-parser-ok (dbms-reverse inner) rest)
             (dbms-parser-error "unclosed parenthesis" tokens)))))
 
 (defun dbms-parse-simple-select-list-from-tokens (tokens)
@@ -362,12 +362,12 @@
                         (setq failed r-next)
                         (setq done t))
                       (progn
-                        (setq values (append values (list (dbms-parser-ok-value r-next))))
+                        (setq values (cons (dbms-parser-ok-value r-next) values))
                         (setq rest (dbms-parser-ok-rest r-next)))))
                 (setq done t)))
           (if (dbms-error-p failed)
               failed
-              (dbms-parser-ok values rest))))))
+              (dbms-parser-ok (dbms-reverse values) rest))))))
 
 (defun dbms-parse-expr-list (tokens)
   (let ((r-first (dbms-parse-expr tokens)))
@@ -385,12 +385,12 @@
                         (setq failed r-next)
                         (setq done t))
                       (progn
-                        (setq values (append values (list (dbms-parser-ok-value r-next))))
+                        (setq values (cons (dbms-parser-ok-value r-next) values))
                         (setq rest (dbms-parser-ok-rest r-next)))))
                 (setq done t)))
           (if (dbms-error-p failed)
               failed
-              (dbms-parser-ok values rest))))))
+              (dbms-parser-ok (dbms-reverse values) rest))))))
 
 (defun dbms-parse-column-def (tokens)
   (let ((r-name (dbms-expect-identifier tokens)))
@@ -415,7 +415,7 @@
                               (setq failed r-key)
                               (setq done t))
                             (progn
-                              (setq attrs (append attrs '(PRIMARY-KEY)))
+                              (setq attrs (cons 'PRIMARY-KEY attrs))
                               (setq rest (dbms-parser-ok-rest r-key))))))
                      ((and (not (null rest))
                            (dbms-token-is-keyword-p (first rest) "NOT"))
@@ -425,7 +425,7 @@
                               (setq failed r-null)
                               (setq done t))
                             (progn
-                              (setq attrs (append attrs '(NOT-NULL)))
+                              (setq attrs (cons 'NOT-NULL attrs))
                               (setq rest (dbms-parser-ok-rest r-null))))))
                      ((and (not (null rest))
                            (dbms-token-is-keyword-p (first rest) "DEFAULT"))
@@ -446,7 +446,7 @@
                                               (setq failed r-rp)
                                               (setq done t))
                                             (progn
-                                              (setq attrs (append attrs '(DEFAULT-NOW)))
+                                              (setq attrs (cons 'DEFAULT-NOW attrs))
                                               (setq rest (dbms-parser-ok-rest r-rp)))))))
                                 (progn
                                   (setq failed (dbms-parser-error "DEFAULT supports only now()" (dbms-parser-ok-value r-now-name)))
@@ -456,7 +456,7 @@
                   (if (dbms-error-p failed)
                       failed
                       (dbms-parser-ok
-                       (dbms-make-column-def name (dbms-parser-ok-value r-type) attrs)
+                       (dbms-make-column-def name (dbms-parser-ok-value r-type) (dbms-reverse attrs))
                        rest)))))))))
 
 (defun dbms-parse-column-def-list (tokens)
@@ -475,12 +475,12 @@
                         (setq failed r-next)
                         (setq done t))
                       (progn
-                        (setq values (append values (list (dbms-parser-ok-value r-next))))
+                        (setq values (cons (dbms-parser-ok-value r-next) values))
                         (setq rest (dbms-parser-ok-rest r-next)))))
                 (setq done t)))
           (if (dbms-error-p failed)
               failed
-              (dbms-parser-ok values rest))))))
+              (dbms-parser-ok (dbms-reverse values) rest))))))
 
 (defun dbms-parse-set-assignments (tokens)
   (let ((r-col (dbms-expect-identifier tokens)))
@@ -514,13 +514,14 @@
                                                 (setq failed r-expr2)
                                                 (setq done t))
                                               (progn
-                                                (setq pairs (append pairs (list (list (dbms-parser-ok-value r-col2)
-                                                                                      (dbms-parser-ok-value r-expr2)))))
+                                                (setq pairs (cons (list (dbms-parser-ok-value r-col2)
+                                                                        (dbms-parser-ok-value r-expr2))
+                                                                  pairs))
                                                 (setq rest (dbms-parser-ok-rest r-expr2)))))))))
                             (setq done t)))
                       (if (dbms-error-p failed)
                           failed
-                          (dbms-parser-ok pairs rest))))))))))
+                          (dbms-parser-ok (dbms-reverse pairs) rest))))))))))
 
 (defun dbms-parse-create-table (tokens)
   (let ((rest tokens)
@@ -813,14 +814,14 @@
             (if (null p)
                 (setq failed (dbms-parser-error "unsupported privilege keyword" (dbms-sql-token-lexeme (car rest))))
                 (progn
-                  (setq out (append out (list p)))
+                  (setq out (cons p out))
                   (setq rest (cdr rest))
                   (if (and (not (null rest)) (dbms-token-is-symbol-p (car rest) ","))
                       (setq rest (cdr rest))
                       (setq done t)))))))
     (if (dbms-error-p failed)
         failed
-        (dbms-parser-ok out rest))))
+        (dbms-parser-ok (dbms-reverse out) rest))))
 
 (defun dbms-parse-grant-object (tokens)
   (let ((rest tokens))
@@ -1206,8 +1207,9 @@
                     (if (dbms-error-p r-subq)
                         (setq failed r-subq)
                         (progn
-                          (setq ctes (append ctes (list (list (dbms-parser-ok-value r-name)
-                                                               (dbms-parser-ok-value r-subq)))))
+                          (setq ctes (cons (list (dbms-parser-ok-value r-name)
+                                                 (dbms-parser-ok-value r-subq))
+                                           ctes))
                           (setq rest (dbms-parser-ok-rest r-subq))
                           (if (and (not (null rest)) (dbms-token-is-symbol-p (first rest) ","))
                               (setq rest (cdr rest))
@@ -1220,7 +1222,7 @@
               (dbms-parser-ok
                (dbms-make-stmt
                 'with
-                (list (list "ctes" ctes)
+                (list (list "ctes" (dbms-reverse ctes))
                       (list "statement" (dbms-parser-ok-value r-final))))
                (dbms-parser-ok-rest r-final)))))))
 
