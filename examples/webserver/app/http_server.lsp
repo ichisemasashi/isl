@@ -657,6 +657,24 @@
             (string-append (ws-example-root)
                            "/examples/webserver/runtime/cgi-bin/wiki.cgi"))))
 
+(defglobal *ws-wiki-embed-loaded* nil)
+(defglobal *ws-wiki-embed-load-mutex* (mutex-open))
+
+(defun ws-wiki-app-path ()
+  (string-append (ws-example-root) "/examples/wiki/app/wiki.lsp"))
+
+(defun ws-ensure-wiki-embed-loaded! ()
+  (ws-with-mutex
+   *ws-wiki-embed-load-mutex*
+   (lambda ()
+     (if *ws-wiki-embed-loaded*
+         t
+         (progn
+           (setenv "WIKI_EMBED_MODE" "1")
+           (load (ws-wiki-app-path))
+           (setq *ws-wiki-embed-loaded* t)
+           t)))))
+
 (defun ws-gosh-bin ()
   (if (os-file-executable-p "/opt/homebrew/bin/gosh")
       "/opt/homebrew/bin/gosh"
@@ -689,6 +707,31 @@
    " sh -c "
    (ws-shell-quote cmd)))
 
+(defun ws-run-embedded-wiki-script (cfg req script-path script-name path-info)
+  (ws-ensure-wiki-embed-loaded!)
+  (let* ((target (ws-request-get req 'target))
+         (method (ws-request-get req 'method))
+         (version (ws-request-get req 'version))
+         (headers (ws-request-get req 'headers))
+         (body (ws-request-get req 'body))
+         (raw (wiki-handle-request-embedded
+               method
+               target
+               version
+               headers
+               body
+               script-name
+               path-info
+               (format nil "~A" (ws-config-get cfg 'listen_port))))
+         (parts (ws-cgi-split-header-body raw))
+         (hdr-text (car parts))
+         (resp-body (second parts))
+         (resp-headers (ws-parse-cgi-headers hdr-text))
+         (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
+    (ws-log (format nil "cgi done method=~A script=~A status=~A bytes=~A mode=embedded"
+                    method script-path resp-status (ws-byte-length resp-body)))
+    (list 'ok resp-status resp-headers resp-body)))
+
 (defun ws-run-cgi-script (cfg req script-path script-name path-info)
   (let* ((target (ws-request-get req 'target))
          (method (ws-request-get req 'method))
@@ -703,53 +746,53 @@
          (cmd (ws-cgi-command script-path stdin-path stdout-path)))
     (ws-log (format nil "cgi start method=~A target=~A script=~A path_info=~A timeout_sec=~A"
                     method target script-path path-info timeout-sec))
-    (ws-write-file-raw stdin-path body)
-    (setenv "REQUEST_METHOD" method)
-    (setenv "QUERY_STRING" query)
-    (setenv "CONTENT_LENGTH" (format nil "~A" (ws-byte-length body)))
-    (setenv "CONTENT_TYPE" (if (null content-type) "" content-type))
-    (setenv "SCRIPT_NAME" script-name)
-    (setenv "PATH_INFO" path-info)
-    (setenv "SERVER_PROTOCOL" version)
-    (setenv "SERVER_PORT" (format nil "~A" (ws-config-get cfg 'listen_port)))
-    (setenv "GATEWAY_INTERFACE" "CGI/1.1")
-    (setenv "HTTP_COOKIE" (let ((cookie (ws-header-get headers "cookie")))
-                            (if (null cookie) "" cookie)))
-    (setenv "HTTP_HOST" (let ((host (ws-header-get headers "host")))
-                          (if (null host) "" host)))
-    (setenv "HTTP_USER_AGENT" (let ((ua (ws-header-get headers "user-agent")))
-                                (if (null ua) "" ua)))
-    (let* ((exec-result (if (ws-example-wiki-cgi-p script-path)
-                            (list (system (ws-timeout-wrapper-command cmd timeout-sec))
-                                  #f)
-                            (system-timeout cmd timeout-sec)))
-           (status (car exec-result))
-           (timedout (or (second exec-result) (= status 142))))
-      (if timedout
-          (progn
-            (ws-log-error (format nil "cgi timeout method=~A script=~A timeout_sec=~A"
-                                  method script-path timeout-sec))
-            (ws-delete-file-if-exists stdin-path)
-            (ws-delete-file-if-exists stdout-path)
-            (list 'error 504 "cgi timeout\n"))
-          (if (not (= status 0))
-              (progn
-                (ws-log-error (format nil "cgi failed method=~A script=~A exit_status=~A"
-                                      method script-path status))
-                (ws-delete-file-if-exists stdin-path)
-                (ws-delete-file-if-exists stdout-path)
-                (list 'error 500 "cgi execution failed\n"))
-              (let* ((raw (ws-read-file-text stdout-path))
-                     (parts (ws-cgi-split-header-body raw))
-                     (hdr-text (car parts))
-                     (resp-body (second parts))
-                     (resp-headers (ws-parse-cgi-headers hdr-text))
-                     (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
-                (ws-log (format nil "cgi done method=~A script=~A status=~A bytes=~A"
-                                method script-path resp-status (ws-byte-length resp-body)))
-                (ws-delete-file-if-exists stdin-path)
-                (ws-delete-file-if-exists stdout-path)
-                (list 'ok resp-status resp-headers resp-body)))))))
+    (if (ws-example-wiki-cgi-p script-path)
+        (ws-run-embedded-wiki-script cfg req script-path script-name path-info)
+        (progn
+          (ws-write-file-raw stdin-path body)
+          (setenv "REQUEST_METHOD" method)
+          (setenv "QUERY_STRING" query)
+          (setenv "CONTENT_LENGTH" (format nil "~A" (ws-byte-length body)))
+          (setenv "CONTENT_TYPE" (if (null content-type) "" content-type))
+          (setenv "SCRIPT_NAME" script-name)
+          (setenv "PATH_INFO" path-info)
+          (setenv "SERVER_PROTOCOL" version)
+          (setenv "SERVER_PORT" (format nil "~A" (ws-config-get cfg 'listen_port)))
+          (setenv "GATEWAY_INTERFACE" "CGI/1.1")
+          (setenv "HTTP_COOKIE" (let ((cookie (ws-header-get headers "cookie")))
+                                  (if (null cookie) "" cookie)))
+          (setenv "HTTP_HOST" (let ((host (ws-header-get headers "host")))
+                                (if (null host) "" host)))
+          (setenv "HTTP_USER_AGENT" (let ((ua (ws-header-get headers "user-agent")))
+                                      (if (null ua) "" ua)))
+          (let* ((exec-result (system-timeout cmd timeout-sec))
+                 (status (car exec-result))
+                 (timedout (or (second exec-result) (= status 142))))
+            (if timedout
+                (progn
+                  (ws-log-error (format nil "cgi timeout method=~A script=~A timeout_sec=~A"
+                                        method script-path timeout-sec))
+                  (ws-delete-file-if-exists stdin-path)
+                  (ws-delete-file-if-exists stdout-path)
+                  (list 'error 504 "cgi timeout\n"))
+                (if (not (= status 0))
+                    (progn
+                      (ws-log-error (format nil "cgi failed method=~A script=~A exit_status=~A"
+                                            method script-path status))
+                      (ws-delete-file-if-exists stdin-path)
+                      (ws-delete-file-if-exists stdout-path)
+                      (list 'error 500 "cgi execution failed\n"))
+                    (let* ((raw (ws-read-file-text stdout-path))
+                           (parts (ws-cgi-split-header-body raw))
+                           (hdr-text (car parts))
+                           (resp-body (second parts))
+                           (resp-headers (ws-parse-cgi-headers hdr-text))
+                           (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
+                      (ws-log (format nil "cgi done method=~A script=~A status=~A bytes=~A"
+                                      method script-path resp-status (ws-byte-length resp-body)))
+                      (ws-delete-file-if-exists stdin-path)
+                      (ws-delete-file-if-exists stdout-path)
+                      (list 'ok resp-status resp-headers resp-body)))))))))
 
 (defun ws-handle-cgi-request (conn cfg req)
   (let* ((method (ws-request-get req 'method))

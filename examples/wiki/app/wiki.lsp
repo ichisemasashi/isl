@@ -268,9 +268,40 @@
 (defglobal *wiki-current-user* '())
 (defglobal *response-extra-headers* '())
 (defglobal *wiki-request-id* "")
+(defglobal *db-table-cache* '())
+(defglobal *wiki-request-body-override* '())
+(defglobal *wiki-embed-mutex* (mutex-open))
 
 (defun clear-response-extra-headers ()
   (setq *response-extra-headers* '()))
+
+(defun clear-db-table-cache ()
+  (setq *db-table-cache* '()))
+
+(defun db-table-cache-get (table-name)
+  (let ((xs *db-table-cache*)
+        (found '()))
+    (while (and (null found) (not (null xs)))
+      (let ((entry (car xs)))
+        (if (string= (first entry) table-name)
+            (setq found (second entry))
+            nil))
+      (setq xs (cdr xs)))
+    found))
+
+(defun db-table-cache-put (table-name rows)
+  (let ((out '())
+        (updated nil))
+    (dolist (entry *db-table-cache*)
+      (if (string= (first entry) table-name)
+          (progn
+            (setq out (cons (list table-name rows) out))
+            (setq updated t))
+          (setq out (cons entry out))))
+    (if updated
+        (setq *db-table-cache* (wiki-reverse out))
+        (setq *db-table-cache* (cons (list table-name rows) *db-table-cache*))))
+  rows)
 
 (defun add-response-header (name value)
   (setq *response-extra-headers* (cons (list name value) *response-extra-headers*)))
@@ -305,6 +336,81 @@
                      (current-role)
                      ")")
       "guest"))
+
+(defun wiki-header-value (headers name)
+  (let ((xs headers)
+        (found '()))
+    (while (and (null found) (not (null xs)))
+      (let ((entry (car xs)))
+        (if (string= (ascii-downcase-string (first entry))
+                     (ascii-downcase-string name))
+            (setq found (second entry))
+            nil))
+      (setq xs (cdr xs)))
+    (if (null found) "" found)))
+
+(defun wiki-target-query-string (target)
+  (let ((p (string-index "?" target)))
+    (if (null p)
+        ""
+        (substring target (+ p 1) (length target)))))
+
+(defun wiki-env-get-or-empty (name)
+  (let ((v (getenv name)))
+    (if (null v) "" v)))
+
+(defun wiki-restore-env-vars (saved)
+  (dolist (entry saved)
+    (setenv (first entry) (second entry))))
+
+(defun wiki-run-embedded-request (thunk)
+  (handler-case
+    (capture-output-string thunk)
+    (error (e)
+      (capture-output-string
+       (lambda ()
+         (if (string= (request-id) "")
+             (init-request-id)
+             nil)
+         (write-error-log (format nil "~A" e))
+         (render-error (format nil "~A" e)))))))
+
+(defun wiki-handle-request-embedded (method target version headers body script-name path-info server-port)
+  (mutex-lock *wiki-embed-mutex*)
+  (let* ((vars (list "REQUEST_METHOD"
+                     "QUERY_STRING"
+                     "CONTENT_LENGTH"
+                     "CONTENT_TYPE"
+                     "SCRIPT_NAME"
+                     "PATH_INFO"
+                     "SERVER_PROTOCOL"
+                     "SERVER_PORT"
+                     "GATEWAY_INTERFACE"
+                     "HTTP_COOKIE"
+                     "HTTP_HOST"
+                     "HTTP_USER_AGENT"))
+         (saved '())
+         (out ""))
+    (dolist (name vars)
+      (setq saved (cons (list name (wiki-env-get-or-empty name)) saved)))
+    (setq *wiki-request-body-override* body)
+    (setenv "REQUEST_METHOD" method)
+    (setenv "QUERY_STRING" (wiki-target-query-string target))
+    (setenv "CONTENT_LENGTH" (format nil "~A" (length body)))
+    (setenv "CONTENT_TYPE" (wiki-header-value headers "content-type"))
+    (setenv "SCRIPT_NAME" script-name)
+    (setenv "PATH_INFO" path-info)
+    (setenv "SERVER_PROTOCOL" version)
+    (setenv "SERVER_PORT" server-port)
+    (setenv "GATEWAY_INTERFACE" "CGI/1.1")
+    (setenv "HTTP_COOKIE" (wiki-header-value headers "cookie"))
+    (setenv "HTTP_HOST" (wiki-header-value headers "host"))
+    (setenv "HTTP_USER_AGENT" (wiki-header-value headers "user-agent"))
+    (setq out (wiki-run-embedded-request (lambda () (render-app))))
+    (setq *wiki-request-body-override* '())
+    (wiki-restore-env-vars saved)
+    (mutex-unlock *wiki-embed-mutex*)
+    out))
 
 (defun role-rank (role-name)
   (cond
@@ -840,11 +946,15 @@
         (error (db-result-error-message result "dbms exec failed") sql))))
 
 (defun db-table-rows (table-name)
-  (configure-dbms-root)
-  (let ((state (dbms-storage-load-table-rows table-name)))
-    (if (dbms-error-p state)
-        '()
-        (third state))))
+  (let ((cached (db-table-cache-get table-name)))
+    (if (null cached)
+        (progn
+          (configure-dbms-root)
+          (let ((state (dbms-storage-load-table-rows table-name)))
+            (if (dbms-error-p state)
+                '()
+                (db-table-cache-put table-name (third state)))))
+        cached)))
 
 (defun db-update-row-fields (row updates)
   (let ((vals (dbms-row-values row)))
@@ -857,7 +967,9 @@
   (let ((saved (dbms-engine-save-table-rows table-name rows)))
     (if (dbms-error-p saved)
         (error "dbms save failed" table-name)
-        saved)))
+        (progn
+          (db-table-cache-put table-name rows)
+          saved))))
 
 (defun db-update-table-rows! (table-name pred update-fn)
   (configure-dbms-root)
@@ -905,16 +1017,9 @@
       (let ((epoch (db-timestamp->epoch raw)))
         (if (null epoch)
             raw
-            (let ((safe-epoch (if (< epoch 0) 0 epoch)))
-              (trim-ws
-               (command-output
-                (if (string= (ascii-downcase-string (os-uname-s)) "darwin")
-                    (string-append "date -r "
-                                   (format nil "~A" safe-epoch)
-                                   " '+%Y-%m-%d %H:%M:%S %Z'")
-                    (string-append "date -d @"
-                                   (format nil "~A" safe-epoch)
-                                   " '+%Y-%m-%d %H:%M:%S %Z'")))))))))
+            (handler-case
+              (date-http-from-epoch (if (< epoch 0) 0 epoch))
+              (error (e) raw))))))
 
 (defun db-bool-sql (flag)
   (if flag "TRUE" "FALSE"))
@@ -1129,18 +1234,20 @@
   (os-safe-delete-file path))
 
 (defun read-request-body ()
-  (with-open-file (s "/dev/stdin" :direction :input)
-    (let ((line (read-line s #f))
-          (acc "")
-          (first-line t))
-      (while (not (null line))
-        (if first-line
-            (progn
-              (setq acc line)
-              (setq first-line nil))
-            (setq acc (string-append acc "\n" line)))
-        (setq line (read-line s #f)))
-      acc)))
+  (if (stringp *wiki-request-body-override*)
+      *wiki-request-body-override*
+      (with-open-file (s "/dev/stdin" :direction :input)
+        (let ((line (read-line s #f))
+              (acc "")
+              (first-line t))
+          (while (not (null line))
+            (if first-line
+                (progn
+                  (setq acc line)
+                  (setq first-line nil))
+                (setq acc (string-append acc "\n" line)))
+            (setq line (read-line s #f)))
+          acc))))
 
 (defun capture-request-body-to-file (path)
   (if (os-cat-stdin-to-file path) 0 1))
@@ -4022,6 +4129,7 @@
          (n (length segments))
          (db '()))
     (clear-response-extra-headers)
+    (clear-db-table-cache)
     (init-request-id)
     (setq db (handler-case
                (db-open)
@@ -4158,11 +4266,13 @@
                   nil))
           nil))))
 
-(handler-case
-  (render-app)
-  (error (e)
-    (if (string= (request-id) "")
-        (init-request-id)
-        nil)
-    (write-error-log (format nil "~A" e))
-    (render-error (format nil "~A" e))))
+(if (string= (env-or-empty "WIKI_EMBED_MODE") "1")
+    nil
+    (handler-case
+      (render-app)
+      (error (e)
+        (if (string= (request-id) "")
+            (init-request-id)
+            nil)
+        (write-error-log (format nil "~A" e))
+        (render-error (format nil "~A" e)))))

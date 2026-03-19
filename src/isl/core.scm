@@ -3424,6 +3424,14 @@
           (copy-port (current-input-port) out))
         :if-exists :supersede)
       #t))
+  (def 'capture-output-string
+    (lambda (thunk)
+      (unless (or (primitive? thunk) (closure? thunk))
+        (error "capture-output-string thunk must be callable" thunk))
+      (let ((p (open-output-string)))
+        (parameterize ((current-output-port p))
+          (force-value (apply-islisp thunk '())))
+        (get-output-string p))))
   (def 'uname
     (lambda ()
       (sys-uname)))
@@ -4372,6 +4380,7 @@
 
 (define *extended-primitive-symbols*
   '(debug break getenv setenv system system-timeout
+    capture-output-string
     sqlite-open sqlite-db-p sqlite-close sqlite-exec sqlite-query sqlite-query-one
     postgres-open postgres-db-p postgres-close postgres-exec postgres-query postgres-query-one
     mysql-open mysql-db-p mysql-close mysql-exec mysql-query mysql-query-one

@@ -1609,6 +1609,17 @@
                  (list (runtime-decode-process-exit-status (process-exit-status proc)) #t)))
               (host->runtime-value
                (list (runtime-decode-process-exit-status (process-exit-status proc)) #f)))))))
+  (def 'capture-output-string
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "capture-output-string expects thunk" args))
+      (let ((thunk (car args)))
+        (unless (or (primitive? thunk) (closure? thunk))
+          (runtime-raise 'type-error "capture-output-string expects callable thunk" thunk))
+        (let ((p (open-output-string)))
+          (parameterize ((current-output-port p))
+            (runtime-apply thunk '() state))
+          (host->runtime-value (get-output-string p))))))
   (def 'mutex-open
     (lambda (args state)
       (unless (= (length args) 0)
