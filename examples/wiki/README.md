@@ -225,6 +225,35 @@ Include "/Volumes/SD_ONE/work/dev/isl/examples/wiki/conf/httpd-wiki.conf"
 
 ## 現在の動作確認
 
+### webserver (`http://localhost:18080/cgi-bin/wiki.cgi`)
+
+```text
+http://localhost:18080/cgi-bin/wiki.cgi
+http://localhost:18080/cgi-bin/wiki.cgi/home
+http://localhost:18080/cgi-bin/wiki.cgi/home/edit
+http://localhost:18080/cgi-bin/wiki.cgi/home/history
+http://localhost:18080/cgi-bin/wiki.cgi/home/revisions/1
+http://localhost:18080/cgi-bin/wiki.cgi/home/compare/1/3
+http://localhost:18080/cgi-bin/wiki.cgi/new
+http://localhost:18080/cgi-bin/wiki.cgi/media
+http://localhost:18080/cgi-bin/wiki.cgi/media/new
+http://localhost:18080/cgi-bin/wiki.cgi/search?q=welcome
+http://localhost:18080/cgi-bin/wiki.cgi/admin
+http://localhost:18080/cgi-bin/wiki.cgi/admin/users
+http://localhost:18080/cgi-bin/wiki.cgi/admin/pages
+http://localhost:18080/cgi-bin/wiki.cgi/admin/media
+http://localhost:18080/cgi-bin/wiki.cgi/admin/backup
+http://localhost:18080/cgi-bin/wiki.cgi/admin/restore
+http://localhost:18080/cgi-bin/wiki.cgi/admin/stats
+http://localhost:18080/cgi-bin/wiki.cgi/admin/audit
+http://localhost:18080/cgi-bin/wiki.cgi/admin/deleted-pages
+http://localhost:18080/cgi-bin/wiki.cgi/admin/deleted-media
+http://localhost:18080/cgi-bin/wiki.cgi/healthz
+http://localhost:18080/cgi-bin/wiki.cgi/login
+```
+
+### Apache (`http://localhost:8080/wiki`)
+
 ```text
 http://localhost:8080/wiki
 http://localhost:8080/wiki/home
