@@ -296,6 +296,16 @@
 (defun logged-in-p ()
   (not (null *wiki-current-user*)))
 
+(defun current-user-label ()
+  (if (logged-in-p)
+      (string-append (current-display-name)
+                     " (@"
+                     (current-username)
+                     ", "
+                     (current-role)
+                     ")")
+      "guest"))
+
 (defun role-rank (role-name)
   (cond
    ((string= role-name "admin") 30)
@@ -836,6 +846,36 @@
         '()
         (third state))))
 
+(defun db-update-row-fields (row updates)
+  (let ((vals (dbms-row-values row)))
+    (dolist (pair updates)
+      (setq vals (dbms-row-values-set vals (first pair) (second pair))))
+    (dbms-make-row (dbms-row-id row) vals)))
+
+(defun db-save-table-rows! (table-name rows)
+  (configure-dbms-root)
+  (let ((saved (dbms-engine-save-table-rows table-name rows)))
+    (if (dbms-error-p saved)
+        (error "dbms save failed" table-name)
+        saved)))
+
+(defun db-update-table-rows! (table-name pred update-fn)
+  (configure-dbms-root)
+  (let ((state (dbms-engine-load-table-rows table-name)))
+    (if (dbms-error-p state)
+        (error "dbms load failed" table-name)
+        (let ((rows (third state))
+              (out '())
+              (count 0))
+          (dolist (row rows)
+            (if (funcall pred row)
+                (progn
+                  (setq out (cons (funcall update-fn row) out))
+                  (setq count (+ count 1)))
+                (setq out (cons row out))))
+          (db-save-table-rows! table-name (wiki-reverse out))
+          count))))
+
 (defun db-row-value (row column-name)
   (let ((v (dbms-row-get-value row column-name)))
     (if (eq v 'NULL)
@@ -847,6 +887,34 @@
 
 (defun db-now-text ()
   (format nil "~A" (get-universal-time)))
+
+(defun db-universal-time-offset ()
+  2208988800)
+
+(defun db-timestamp->epoch (raw)
+  (if (blank-text-p raw)
+      '()
+      (let ((n (parse-int-safe raw)))
+        (if (null n)
+            '()
+            (- n (db-universal-time-offset))))))
+
+(defun format-db-timestamp (raw)
+  (if (blank-text-p raw)
+      ""
+      (let ((epoch (db-timestamp->epoch raw)))
+        (if (null epoch)
+            raw
+            (let ((safe-epoch (if (< epoch 0) 0 epoch)))
+              (trim-ws
+               (command-output
+                (if (string= (ascii-downcase-string (os-uname-s)) "darwin")
+                    (string-append "date -r "
+                                   (format nil "~A" safe-epoch)
+                                   " '+%Y-%m-%d %H:%M:%S %Z'")
+                    (string-append "date -d @"
+                                   (format nil "~A" safe-epoch)
+                                   " '+%Y-%m-%d %H:%M:%S %Z'")))))))))
 
 (defun db-bool-sql (flag)
   (if flag "TRUE" "FALSE"))
@@ -937,6 +1005,27 @@
   (find-first-row
    (db-table-rows "users")
    (lambda (row) (string= (db-row-value row "username") username))))
+
+(defun fetch-user-role-options (db)
+  (let ((out '()))
+    (dolist (row (db-table-rows "roles"))
+      (setq out (cons (list (db-row-value row "name")
+                            (db-row-value row "description"))
+                      out)))
+    (sort-rows-by out (lambda (row) (first row)) nil)))
+
+(defun fetch-users-for-admin (db)
+  (let ((out '()))
+    (dolist (row (db-table-rows "users"))
+      (setq out (cons (list (db-row-value row "username")
+                            (db-row-value row "display_name")
+                            (db-row-value row "role_name")
+                            (if (eq (db-row-nullable row "enabled") t) "enabled" "disabled")
+                            (format-db-timestamp (db-row-value row "created_at"))
+                            (format-db-timestamp (db-row-value row "updated_at"))
+                            (format-db-timestamp (db-row-value row "last_login_at")))
+                      out)))
+    (sort-rows-by out (lambda (row) (first row)) nil)))
 
 (defun user-id-by-username (username)
   (let ((row (find-user-row username)))
@@ -1356,7 +1445,7 @@
    (lambda (row)
      (list (db-row-value row "slug")
            (db-row-value row "title")
-           (db-row-value row "updated_at")
+           (format-db-timestamp (db-row-value row "updated_at"))
            (db-row-value row "status")))
    (sort-rows-by
     (filter-rows
@@ -1401,7 +1490,7 @@
      (lambda (row)
        (list (db-row-value row "slug")
              (db-row-value row "title")
-             (db-row-value row "updated_at")
+             (format-db-timestamp (db-row-value row "updated_at"))
              ""
              (fetch-page-tags-text db (db-row-value row "slug"))
              (db-row-value row "status")))
@@ -1471,7 +1560,7 @@
 
 (defun fetch-page-updated-at (db slug)
   (let ((row (find-page-row-any slug)))
-    (if (null row) "" (db-row-value row "updated_at"))))
+    (if (null row) "" (format-db-timestamp (db-row-value row "updated_at")))))
 
 (defun fetch-latest-edit-summary (db slug)
   (let ((page-id (page-id-by-slug slug))
@@ -1534,7 +1623,7 @@
                 (setq out (cons (list (db-row-value row "rev_no")
                                       (db-row-value row "edited_by")
                                       (db-row-value row "edit_summary")
-                                      (db-row-value row "created_at"))
+                                      (format-db-timestamp (db-row-value row "created_at")))
                                 out))
                 nil))
           (sort-rows-by out (lambda (row) (first row)) t)))))
@@ -1561,7 +1650,7 @@
                           (db-row-value row "body_md")
                           (db-row-value row "edited_by")
                           (db-row-value row "edit_summary")
-                          (db-row-value row "created_at")))))))))
+                          (format-db-timestamp (db-row-value row "created_at"))))))))))
 
 (defun latest-revision-no (db slug)
   (let ((page (fetch-page db slug)))
@@ -1663,7 +1752,7 @@
       (if (not (string= (db-row-value row "deleted_at") ""))
           (setq out (cons (list (db-row-value row "slug")
                                 (db-row-value row "title")
-                                (db-row-value row "deleted_at")
+                                (format-db-timestamp (db-row-value row "deleted_at"))
                                 (db-row-value row "deleted_by"))
                           out))
           nil))
@@ -1680,7 +1769,7 @@
                                   (db-row-value row "stored_filename")
                                   (db-row-value row "mime_type")
                                   (if (null page-row) "" (db-row-value page-row "slug"))
-                                  (db-row-value row "deleted_at")
+                                  (format-db-timestamp (db-row-value row "deleted_at"))
                                   (db-row-value row "deleted_by"))
                             out)))
           nil))
@@ -1691,7 +1780,7 @@
     (dolist (row (db-table-rows "audit_logs"))
       (let ((user-row (table-row-by-id "users" (db-row-nullable row "actor_user_id"))))
         (setq out (cons (list (db-row-value row "id")
-                              (db-row-value row "created_at")
+                              (format-db-timestamp (db-row-value row "created_at"))
                               (if (null user-row) "[deleted-user]" (db-row-value user-row "username"))
                               (db-row-value row "action")
                               (db-row-value row "target_type")
@@ -1713,8 +1802,8 @@
                               (db-row-value row "sql_path")
                               (db-row-value row "media_path")
                               (db-row-value row "message")
-                              (db-row-value row "created_at")
-                              (db-row-value row "completed_at")
+                              (format-db-timestamp (db-row-value row "created_at"))
+                              (format-db-timestamp (db-row-value row "completed_at"))
                               (if (null user-row) "[system]" (db-row-value user-row "username")))
                         out))))
     (sort-rows-by out (lambda (row) (tenth row)) t)))
@@ -1737,8 +1826,8 @@
     (dolist (row (db-table-rows "backup_runs"))
       (setq backup-runs (+ backup-runs 1))
       (if (and (string= (db-row-value row "mode") "backup")
-               (or (string= (db-row-value row "status") "ok")
-                   (string= (db-row-value row "status") "dry-run"))
+                   (or (string= (db-row-value row "status") "ok")
+                       (string= (db-row-value row "status") "dry-run"))
                (or (string= last-backup "")
                    (value> (db-row-value row "created_at") last-backup)))
           (setq last-backup (db-row-value row "created_at"))
@@ -1748,7 +1837,7 @@
           (format nil "~A" media-active)
           (format nil "~A" media-deleted)
           (format nil "~A" backup-runs)
-          last-backup)))
+          (format-db-timestamp last-backup))))
 
 (defun fetch-user-for-login (db username password)
   (let ((row (find-user-row username)))
@@ -1798,44 +1887,42 @@
   (if (blank-text-p token)
       nil
       (handler-case
-        (db-exec!
-         db
-         (string-append
-          "UPDATE user_sessions SET revoked_at = "
-          (db-text-sql (db-now-text))
-          " WHERE session_token=" (db-text-sql token) ";"))
-        (error (e)
-          (progn
-            (write-error-log (format nil "session revoke warning: ~A" e))
-            nil)))))
+        (db-update-table-rows!
+         "user_sessions"
+         (lambda (row)
+           (string= (db-row-value row "session_token") token))
+         (lambda (row)
+           (db-update-row-fields
+            row
+            (list (list "revoked_at" (db-now-text))))))
+        (error (e) nil))))
 
 (defun touch-session-token (db token)
   (if (blank-text-p token)
       nil
       (handler-case
-        (db-exec!
-         db
-         (string-append
-          "UPDATE user_sessions SET last_seen_at = "
-          (db-text-sql (db-now-text))
-          " WHERE session_token=" (db-text-sql token) ";"))
-        (error (e)
-          (progn
-            (write-error-log (format nil "session touch warning: ~A" e))
-            nil)))))
+        (db-update-table-rows!
+         "user_sessions"
+         (lambda (row)
+           (string= (db-row-value row "session_token") token))
+         (lambda (row)
+           (db-update-row-fields
+            row
+            (list (list "last_seen_at" (db-now-text))))))
+        (error (e) nil))))
 
 (defun update-last-login-at (db username)
   (handler-case
-    (db-exec!
-     db
-     (string-append
-      "UPDATE users SET last_login_at = "
-      (db-text-sql (db-now-text))
-      " WHERE username=" (db-text-sql username) ";"))
-    (error (e)
-      (progn
-        (write-error-log (format nil "login last_login_at warning: ~A" e))
-        nil))))
+    (db-update-table-rows!
+     "users"
+     (lambda (row)
+       (string= (db-row-value row "username") username))
+     (lambda (row)
+       (db-update-row-fields
+        row
+        (list (list "last_login_at" (db-now-text))
+              (list "updated_at" (db-now-text))))))
+    (error (e) nil)))
 
 (defun load-current-user (db)
   (let ((token (session-cookie-value)))
@@ -2027,15 +2114,14 @@
   (format t "<p><a href=\"~A\">Wiki Index</a> | <a href=\"~A/media\">Media</a>"
           (app-base) (app-base))
   (if (editor-or-admin-p)
-      (format t " | <a href=\"~A/new\">New Page</a>" (app-base))
+      (format t " | <a href=\"~A/admin/pages\">Articles</a> | <a href=\"~A/new\">New Page</a>" (app-base) (app-base))
       nil)
   (if (admin-p)
-      (format t " | <a href=\"~A/admin\">Admin</a>" (app-base))
+      (format t " | <a href=\"~A/admin/media\">Media Management</a> | <a href=\"~A/admin\">System Management</a>" (app-base) (app-base))
       nil)
   (if (logged-in-p)
-      (format t " | signed in as <strong>~A</strong> (<code>~A</code>) | <a href=\"~A/logout\">Logout</a></p>~%"
-              (html-escape (current-display-name))
-              (html-escape (current-role))
+      (format t " | Current User: <strong>~A</strong> | <a href=\"~A/logout\">Logout</a></p>~%"
+              (html-escape (current-user-label))
               (app-base))
       (format t " | <a href=\"~A/login\">Login</a></p>~%" (app-base)))
   (format t "<form method=\"get\" action=\"~A/search\" style=\"margin:0 0 1rem 0\">~%" (app-base))
@@ -2262,7 +2348,7 @@
     (print-layout-head "Wiki Index")
     (format t "<h1>Wiki Pages</h1>~%")
     (if (editor-or-admin-p)
-        (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a></p>~%" base base)
+        (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a> | <a href=\"~A/admin/pages\">Article Management</a></p>~%" base base base)
         nil)
     (if (null rows)
         (format t "<p>ページがありません。</p>~%")
@@ -2734,7 +2820,7 @@
     (print-layout-head "Media Library")
     (format t "<h1>Media Library</h1>~%")
     (if (editor-or-admin-p)
-        (format t "<p><a href=\"~A/media/new\">Add Media</a></p>~%" base)
+        (format t "<p><a href=\"~A/media/new\">Add Media</a> | <a href=\"~A/admin/media\">Media Management</a></p>~%" base base)
         nil)
     (if (null rows)
         (format t "<p>メディアがありません。</p>~%")
@@ -3344,9 +3430,13 @@
 (defun render-admin-home ()
   (let ((base (app-base)))
     (print-headers-ok)
-    (print-layout-head "Admin")
-    (format t "<h1>Admin</h1>~%")
+    (print-layout-head "System Management")
+    (format t "<h1>System Management</h1>~%")
+    (format t "<p>Current User: <strong>~A</strong></p>~%" (html-escape (current-user-label)))
     (format t "<ul>~%")
+    (format t "<li><a href=\"~A/admin/users\">User Management</a></li>~%" base)
+    (format t "<li><a href=\"~A/admin/pages\">Article Management</a></li>~%" base)
+    (format t "<li><a href=\"~A/admin/media\">Media Management</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/backup\">Backup</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/restore\">Restore</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/stats\">Stats</a></li>~%" base)
@@ -3355,6 +3445,227 @@
     (format t "<li><a href=\"~A/admin/deleted-media\">Deleted Media</a></li>~%" base)
     (format t "</ul>~%")
     (print-layout-foot)))
+
+(defun render-role-select-options (db selected-role)
+  (dolist (row (fetch-user-role-options db))
+    (let ((role-name (first row))
+          (role-desc (second row)))
+      (format t "<option value=\"~A\"~A>~A - ~A</option>~%"
+              (html-escape role-name)
+              (if (string= role-name selected-role) " selected" "")
+              (html-escape role-name)
+              (html-escape role-desc)))))
+
+(defun render-admin-users (db)
+  (let ((base (app-base))
+        (rows (fetch-users-for-admin db)))
+    (print-headers-ok)
+    (print-layout-head "User Management")
+    (format t "<h1>User Management</h1>~%")
+    (format t "<p><a href=\"~A/admin\">System Management</a></p>~%" base)
+    (format t "<h2>Create User</h2>~%")
+    (format t "<form method=\"post\" action=\"~A/admin/users\">~%" base)
+    (render-csrf-hidden-input)
+    (format t "<p><label>Username<br><input type=\"text\" name=\"username\" value=\"\" style=\"width:100%\"></label></p>~%")
+    (format t "<p><label>Display Name<br><input type=\"text\" name=\"display_name\" value=\"\" style=\"width:100%\"></label></p>~%")
+    (format t "<p><label>Password<br><input type=\"text\" name=\"password\" value=\"\" style=\"width:100%\"></label></p>~%")
+    (format t "<p><label>Role<br><select name=\"role_name\">~%")
+    (render-role-select-options db "viewer")
+    (format t "</select></label></p>~%")
+    (format t "<p><label><input type=\"checkbox\" name=\"enabled\" value=\"1\" checked> Enabled</label></p>~%")
+    (format t "<p><button type=\"submit\">Create User</button></p>~%")
+    (format t "</form>~%")
+    (format t "<h2>Existing Users</h2>~%")
+    (if (null rows)
+        (format t "<p>ユーザーはまだありません。</p>~%")
+        (progn
+          (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
+          (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Username</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Display</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Role</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">State</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Created</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Last Login</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Action</th></tr></thead>~%")
+          (format t "<tbody>~%")
+          (dolist (row rows)
+            (let ((username (first row))
+                  (display-name (second row))
+                  (role-name (third row))
+                  (state (fourth row))
+                  (created-at (fifth row))
+                  (last-login-at (seventh row)))
+              (format t "<tr>~%")
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape username))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape display-name))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape role-name))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape state))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape created-at))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape (if (blank-text-p last-login-at) "-" last-login-at)))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~%")
+              (format t "<form method=\"post\" action=\"~A/admin/users/~A\" style=\"margin:0\">~%" base (html-escape username))
+              (render-csrf-hidden-input)
+              (format t "<p><input type=\"text\" name=\"display_name\" value=\"~A\" style=\"width:100%\"></p>~%" (html-escape display-name))
+              (format t "<p><select name=\"role_name\">~%")
+              (render-role-select-options db role-name)
+              (format t "</select></p>~%")
+              (format t "<p><input type=\"text\" name=\"password\" value=\"\" style=\"width:100%\" placeholder=\"leave blank to keep current password\"></p>~%")
+              (format t "<p><label><input type=\"checkbox\" name=\"enabled\" value=\"1\"~A> Enabled</label></p>~%"
+                      (if (string= state "enabled") " checked" ""))
+              (format t "<p><button type=\"submit\">Save User</button></p>~%")
+              (format t "</form>~%")
+              (format t "</td>~%")
+              (format t "</tr>~%")))
+          (format t "</tbody></table>~%")))
+    (print-layout-foot)))
+
+(defun render-admin-pages (db)
+  (let ((base (app-base))
+        (rows (fetch-pages db)))
+    (print-headers-ok)
+    (print-layout-head "Article Management")
+    (format t "<h1>Article Management</h1>~%")
+    (format t "<p><a href=\"~A/admin\">System Management</a> | <a href=\"~A/new\">Create New Page</a> | <a href=\"~A/admin/deleted-pages\">Deleted Pages</a></p>~%" base base base)
+    (if (null rows)
+        (format t "<p>記事はまだありません。</p>~%")
+        (progn
+          (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
+          (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Slug</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Title</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Status</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Updated</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Action</th></tr></thead>~%")
+          (format t "<tbody>~%")
+          (dolist (row rows)
+            (let ((slug (first row))
+                  (title (second row))
+                  (updated-at (third row))
+                  (page-status (fourth row)))
+              (format t "<tr>~%")
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape slug))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape title))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape page-status))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape updated-at))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><a href=\"~A/~A\">View</a> | <a href=\"~A/~A/edit\">Edit</a>" base (html-escape slug) base (html-escape slug))
+              (format t "<form method=\"post\" action=\"~A/~A/delete\" style=\"margin-top:.5rem\">~%" base (html-escape slug))
+              (render-csrf-hidden-input)
+              (format t "<button type=\"submit\" onclick=\"return confirm('Delete page ~A?');\">Delete</button>~%" (html-escape slug))
+              (format t "</form></td>~%")
+              (format t "</tr>~%")))
+          (format t "</tbody></table>~%")))
+    (print-layout-foot)))
+
+(defun render-admin-media (db)
+  (let ((base (app-base))
+        (rows (fetch-media-list db)))
+    (print-headers-ok)
+    (print-layout-head "Media Management")
+    (format t "<h1>Media Management</h1>~%")
+    (format t "<p><a href=\"~A/admin\">System Management</a> | <a href=\"~A/media/new\">Add Media</a> | <a href=\"~A/admin/deleted-media\">Deleted Media</a></p>~%" base base base)
+    (if (null rows)
+        (format t "<p>メディアはまだありません。</p>~%")
+        (progn
+          (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
+          (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">ID</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Type</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Title</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Page</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">File</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Action</th></tr></thead>~%")
+          (format t "<tbody>~%")
+          (dolist (row rows)
+            (let ((media-id (first row))
+                  (media-type (second row))
+                  (media-title (third row))
+                  (stored-filename (fourth row))
+                  (page-slug (sixth row)))
+              (format t "<tr>~%")
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape media-id))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape media-type))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape media-title))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%"
+                      (if (blank-text-p page-slug) "-" (html-escape page-slug)))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><a href=\"~A/files/~A\">~A</a></td>~%"
+                      base
+                      (html-escape stored-filename)
+                      (html-escape stored-filename))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~%")
+              (format t "<form method=\"post\" action=\"~A/media/~A/delete\" style=\"margin:0\">~%" base (html-escape media-id))
+              (render-csrf-hidden-input)
+              (format t "<button type=\"submit\" onclick=\"return confirm('Delete media #~A?');\">Delete</button>~%" (html-escape media-id))
+              (format t "</form>~%")
+              (format t "</td>~%")
+              (format t "</tr>~%")))
+          (format t "</tbody></table>~%")))
+    (print-layout-foot)))
+
+(defun create-admin-user (db)
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((username (parse-form-field raw-body "username"))
+              (display-name (parse-form-field raw-body "display_name"))
+              (password (parse-form-field raw-body "password"))
+              (role-name (parse-form-field raw-body "role_name"))
+              (enabled (string= (parse-form-field raw-body "enabled") "1")))
+          (if (or (blank-text-p username)
+                  (blank-text-p display-name)
+                  (blank-text-p password))
+              (render-bad-request "username, display_name and password are required")
+              (if (null (find-first-row (fetch-user-role-options db)
+                                        (lambda (row) (string= (first row) role-name))))
+                  (render-bad-request "invalid role_name")
+                  (if (not (null (find-user-row username)))
+                      (render-bad-request "username already exists")
+                      (progn
+                        (db-exec!
+                         db
+                         (string-append
+                          "INSERT INTO users (username, display_name, password_hash, role_name, enabled) VALUES ("
+                          (db-text-sql username) ", "
+                          (db-text-sql display-name) ", "
+                          (db-text-sql password) ", "
+                          (db-text-sql role-name) ", "
+                          (db-bool-sql enabled)
+                          ");"))
+                        (write-audit-log
+                         db
+                         "user.create"
+                         "user"
+                         username
+                         (make-audit-meta-3
+                          "display_name" display-name
+                          "role_name" role-name
+                          "enabled" (if enabled "true" "false")))
+                        (render-see-other (string-append (app-base) "/admin/users"))))))))))
+
+(defun update-admin-user (db username)
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((user-row (find-user-row username))
+              (display-name (parse-form-field raw-body "display_name"))
+              (role-name (parse-form-field raw-body "role_name"))
+              (password (parse-form-field raw-body "password"))
+              (enabled (string= (parse-form-field raw-body "enabled") "1")))
+          (if (null user-row)
+              (render-not-found)
+              (if (or (blank-text-p display-name)
+                      (null (find-first-row (fetch-user-role-options db)
+                                            (lambda (row) (string= (first row) role-name)))))
+                  (render-bad-request "display_name and valid role_name are required")
+                  (progn
+                    (db-update-table-rows!
+                     "users"
+                     (lambda (row)
+                       (string= (db-row-value row "username") username))
+                     (lambda (row)
+                       (db-update-row-fields
+                        row
+                        (append
+                         (list (list "display_name" display-name)
+                               (list "role_name" role-name)
+                               (list "enabled" enabled)
+                               (list "updated_at" (db-now-text)))
+                         (if (blank-text-p password)
+                             '()
+                             (list (list "password_hash" password)))))))
+                    (write-audit-log
+                     db
+                     "user.update"
+                     "user"
+                     username
+                     (make-audit-meta-4
+                      "display_name" display-name
+                      "role_name" role-name
+                      "enabled" (if enabled "true" "false")
+                      "password_changed" (if (blank-text-p password) "false" "true")))
+                    (render-see-other (string-append (app-base) "/admin/users")))))))))
 
 (defun render-healthz (db)
   (let ((db-ok (not (null db))))
@@ -3542,12 +3853,15 @@
               (let ((stored-filename (fourth media))
                     (storage-path (sixth media))
                     (page-slug (seventh media)))
-                (db-exec!
-                 db
-                 (string-append
-                  "UPDATE media_assets SET deleted_at=" (db-text-sql (db-now-text))
-                  ", deleted_by=" (db-text-sql (current-username))
-                  " WHERE id=" (format nil "~A" mid) ";"))
+                (db-update-table-rows!
+                 "media_assets"
+                 (lambda (row)
+                   (= (db-row-nullable row "id") mid))
+                 (lambda (row)
+                   (db-update-row-fields
+                    row
+                    (list (list "deleted_at" (db-now-text))
+                          (list "deleted_by" (current-username))))))
                 (write-audit-log
                  db
                  "media.delete"
@@ -3567,12 +3881,16 @@
           (if (null page)
               (render-not-found)
               (let ((title (second page)))
-                (db-exec!
-                 db
-                 (string-append
-                  "UPDATE pages SET deleted_at=" (db-text-sql (db-now-text))
-                  ", deleted_by=" (db-text-sql (current-username))
-                  " WHERE slug=" (db-text-sql slug) ";"))
+                (db-update-table-rows!
+                 "pages"
+                 (lambda (row)
+                   (string= (db-row-value row "slug") slug))
+                 (lambda (row)
+                   (db-update-row-fields
+                    row
+                    (list (list "deleted_at" (db-now-text))
+                          (list "deleted_by" (current-username))
+                          (list "updated_at" (db-now-text))))))
                 (write-audit-log
                  db
                  "page.delete"
@@ -3591,11 +3909,16 @@
           (if (or (null page) (string= (fifth page) ""))
               (render-not-found)
               (let ((title (second page)))
-                (db-exec!
-                 db
-                 (string-append
-                  "UPDATE pages SET deleted_at = NULL, deleted_by = NULL WHERE slug="
-                  (db-text-sql slug) ";"))
+                (db-update-table-rows!
+                 "pages"
+                 (lambda (row)
+                   (string= (db-row-value row "slug") slug))
+                 (lambda (row)
+                   (db-update-row-fields
+                    row
+                    (list (list "deleted_at" 'NULL)
+                          (list "deleted_by" 'NULL)
+                          (list "updated_at" (db-now-text))))))
                 (write-audit-log
                  db
                  "page.restore"
@@ -3615,11 +3938,15 @@
           (if (or (null mid) (null media) (string= (eighth media) ""))
               (render-not-found)
               (let ((stored-filename (fourth media)))
-                (db-exec!
-                 db
-                 (string-append
-                  "UPDATE media_assets SET deleted_at = NULL, deleted_by = NULL WHERE id="
-                  (format nil "~A" mid) ";"))
+                (db-update-table-rows!
+                 "media_assets"
+                 (lambda (row)
+                   (= (db-row-nullable row "id") mid))
+                 (lambda (row)
+                   (db-update-row-fields
+                    row
+                    (list (list "deleted_at" 'NULL)
+                          (list "deleted_by" 'NULL)))))
                 (write-audit-log
                  db
                  "media.restore"
@@ -3736,11 +4063,19 @@
                    ((= n 2)
                     (cond
                      ((string= (first segments) "admin")
-                      (cond
+                     (cond
                        ((string= (second segments) "audit")
                         (render-admin-audit db))
                        ((string= (second segments) "stats")
                         (render-admin-stats db))
+                       ((string= (second segments) "users")
+                        (if (string= method "POST")
+                            (create-admin-user db)
+                            (render-admin-users db)))
+                       ((string= (second segments) "pages")
+                        (render-admin-pages db))
+                       ((string= (second segments) "media")
+                        (render-admin-media db))
                        ((string= (second segments) "deleted-pages")
                         (render-admin-deleted-pages db))
                        ((string= (second segments) "deleted-media")
@@ -3776,7 +4111,12 @@
                      (t
                       (render-not-found))))
                    ((= n 3)
-                    (cond
+                   (cond
+                    ((and (string= (first segments) "admin")
+                          (string= (second segments) "users"))
+                     (if (string= method "POST")
+                         (update-admin-user db (third segments))
+                         (render-not-found)))
                      ((and (string= (first segments) "media")
                            (string= (third segments) "delete"))
                       (if (string= method "POST")
