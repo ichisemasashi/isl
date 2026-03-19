@@ -13,6 +13,8 @@
 (defglobal *dbms-storage-tmp-seq* 0)
 (defglobal *dbms-audit-archive-seq* 0)
 (defglobal *dbms-backup-generation-seq* 0)
+(defglobal *dbms-storage-sexpr-cache* '())
+(defglobal *dbms-storage-sexpr-list-cache* '())
 
 (defun dbms-storage-reverse (xs)
   (let ((rest xs)
@@ -21,6 +23,61 @@
       (setq out (cons (car rest) out))
       (setq rest (cdr rest)))
     out))
+
+(defun dbms-storage-cache-get (cache path)
+  (if (null cache)
+      '()
+      (let ((entry (car cache)))
+        (if (and (listp entry)
+                 (= (length entry) 3)
+                 (stringp (first entry))
+                 (string= (first entry) path))
+            entry
+            (dbms-storage-cache-get (cdr cache) path)))))
+
+(defun dbms-storage-cache-put (cache path value)
+  (if (null cache)
+      (list (list path t value))
+      (let ((entry (car cache)))
+        (if (and (listp entry)
+                 (= (length entry) 3)
+                 (stringp (first entry))
+                 (string= (first entry) path))
+            (cons (list path t value) (cdr cache))
+            (cons entry (dbms-storage-cache-put (cdr cache) path value))))))
+
+(defun dbms-storage-cache-remove (cache path)
+  (if (null cache)
+      '()
+      (let ((entry (car cache)))
+        (if (and (listp entry)
+                 (= (length entry) 3)
+                 (stringp (first entry))
+                 (string= (first entry) path))
+            (dbms-storage-cache-remove (cdr cache) path)
+            (cons entry (dbms-storage-cache-remove (cdr cache) path))))))
+
+(defun dbms-storage-cache-put-sexpr! (path value)
+  (setq *dbms-storage-sexpr-cache*
+        (dbms-storage-cache-put *dbms-storage-sexpr-cache* path value))
+  value)
+
+(defun dbms-storage-cache-put-sexpr-list! (path value)
+  (setq *dbms-storage-sexpr-list-cache*
+        (dbms-storage-cache-put *dbms-storage-sexpr-list-cache* path value))
+  value)
+
+(defun dbms-storage-cache-invalidate-path! (path)
+  (setq *dbms-storage-sexpr-cache*
+        (dbms-storage-cache-remove *dbms-storage-sexpr-cache* path))
+  (setq *dbms-storage-sexpr-list-cache*
+        (dbms-storage-cache-remove *dbms-storage-sexpr-list-cache* path))
+  'ok)
+
+(defun dbms-storage-clear-read-cache! ()
+  (setq *dbms-storage-sexpr-cache* '())
+  (setq *dbms-storage-sexpr-list-cache* '())
+  'ok)
 
 (defun dbms-storage-root ()
   (let ((v (getenv "DBMS_STORAGE_ROOT")))
@@ -120,30 +177,41 @@
 (defun dbms-storage-write-sexpr-file (path value)
   (with-open-file (s path :direction :output :if-exists :overwrite :if-does-not-exist :create)
     (format s "~S~%" value))
+  (dbms-storage-cache-invalidate-path! path)
+  (dbms-storage-cache-put-sexpr! path value)
   value)
 
 (defun dbms-storage-read-sexpr-file (path)
   (if (null (probe-file path))
       '()
-      (with-open-file (s path :direction :input)
-        (read s))))
+      (let ((cached (dbms-storage-cache-get *dbms-storage-sexpr-cache* path)))
+        (if (null cached)
+            (let ((value (with-open-file (s path :direction :input)
+                           (read s))))
+              (dbms-storage-cache-put-sexpr! path value))
+            (third cached)))))
 
 (defun dbms-storage-read-all-sexpr-file (path)
   (if (null (probe-file path))
       '()
-      (with-open-file (s path :direction :input)
-        (let ((out '())
-              (v '())
-              (done nil))
-          (setq v (read s))
-          (while (not done)
-            (if (or (null v)
-                    (string= (format nil "~A" v) "#<eof>"))
-                (setq done t)
-                (progn
-                  (setq out (cons v out))
-                  (setq v (read s)))))
-          (dbms-storage-reverse out)))))
+      (let ((cached (dbms-storage-cache-get *dbms-storage-sexpr-list-cache* path)))
+        (if (null cached)
+            (dbms-storage-cache-put-sexpr-list!
+             path
+             (with-open-file (s path :direction :input)
+               (let ((out '())
+                     (v '())
+                     (done nil))
+                 (setq v (read s))
+                 (while (not done)
+                   (if (or (null v)
+                           (string= (format nil "~A" v) "#<eof>"))
+                       (setq done t)
+                       (progn
+                         (setq out (cons v out))
+                         (setq v (read s)))))
+                 (dbms-storage-reverse out))))
+            (third cached)))))
 
 (defun dbms-storage-digits-only-p (s)
   (let ((i 0)
@@ -1389,7 +1457,10 @@
             tmp-write
             (let ((mv-status (if (os-mv tmp-path target-path) 0 1)))
               (if (= mv-status 0)
-                  value
+                  (progn
+                    (dbms-storage-cache-invalidate-path! tmp-path)
+                    (dbms-storage-cache-put-sexpr! target-path value)
+                    value)
                   ;; mv 失敗時フォールバック: 明示警告のうえ直接上書き。
                   (progn
                     (format t "[dbms-storage-warning] atomic replace failed, fallback overwrite: ~A~%" target-path)

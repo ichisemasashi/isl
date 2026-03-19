@@ -31,6 +31,7 @@
 (defglobal *dbms-metrics* '())
 (defglobal *dbms-catalog-cache* '())
 (defglobal *dbms-table-cache* '())
+(defglobal *dbms-index-cache* '())
 
 (defun dbms-metrics-empty ()
   (list 'dbms-metrics
@@ -82,6 +83,8 @@
 (defun dbms-engine-clear-read-cache! ()
   (setq *dbms-catalog-cache* '())
   (setq *dbms-table-cache* '())
+  (setq *dbms-index-cache* '())
+  (dbms-storage-clear-read-cache!)
   'ok)
 
 (defun dbms-engine-cache-table-get (table-name)
@@ -90,6 +93,34 @@
 (defun dbms-engine-cache-table-put! (table-name table-state)
   (setq *dbms-table-cache* (dbms-assoc-put *dbms-table-cache* table-name table-state))
   table-state)
+
+(defun dbms-engine-index-cache-key (table-name index-name)
+  (string-append table-name "\t" index-name))
+
+(defun dbms-engine-cache-index-get (table-name index-name)
+  (dbms-assoc-get *dbms-index-cache* (dbms-engine-index-cache-key table-name index-name)))
+
+(defun dbms-engine-cache-index-put! (table-name index-name index-data)
+  (setq *dbms-index-cache*
+        (dbms-assoc-put *dbms-index-cache*
+                        (dbms-engine-index-cache-key table-name index-name)
+                        index-data))
+  index-data)
+
+(defun dbms-engine-cache-index-remove-table! (table-name)
+  (let ((rest *dbms-index-cache*)
+        (out '()))
+    (while (not (null rest))
+      (let ((entry (car rest)))
+        (if (and (listp entry)
+                 (>= (length entry) 2)
+                 (stringp (first entry))
+                 (not (starts-with (first entry) (string-append table-name "\t"))))
+            (setq out (cons entry out))
+            nil))
+      (setq rest (cdr rest)))
+    (setq *dbms-index-cache* (dbms-reverse out))
+    'ok))
 
 (defun dbms-engine-recovery-lag-from-report (recovered)
   (if (and (listp recovered)
@@ -1018,8 +1049,22 @@
         (if (dbms-error-p saved)
             saved
             (progn
+              (dbms-engine-cache-index-remove-table! table-name)
               (dbms-engine-cache-table-put! table-name state)
               saved)))))
+
+(defun dbms-engine-load-index (table-name index-name)
+  (let ((cached (dbms-engine-cache-index-get table-name index-name)))
+    (if (dbms-btree-index-p cached)
+        (progn
+          (dbms-metrics-inc! "cache-hit")
+          cached)
+        (let ((loaded (dbms-storage-load-index table-name index-name)))
+          (dbms-metrics-inc! "cache-miss")
+          (if (dbms-btree-index-p loaded)
+              (dbms-engine-cache-index-put! table-name index-name loaded)
+              nil)
+          loaded))))
 
 (defun dbms-assoc-get (pairs key)
   (if (or (null pairs) (not (listp pairs)))
@@ -1226,7 +1271,10 @@
   (let ((built (dbms-storage-build-btree-index table-name index-name column-name rows)))
     (if (dbms-error-p built)
         built
-        (dbms-storage-save-index table-name index-name built))))
+        (let ((saved (dbms-storage-save-index table-name index-name built)))
+          (if (dbms-error-p saved)
+              saved
+              (dbms-engine-cache-index-put! table-name index-name built))))))
 
 (defun dbms-engine-rebuild-table-indexes-from-def (table-name table-def rows)
   (let ((indexes (dbms-table-indexes table-def))
@@ -2584,7 +2632,7 @@
                               (dbms-table-find-index-by-column (dbms-table-indexes table-def) scan-col)))
                (idx-data (if (null idx-entry)
                              '()
-                             (dbms-storage-load-index table-name (dbms-index-entry-name idx-entry))))
+                             (dbms-engine-load-index table-name (dbms-index-entry-name idx-entry))))
                (probe-type-ok (if (not (null eq-probe))
                                   (dbms-probe-type-compatible-p table-cols (first eq-probe) (third eq-probe))
                                   (if (not (null range-probe))
