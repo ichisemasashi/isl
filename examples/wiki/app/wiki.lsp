@@ -1126,6 +1126,7 @@
                             (db-row-value row "display_name")
                             (db-row-value row "role_name")
                             (if (eq (db-row-nullable row "enabled") t) "enabled" "disabled")
+                            (fetch-user-home-slug (db-row-value row "username"))
                             (format-db-timestamp (db-row-value row "created_at"))
                             (format-db-timestamp (db-row-value row "updated_at"))
                             (format-db-timestamp (db-row-value row "last_login_at")))
@@ -1139,6 +1140,112 @@
 (defun page-id-by-slug (slug)
   (let ((row (find-page-row-any slug)))
     (if (null row) '() (db-row-nullable row "id"))))
+
+(defun find-wiki-setting-row (setting-key)
+  (find-first-row
+   (db-table-rows "wiki_settings")
+   (lambda (row) (string= (db-row-value row "setting_key") setting-key))))
+
+(defun fetch-wiki-setting-value (setting-key)
+  (let ((row (find-wiki-setting-row setting-key)))
+    (if (null row) "" (db-row-value row "setting_value"))))
+
+(defun save-wiki-setting! (db setting-key setting-value)
+  (let ((row (find-wiki-setting-row setting-key)))
+    (if (null row)
+        (db-exec!
+         db
+         (string-append
+          "INSERT INTO wiki_settings (setting_key, setting_value, updated_at, updated_by) VALUES ("
+          (db-text-sql setting-key) ", "
+          (db-text-sql setting-value) ", "
+          (db-text-sql (db-now-text)) ", "
+          (db-nullable-text-sql (current-username))
+          ");"))
+        (db-update-table-rows!
+         "wiki_settings"
+         (lambda (current-row)
+           (string= (db-row-value current-row "setting_key") setting-key))
+         (lambda (current-row)
+           (db-update-row-fields
+            current-row
+            (list (list "setting_value" setting-value)
+                  (list "updated_at" (db-now-text))
+                  (list "updated_by" (current-username)))))))))
+
+(defun find-user-home-preference-row (user-id)
+  (if (null user-id)
+      '()
+      (find-first-row
+       (db-table-rows "user_home_preferences")
+       (lambda (row) (= (db-row-nullable row "user_id") user-id)))))
+
+(defun fetch-user-home-slug (username)
+  (let* ((user-id (user-id-by-username username))
+         (row (find-user-home-preference-row user-id)))
+    (if (null row) "" (db-row-value row "home_slug"))))
+
+(defun save-user-home-preference! (db username home-slug)
+  (let ((user-id (user-id-by-username username)))
+    (if (null user-id)
+        nil
+        (let ((row (find-user-home-preference-row user-id)))
+          (if (null row)
+              (db-exec!
+               db
+               (string-append
+                "INSERT INTO user_home_preferences (user_id, home_slug, updated_at, updated_by) VALUES ("
+                (format nil "~A" user-id) ", "
+                (db-text-sql home-slug) ", "
+                (db-text-sql (db-now-text)) ", "
+                (db-nullable-text-sql (current-username))
+                ");"))
+              (db-update-table-rows!
+               "user_home_preferences"
+               (lambda (current-row)
+                 (= (db-row-nullable current-row "user_id") user-id))
+               (lambda (current-row)
+                 (db-update-row-fields
+                  current-row
+                  (list (list "home_slug" home-slug)
+                        (list "updated_at" (db-now-text))
+                        (list "updated_by" (current-username)))))))))))
+
+(defun active-page-row-p (row)
+  (and (not (null row))
+       (string= (db-row-value row "deleted_at") "")))
+
+(defun valid-home-slug-p (slug)
+  (or (blank-text-p slug)
+      (active-page-row-p (find-page-row-any slug))))
+
+(defun fetch-page-options-for-home-settings (db)
+  (mapcar
+   (lambda (row)
+     (list (db-row-value row "slug")
+           (db-row-value row "title")
+           (db-row-value row "status")))
+   (sort-rows-by
+    (filter-rows
+     (db-table-rows "pages")
+     (lambda (row) (active-page-row-p row)))
+    (lambda (row) (db-row-value row "slug"))
+    nil)))
+
+(defun system-default-home-slug ()
+  (fetch-wiki-setting-value "system_default_home_slug"))
+
+(defun effective-home-slug (db)
+  (let ((user-slug (if (logged-in-p) (fetch-user-home-slug (current-username)) ""))
+        (system-slug (system-default-home-slug)))
+    (cond
+     ((and (not (blank-text-p user-slug))
+           (not (null (fetch-page db user-slug))))
+      user-slug)
+     ((and (not (blank-text-p system-slug))
+           (not (null (fetch-page db system-slug))))
+      system-slug)
+     (t ""))))
 
 (defun string-contains-ci-p (needle haystack)
   (not (null (string-index (ascii-downcase-string needle)
@@ -1155,7 +1262,9 @@
             "CREATE TABLE IF NOT EXISTS user_sessions (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, session_token TEXT NOT NULL, csrf_token TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now(), last_seen_at TIMESTAMPTZ DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ);"
             "CREATE TABLE IF NOT EXISTS audit_logs (id BIGSERIAL PRIMARY KEY, actor_user_id BIGINT, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT, meta_json TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now());"
             "CREATE TABLE IF NOT EXISTS page_tags (id BIGSERIAL PRIMARY KEY, page_id BIGINT NOT NULL, tag TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now());"
-            "CREATE TABLE IF NOT EXISTS backup_runs (id BIGSERIAL PRIMARY KEY, triggered_by_user_id BIGINT, mode TEXT NOT NULL, status TEXT NOT NULL, backup_dir TEXT, keep_count INTEGER, dry_run BOOL NOT NULL, sql_path TEXT, media_path TEXT, message TEXT, created_at TIMESTAMPTZ DEFAULT now(), completed_at TIMESTAMPTZ);"))
+            "CREATE TABLE IF NOT EXISTS backup_runs (id BIGSERIAL PRIMARY KEY, triggered_by_user_id BIGINT, mode TEXT NOT NULL, status TEXT NOT NULL, backup_dir TEXT, keep_count INTEGER, dry_run BOOL NOT NULL, sql_path TEXT, media_path TEXT, message TEXT, created_at TIMESTAMPTZ DEFAULT now(), completed_at TIMESTAMPTZ);"
+            "CREATE TABLE IF NOT EXISTS wiki_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT now(), updated_by TEXT);"
+            "CREATE TABLE IF NOT EXISTS user_home_preferences (user_id BIGINT PRIMARY KEY, home_slug TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT now(), updated_by TEXT);"))
     (db-exec! catalog sql))
   (if (null (find-first-row (db-table-rows "roles") (lambda (row) (string= (db-row-value row "name") "viewer"))))
       (db-exec! catalog "INSERT INTO roles (name, description) VALUES ('viewer', 'Read-only wiki access');")
@@ -1196,7 +1305,9 @@
        (db-table-exists-p catalog "user_sessions")
        (db-table-exists-p catalog "audit_logs")
        (db-table-exists-p catalog "page_tags")
-       (db-table-exists-p catalog "backup_runs")))
+       (db-table-exists-p catalog "backup_runs")
+       (db-table-exists-p catalog "wiki_settings")
+       (db-table-exists-p catalog "user_home_preferences")))
 
 (defun db-open ()
   (configure-dbms-root)
@@ -1526,8 +1637,69 @@
       (setq i (+ i 1)))
     all-space))
 
-(defun markdown->html (body-md)
-  (let* ((normalized-md (expand-wiki-links body-md))
+(defun top-page-features-token ()
+  "{{wiki-home-features}}")
+
+(defun string-replace-all (text needle replacement)
+  (if (or (blank-text-p needle)
+          (null (string-index needle text)))
+      text
+      (let ((start 0)
+            (out "")
+            (needle-len (length needle))
+            (found '()))
+        (setq found (index-of-from text needle start))
+        (while (not (null found))
+          (setq out (string-append out (substring text start found) replacement))
+          (setq start (+ found needle-len))
+          (setq found (index-of-from text needle start)))
+        (string-append out (substring text start (length text))))))
+
+(defun render-top-page-feature-actions ()
+  (let ((base (app-base)))
+    (if (editor-or-admin-p)
+        (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a> | <a href=\"~A/admin/pages\">Article Management</a></p>~%" base base base)
+        nil)))
+
+(defun render-top-page-feature-page-list (rows)
+  (let ((base (app-base)))
+    (if (null rows)
+        (format t "<p>ページがありません。</p>~%")
+        (progn
+          (format t "<ul>~%")
+          (dolist (row rows)
+            (let ((slug (first row))
+                  (title (second row))
+                  (updated-at (third row))
+                  (page-status (fourth row)))
+              (format t "<li><a href=\"~A/~A\">~A</a> <small>(~A / ~A)</small></li>~%"
+                      base
+                      (html-escape slug)
+                      (html-escape title)
+                      (html-escape updated-at)
+                      (html-escape page-status))))
+          (format t "</ul>~%")))))
+
+(defun render-top-page-features-fragment (db include-heading)
+  (let ((rows (fetch-pages db)))
+    (format t "<section class=\"wiki-top-page-features\">~%")
+    (if include-heading
+        (format t "<h2>Wiki Pages</h2>~%")
+        nil)
+    (render-top-page-feature-actions)
+    (render-top-page-feature-page-list rows)
+    (format t "</section>~%")))
+
+(defun expand-top-page-features-token (db body-md)
+  (string-replace-all
+   body-md
+   (top-page-features-token)
+   (capture-output-string
+    (lambda ()
+      (render-top-page-features-fragment db t)))))
+
+(defun markdown->html (db body-md)
+  (let* ((normalized-md (expand-top-page-features-token db (expand-wiki-links body-md)))
          (base (next-temp-base))
          (md-path (string-append base ".md"))
          (html-path (string-append base ".html"))
@@ -2449,31 +2621,18 @@
                   nil))))))
 
 (defun render-index (db)
-  (let ((rows (fetch-pages db))
-        (base (app-base)))
-    (print-headers-ok)
-    (print-layout-head "Wiki Index")
-    (format t "<h1>Wiki Pages</h1>~%")
-    (if (editor-or-admin-p)
-        (format t "<p><a href=\"~A/new\">Create New Page</a> | <a href=\"~A/media/new\">Add Media</a> | <a href=\"~A/admin/pages\">Article Management</a></p>~%" base base base)
-        nil)
-    (if (null rows)
-        (format t "<p>ページがありません。</p>~%")
-        (progn
-          (format t "<ul>~%")
-          (dolist (row rows)
-            (let ((slug (first row))
-                  (title (second row))
-                  (updated-at (third row))
-                  (page-status (fourth row)))
-              (format t "<li><a href=\"~A/~A\">~A</a> <small>(~A / ~A)</small></li>~%"
-                      base
-                      (html-escape slug)
-                      (html-escape title)
-                      (html-escape updated-at)
-                      (html-escape page-status))))
-          (format t "</ul>~%")))
-    (print-layout-foot)))
+  (print-headers-ok)
+  (print-layout-head "Wiki Index")
+  (format t "<h1>Wiki Pages</h1>~%")
+  (render-top-page-feature-actions)
+  (render-top-page-feature-page-list (fetch-pages db))
+  (print-layout-foot))
+
+(defun render-root-home (db)
+  (let ((slug (effective-home-slug db)))
+    (if (blank-text-p slug)
+        (render-index db)
+        (render-view db slug))))
 
 (defun render-search (db)
   (let ((q (query-param "q"))
@@ -2565,7 +2724,7 @@
 	                  (latest-summary (fetch-latest-edit-summary db slug))
 	                  (media-rows (fetch-media-for-page db slug))
                   (search-q (query-param "q")))
-              (let ((body-html (markdown->html body-md)))
+              (let ((body-html (markdown->html db body-md)))
               (print-headers-ok)
               (print-layout-head title)
 	              (format t "<h1>~A</h1>~%" (html-escape title))
@@ -2704,7 +2863,7 @@
                   (edited-by (fourth rev))
                   (edit-summary (fifth rev))
                   (created-at (sixth rev)))
-              (let ((body-html (markdown->html body-md)))
+              (let ((body-html (markdown->html db body-md)))
                 (print-headers-ok)
                 (print-layout-head (string-append "Revision " found-rev-no ": " title))
                 (format t "<h1>Revision ~A: ~A</h1>~%" (html-escape found-rev-no) (html-escape title))
@@ -3129,13 +3288,20 @@
               (render-file-not-found)
               (render-media-file-stream storage-path mime-type download-name))))))
 
-(defun render-page-slug-datalist (rows)
-  (format t "<datalist id=\"page-slugs\">~%")
+(defun render-page-slug-datalist-with-id (rows datalist-id)
+  (format t "<datalist id=\"~A\">~%" (html-escape datalist-id))
   (dolist (row rows)
-    (format t "<option value=\"~A\">~A</option>~%"
+    (format t "<option value=\"~A\">~A~A</option>~%"
             (html-escape (first row))
-            (html-escape (second row))))
+            (html-escape (second row))
+            (if (and (>= (length row) 3)
+                     (not (blank-text-p (third row))))
+                (string-append " (" (html-escape (third row)) ")")
+                "")))
   (format t "</datalist>~%"))
+
+(defun render-page-slug-datalist (rows)
+  (render-page-slug-datalist-with-id rows "page-slugs"))
 
 (defun render-media-new (db)
   (let ((base (app-base))
@@ -3541,6 +3707,7 @@
     (format t "<h1>System Management</h1>~%")
     (format t "<p>Current User: <strong>~A</strong></p>~%" (html-escape (current-user-label)))
     (format t "<ul>~%")
+    (format t "<li><a href=\"~A/admin/settings\">Top Page Settings</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/users\">User Management</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/pages\">Article Management</a></li>~%" base)
     (format t "<li><a href=\"~A/admin/media\">Media Management</a></li>~%" base)
@@ -3563,9 +3730,53 @@
               (html-escape role-name)
               (html-escape role-desc)))))
 
+(defun render-home-slug-input (rows datalist-id field-name current-value placeholder-text)
+  (render-page-slug-datalist-with-id rows datalist-id)
+  (format t "<p><label>Top Page Slug (optional)<br><input type=\"text\" name=\"~A\" value=\"~A\" style=\"width:100%\" list=\"~A\" placeholder=\"~A\"></label></p>~%"
+          (html-escape field-name)
+          (html-escape current-value)
+          (html-escape datalist-id)
+          (html-escape placeholder-text)))
+
+(defun render-admin-settings (db)
+  (let ((base (app-base))
+        (system-home-slug (system-default-home-slug))
+        (rows (fetch-page-options-for-home-settings db)))
+    (print-headers-ok)
+    (print-layout-head "Top Page Settings")
+    (format t "<h1>Top Page Settings</h1>~%")
+    (format t "<p><a href=\"~A/admin\">System Management</a></p>~%" base)
+    (format t "<p><small>Priority: user-specific top page -> system default top page -> current legacy top page.</small></p>~%")
+    (format t "<form method=\"post\" action=\"~A/admin/settings\">~%" base)
+    (render-csrf-hidden-input)
+    (render-home-slug-input rows "system-home-page-slugs" "system_home_slug" system-home-slug "home")
+    (format t "<p><small>Leave blank to keep using the current top page (`/wiki` page list). To show the legacy top page functions inside a wiki page, put <code>~A</code> in the page body.</small></p>~%"
+            (html-escape (top-page-features-token)))
+    (format t "<p><button type=\"submit\">Save Settings</button></p>~%")
+    (format t "</form>~%")
+    (print-layout-foot)))
+
+(defun save-admin-settings (db)
+  (let ((raw-body (read-form-body-or-render t)))
+    (if (null raw-body)
+        nil
+        (let ((system-home-slug (parse-form-field raw-body "system_home_slug")))
+          (if (not (valid-home-slug-p system-home-slug))
+              (render-bad-request "system_home_slug must reference an existing page")
+              (progn
+                (save-wiki-setting! db "system_default_home_slug" system-home-slug)
+                (write-audit-log
+                 db
+                 "settings.update"
+                 "wiki_settings"
+                 "system_default_home_slug"
+                 (make-audit-meta-1 "system_home_slug" system-home-slug))
+                (render-see-other (string-append (app-base) "/admin/settings"))))))))
+
 (defun render-admin-users (db)
   (let ((base (app-base))
-        (rows (fetch-users-for-admin db)))
+        (rows (fetch-users-for-admin db))
+        (page-rows (fetch-page-options-for-home-settings db)))
     (print-headers-ok)
     (print-layout-head "User Management")
     (format t "<h1>User Management</h1>~%")
@@ -3579,6 +3790,7 @@
     (format t "<p><label>Role<br><select name=\"role_name\">~%")
     (render-role-select-options db "viewer")
     (format t "</select></label></p>~%")
+    (render-home-slug-input page-rows "user-home-page-slugs-create" "home_slug" "" "inherit system default")
     (format t "<p><label><input type=\"checkbox\" name=\"enabled\" value=\"1\" checked> Enabled</label></p>~%")
     (format t "<p><button type=\"submit\">Create User</button></p>~%")
     (format t "</form>~%")
@@ -3587,20 +3799,23 @@
         (format t "<p>ユーザーはまだありません。</p>~%")
         (progn
           (format t "<table style=\"width:100%;border-collapse:collapse\">~%")
-          (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Username</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Display</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Role</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">State</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Created</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Last Login</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Action</th></tr></thead>~%")
+          (format t "<thead><tr><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Username</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Display</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Role</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">State</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Top Page</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Created</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Last Login</th><th style=\"text-align:left;border-bottom:1px solid #ddd;padding:.4rem\">Action</th></tr></thead>~%")
           (format t "<tbody>~%")
           (dolist (row rows)
             (let ((username (first row))
                   (display-name (second row))
                   (role-name (third row))
                   (state (fourth row))
-                  (created-at (fifth row))
-                  (last-login-at (seventh row)))
+                  (home-slug (fifth row))
+                  (created-at (sixth row))
+                  (last-login-at (eighth row)))
               (format t "<tr>~%")
               (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape username))
               (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape display-name))
               (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><code>~A</code></td>~%" (html-escape role-name))
               (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape state))
+              (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%"
+                      (if (blank-text-p home-slug) "<small>inherit system default</small>" (html-escape home-slug)))
               (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape created-at))
               (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~A</td>~%" (html-escape (if (blank-text-p last-login-at) "-" last-login-at)))
               (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\">~%")
@@ -3610,6 +3825,7 @@
               (format t "<p><select name=\"role_name\">~%")
               (render-role-select-options db role-name)
               (format t "</select></p>~%")
+              (render-home-slug-input page-rows (string-append "user-home-page-slugs-" username) "home_slug" home-slug "inherit system default")
               (format t "<p><input type=\"text\" name=\"password\" value=\"\" style=\"width:100%\" placeholder=\"leave blank to keep current password\"></p>~%")
               (format t "<p><label><input type=\"checkbox\" name=\"enabled\" value=\"1\"~A> Enabled</label></p>~%"
                       (if (string= state "enabled") " checked" ""))
@@ -3699,6 +3915,7 @@
               (display-name (parse-form-field raw-body "display_name"))
               (password (parse-form-field raw-body "password"))
               (role-name (parse-form-field raw-body "role_name"))
+              (home-slug (parse-form-field raw-body "home_slug"))
               (enabled (string= (parse-form-field raw-body "enabled") "1")))
           (if (or (blank-text-p username)
                   (blank-text-p display-name)
@@ -3707,29 +3924,33 @@
               (if (null (find-first-row (fetch-user-role-options db)
                                         (lambda (row) (string= (first row) role-name))))
                   (render-bad-request "invalid role_name")
-                  (if (not (null (find-user-row username)))
-                      (render-bad-request "username already exists")
-                      (progn
-                        (db-exec!
-                         db
-                         (string-append
-                          "INSERT INTO users (username, display_name, password_hash, role_name, enabled) VALUES ("
-                          (db-text-sql username) ", "
-                          (db-text-sql display-name) ", "
-                          (db-text-sql password) ", "
-                          (db-text-sql role-name) ", "
-                          (db-bool-sql enabled)
-                          ");"))
-                        (write-audit-log
-                         db
-                         "user.create"
-                         "user"
-                         username
-                         (make-audit-meta-3
-                          "display_name" display-name
-                          "role_name" role-name
-                          "enabled" (if enabled "true" "false")))
-                        (render-see-other (string-append (app-base) "/admin/users"))))))))))
+                  (if (not (valid-home-slug-p home-slug))
+                      (render-bad-request "home_slug must reference an existing page")
+                      (if (not (null (find-user-row username)))
+                          (render-bad-request "username already exists")
+                          (progn
+                            (db-exec!
+                             db
+                             (string-append
+                              "INSERT INTO users (username, display_name, password_hash, role_name, enabled) VALUES ("
+                              (db-text-sql username) ", "
+                              (db-text-sql display-name) ", "
+                              (db-text-sql password) ", "
+                              (db-text-sql role-name) ", "
+                              (db-bool-sql enabled)
+                              ");"))
+                            (save-user-home-preference! db username home-slug)
+                            (write-audit-log
+                             db
+                             "user.create"
+                             "user"
+                             username
+                             (make-audit-meta-4
+                              "display_name" display-name
+                              "role_name" role-name
+                              "enabled" (if enabled "true" "false")
+                              "home_slug" home-slug))
+                            (render-see-other (string-append (app-base) "/admin/users")))))))))))
 
 (defun update-admin-user (db username)
   (let ((raw-body (read-form-body-or-render t)))
@@ -3739,6 +3960,7 @@
               (display-name (parse-form-field raw-body "display_name"))
               (role-name (parse-form-field raw-body "role_name"))
               (password (parse-form-field raw-body "password"))
+              (home-slug (parse-form-field raw-body "home_slug"))
               (enabled (string= (parse-form-field raw-body "enabled") "1")))
           (if (null user-row)
               (render-not-found)
@@ -3746,33 +3968,39 @@
                       (null (find-first-row (fetch-user-role-options db)
                                             (lambda (row) (string= (first row) role-name)))))
                   (render-bad-request "display_name and valid role_name are required")
-                  (progn
-                    (db-update-table-rows!
-                     "users"
-                     (lambda (row)
-                       (string= (db-row-value row "username") username))
-                     (lambda (row)
-                       (db-update-row-fields
-                        row
-                        (append
-                         (list (list "display_name" display-name)
-                               (list "role_name" role-name)
-                               (list "enabled" enabled)
-                               (list "updated_at" (db-now-text)))
-                         (if (blank-text-p password)
-                             '()
-                             (list (list "password_hash" password)))))))
-                    (write-audit-log
-                     db
-                     "user.update"
-                     "user"
-                     username
-                     (make-audit-meta-4
-                      "display_name" display-name
-                      "role_name" role-name
-                      "enabled" (if enabled "true" "false")
-                      "password_changed" (if (blank-text-p password) "false" "true")))
-                    (render-see-other (string-append (app-base) "/admin/users")))))))))
+                  (if (not (valid-home-slug-p home-slug))
+                      (render-bad-request "home_slug must reference an existing page")
+                      (progn
+                        (db-update-table-rows!
+                         "users"
+                         (lambda (row)
+                           (string= (db-row-value row "username") username))
+                         (lambda (row)
+                           (db-update-row-fields
+                            row
+                            (append
+                             (list (list "display_name" display-name)
+                                   (list "role_name" role-name)
+                                   (list "enabled" enabled)
+                                   (list "updated_at" (db-now-text)))
+                             (if (blank-text-p password)
+                                 '()
+                                 (list (list "password_hash" password)))))))
+                        (save-user-home-preference! db username home-slug)
+                        (write-audit-log
+                         db
+                         "user.update"
+                         "user"
+                         username
+                         (string-append
+                          "{"
+                          "\"display_name\":\"" (json-escape display-name) "\","
+                          "\"role_name\":\"" (json-escape role-name) "\","
+                          "\"enabled\":\"" (json-escape (if enabled "true" "false")) "\","
+                          "\"password_changed\":\"" (json-escape (if (blank-text-p password) "false" "true")) "\","
+                          "\"home_slug\":\"" (json-escape home-slug) "\""
+                          "}"))
+                        (render-see-other (string-append (app-base) "/admin/users"))))))))))
 
 (defun render-healthz (db)
   (let ((db-ok (not (null db))))
@@ -4143,9 +4371,9 @@
           (if (and (string= method "GET") (needs-canonical-redirect-p raw-path))
               (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
               (if (ensure-authorized method segments)
-                  (cond
+                   (cond
                    ((= n 0)
-                    (render-index db))
+                    (render-root-home db))
                    ((= n 1)
                     (cond
                      ((string= (first segments) "new")
@@ -4176,6 +4404,10 @@
                         (render-admin-audit db))
                        ((string= (second segments) "stats")
                         (render-admin-stats db))
+                       ((string= (second segments) "settings")
+                        (if (string= method "POST")
+                            (save-admin-settings db)
+                            (render-admin-settings db)))
                        ((string= (second segments) "users")
                         (if (string= method "POST")
                             (create-admin-user db)

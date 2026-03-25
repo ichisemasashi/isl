@@ -12,10 +12,11 @@
 - `db/*.sql`: 旧 PostgreSQL 版のスキーマ資産
 - `docs/markdown-policy.md`: Markdown変換方式の決定記録
 - `docs/restore-runbook.md`: 復元手順書
+- `docs/top-page-settings.md`: トップページ設定と埋め込み方法
 - `docs/url-naming-conventions.md`: URL / 命名規約の固定
 
 ## MVP 3画面
-- `/wiki` : ページ一覧
+- `/wiki` : トップページ（ユーザー個別 -> システム既定 -> 未設定時はページ一覧）
 - `/wiki/{slug}` : ページ表示（DBの Markdown を HTML 変換して表示）
 - `/wiki/{slug}/edit` : 編集画面（POSTで保存可能）
 - `/wiki/{slug}/history` : 編集履歴一覧
@@ -27,6 +28,7 @@
 - `/wiki/search?q=...` : 文書検索（`dbms` 上でのタイトル/本文検索 + タイトル優先）
   - 検索結果からページへ遷移すると、`q` の一致箇所をハイライト表示
 - `/wiki/admin` : システム管理メニュー
+- `/wiki/admin/settings` : トップページ設定
 - `/wiki/admin/users` : ユーザー管理
 - `/wiki/admin/pages` : 記事管理
 - `/wiki/admin/media` : メディア管理
@@ -63,9 +65,13 @@
 - 入出力は一時ファイル経由
 - Wiki内リンク記法を前処理:
   - `[[home]]` -> `/wiki/home` へのリンク
- - `[[home|Home Page]]` -> 表示名つきリンク
- - 必要に応じて `ISL_WIKI_MD2HTML` で実行バイナリを上書き可能
- - `cgi-bin/wiki.cgi` / `app/multipart_extract.lsp` / `scripts/run-backup.lsp` は ISL スクリプトとして実行される
+  - `[[home|Home Page]]` -> 表示名つきリンク
+- トップページ埋め込みトークン:
+  - `{{wiki-home-features}}` -> 従来の `/wiki` ページ一覧と操作リンクを展開
+- 必要に応じて `ISL_WIKI_MD2HTML` で実行バイナリを上書き可能
+- `cgi-bin/wiki.cgi` / `app/multipart_extract.lsp` / `scripts/run-backup.lsp` は ISL スクリプトとして実行される
+
+トップページ設定の詳細は `docs/top-page-settings.md` を参照してください。
 
 ## 起動方法
 
@@ -127,6 +133,7 @@ WEBSERVER_PID_FILE=/tmp/webserver.pid \
 http://localhost:18080/cgi-bin/wiki.cgi
 http://localhost:18080/cgi-bin/wiki.cgi/healthz
 http://localhost:18080/cgi-bin/wiki.cgi/admin
+http://localhost:18080/cgi-bin/wiki.cgi/admin/settings
 http://localhost:18080/cgi-bin/wiki.cgi/admin/users
 http://localhost:18080/cgi-bin/wiki.cgi/admin/pages
 http://localhost:18080/cgi-bin/wiki.cgi/admin/media
@@ -190,6 +197,8 @@ export ISL_WIKI_DB_ROOT='./examples/dbms/storage/wiki'
 - `audit_logs`
 - `page_tags`
 - `backup_runs`
+- `wiki_settings`
+- `user_home_preferences`
 
 初期管理者:
 - username: `admin`
@@ -239,6 +248,7 @@ http://localhost:18080/cgi-bin/wiki.cgi/media
 http://localhost:18080/cgi-bin/wiki.cgi/media/new
 http://localhost:18080/cgi-bin/wiki.cgi/search?q=welcome
 http://localhost:18080/cgi-bin/wiki.cgi/admin
+http://localhost:18080/cgi-bin/wiki.cgi/admin/settings
 http://localhost:18080/cgi-bin/wiki.cgi/admin/users
 http://localhost:18080/cgi-bin/wiki.cgi/admin/pages
 http://localhost:18080/cgi-bin/wiki.cgi/admin/media
