@@ -1,0 +1,1 @@
+(dbms-btree-index "user_home_preferences" "__pk__user_home_preferences__user_id" "user_id" 1 2 ((1 (dbms-btree-page (dbms-btree-page-header 1 0 0 64 4096 (root)) leaf () () ()))))

@@ -1141,6 +1141,65 @@
   (let ((row (find-page-row-any slug)))
     (if (null row) '() (db-row-nullable row "id"))))
 
+(defun db-bootstrap-table! (catalog table-def)
+  (let ((exists (dbms-catalog-find-table catalog (dbms-table-def-name table-def))))
+    (if (not (null exists))
+        catalog
+        (let* ((created (dbms-catalog-create-table catalog table-def)))
+          (if (dbms-error-p created)
+              (error "db bootstrap create-table failed" (dbms-table-def-name table-def))
+              (let* ((normalized (dbms-catalog-find-table created (dbms-table-def-name table-def)))
+                     (table-def2 (if (null normalized)
+                                     table-def
+                                     (dbms-ensure-constraint-indexes-on-table-def normalized)))
+                     (catalog2 (dbms-catalog-replace-table-def created table-def2)))
+                (if (dbms-error-p catalog2)
+                    (error "db bootstrap catalog replace failed" (dbms-table-def-name table-def))
+                    (let ((saved-catalog (dbms-engine-save-catalog catalog2))
+                          (saved-table (dbms-engine-save-table-rows (dbms-table-def-name table-def2) '()))
+                          (saved-idx (dbms-engine-rebuild-table-indexes-from-def
+                                      (dbms-table-def-name table-def2)
+                                      table-def2
+                                      '())))
+                      (if (dbms-error-p saved-catalog)
+                          (error "db bootstrap save-catalog failed" (dbms-table-def-name table-def2))
+                          nil)
+                      (if (dbms-error-p saved-table)
+                          (error "db bootstrap save-table failed" (dbms-table-def-name table-def2))
+                          nil)
+                      (if (dbms-error-p saved-idx)
+                          (error "db bootstrap save-index failed" (dbms-table-def-name table-def2))
+                          nil)
+                      catalog2))))))))
+
+(defun ensure-wiki-home-settings-schema (catalog)
+  (let ((cur catalog))
+    (setq cur
+          (db-bootstrap-table!
+           cur
+           (dbms-make-table-def
+            "wiki_settings"
+            (list
+             (dbms-make-column-def "setting_key" 'TEXT '(PRIMARY-KEY))
+             (dbms-make-column-def "setting_value" 'TEXT '(NOT-NULL))
+             (dbms-make-column-def "updated_at" 'TIMESTAMPTZ '(DEFAULT-NOW))
+             (dbms-make-column-def "updated_by" 'TEXT '()))
+            '()
+            '())))
+    (setq cur
+          (db-bootstrap-table!
+           cur
+           (dbms-make-table-def
+            "user_home_preferences"
+            (list
+             (dbms-make-column-def "user_id" 'BIGINT '(PRIMARY-KEY))
+             (dbms-make-column-def "home_slug" 'TEXT '(NOT-NULL))
+             (dbms-make-column-def "updated_at" 'TIMESTAMPTZ '(DEFAULT-NOW))
+             (dbms-make-column-def "updated_by" 'TEXT '()))
+            '()
+            '())))
+    cur))
+
 (defun find-wiki-setting-row (setting-key)
   (find-first-row
    (db-table-rows "wiki_settings")
@@ -1314,6 +1373,7 @@
   (handler-case
     (let ((catalog '()))
       (setq catalog (dbms-engine-init))
+      (setq catalog (ensure-wiki-home-settings-schema catalog))
       (if (wiki-dbms-schema-ready-p catalog)
           t
           (progn

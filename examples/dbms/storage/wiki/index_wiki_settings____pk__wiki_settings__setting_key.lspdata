@@ -1,0 +1,1 @@
+(dbms-btree-index "wiki_settings" "__pk__wiki_settings__setting_key" "setting_key" 1 2 ((1 (dbms-btree-page (dbms-btree-page-header 1 0 0 64 4096 (root)) leaf () () ()))))
