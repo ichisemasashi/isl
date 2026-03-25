@@ -30,6 +30,7 @@
       (setq suffix (+ suffix 1))
       (setq root (string-append root-base "-" (format nil "~A" suffix))))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_SESSION_USER" "admin")
 
     ;; bootstrap as admin session
     (setq catalog (dbms-engine-init))

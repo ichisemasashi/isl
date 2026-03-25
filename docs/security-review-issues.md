@@ -71,18 +71,25 @@
 
 ## P1: dbms の認証境界が弱い
 
-状態: 未対応
+状態: 対応済み（互換 escape hatch あり）
 
 内容:
 
 - `DBMS_SESSION_USER` 未指定時に `admin` へフォールバックする
 - 埋め込み側の認証漏れがそのまま管理者権限につながる
 
-推奨対応:
+対応:
 
-- 未認証時は `anonymous` またはエラーにする
-- `admin` 自動昇格を廃止する
-- DBMS を単体利用する入口で明示ログインを必須化する
+- 既定セッションを未認証 `""` に変更
+- `DBMS_SESSION_USER` が未知ユーザーのときは未認証へフォールバック
+- 互換目的で `DBMS_ALLOW_IMPLICIT_ADMIN=1` のときだけ暗黙 `admin` を許可
+- DBMS bootstrap admin の固定パスワードは廃止
+- `DBMS_INITIAL_ADMIN_PASSWORD` を優先し、未指定時は one-time password を `/tmp/isl-dbms-initial-admin-password.txt` に保存
+- 互換目的で `DBMS_BOOTSTRAP_ALLOW_DEFAULT_ADMIN=1` のときだけ `admin` を許可
+
+残課題:
+
+- DBMS 単体利用時の明示ログイン CLI / セッション確立手順をドキュメント化したい
 
 ## P2: wiki の open redirect
 
@@ -99,18 +106,25 @@
 
 ## P2: dbms の独自 KDF / 監査整合性ハッシュ
 
-状態: 未対応
+状態: 対応済み（互換読込あり）
 
 内容:
 
 - password KDF と audit hash が独自実装
 - 強度・検証容易性の面で標準暗号 primitives より弱い
 
-推奨対応:
+対応:
 
-- password: Argon2id / bcrypt / PBKDF2-HMAC-SHA256
-- audit: HMAC-SHA256 以上の keyed hash
-- audit key は固定値ではなく環境または秘密情報ストアから供給
+- password: `PBKDF2-HMAC-SHA256-100000` に変更
+- audit: `HMAC-SHA256` に変更
+- audit key の固定値 bootstrap を廃止し、未設定時はランダム生成へ変更
+- 旧 credential hash は互換検証を残しつつ、新規保存は標準 KDF へ統一
+- 旧 audit log は verify / normalize 時に読み込み互換を持たせた
+
+残課題:
+
+- OpenSSL CLI 呼び出し依存を将来的にはライブラリ化したい
+- パスワード KDF の将来候補として Argon2id も検討したい
 
 ## P3: isl はサンドボックスではない
 

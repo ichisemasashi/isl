@@ -1136,7 +1136,7 @@
        (stringp (dbms-ninth v))))
 
 (defun dbms-storage-empty-security-meta ()
-  (list 'dbms-security-meta 1 "KDF-V1-32" '() "DISABLED" "" "" "" "dbms-audit-bootstrap-key"))
+  (list 'dbms-security-meta 1 "PBKDF2-HMAC-SHA256-100000" '() "DISABLED" "" "" "" ""))
 
 (defun dbms-storage-load-security-meta ()
   (let ((raw (dbms-storage-read-sexpr-file (dbms-storage-security-path))))
@@ -1239,9 +1239,96 @@
       (setq i (+ i 1)))
     (format nil "~X" acc)))
 
-(defun dbms-storage-audit-entry-hash (audit-key prev-hash record)
+(defun dbms-storage-ascii-downcase (s)
+  (let ((i 0)
+        (out ""))
+    (while (< i (length s))
+      (let* ((ch (substring s i (+ i 1)))
+             (p (string-index ch "ABCDEFGHIJKLMNOPQRSTUVWXYZ")))
+        (setq out
+              (string-append out
+                             (if (null p)
+                                 ch
+                                 (substring "abcdefghijklmnopqrstuvwxyz" p (+ p 1))))))
+      (setq i (+ i 1)))
+    out))
+
+(defun dbms-storage-hex-normalize (s)
+  (let ((i 0)
+        (out ""))
+    (while (< i (length s))
+      (let ((ch (substring s i (+ i 1))))
+        (if (or (string= ch ":")
+                (string= ch " ")
+                (string= ch "\r")
+                (string= ch "\n")
+                (string= ch "\t"))
+            nil
+            (setq out (string-append out (dbms-storage-ascii-downcase ch)))))
+      (setq i (+ i 1)))
+    out))
+
+(defun dbms-storage-temp-secret-path (prefix)
+  (dbms-storage-next-tmp-path (string-append (dbms-storage-root) "/" prefix)))
+
+(defun dbms-storage-openssl-bin ()
+  (cond
+   ((os-file-executable-p "/opt/homebrew/opt/openssl@3/bin/openssl")
+    "/opt/homebrew/opt/openssl@3/bin/openssl")
+   ((os-file-executable-p "/opt/homebrew/bin/openssl")
+    "/opt/homebrew/bin/openssl")
+   ((os-file-executable-p "/usr/local/bin/openssl")
+    "/usr/local/bin/openssl")
+   (t
+    "openssl")))
+
+(defun dbms-storage-openssl-pbkdf2-sha256 (password salt iterations)
+  (let ((out ""))
+    (setq out
+          (os-command-output
+           (string-append
+            (dbms-storage-shell-quote (dbms-storage-openssl-bin))
+            " kdf -keylen 32"
+            " -kdfopt digest:SHA256"
+            " -kdfopt pass:" (dbms-storage-shell-quote password)
+            " -kdfopt salt:" (dbms-storage-shell-quote salt)
+            " -kdfopt iter:" (format nil "~A" iterations)
+            " PBKDF2")))
+    (dbms-storage-hex-normalize out)))
+
+(defun dbms-storage-openssl-hmac-sha256 (key text)
+  (let ((body-path (dbms-storage-temp-secret-path "audit-body"))
+        (out ""))
+    (dbms-storage-ensure-root)
+    (os-write-file-text body-path text)
+    (setq out
+          (os-command-output
+           (string-append
+            (dbms-storage-shell-quote (dbms-storage-openssl-bin))
+            " dgst -sha256"
+            " -hmac " (dbms-storage-shell-quote key)
+            " " (dbms-storage-shell-quote body-path))))
+    (os-safe-delete-file body-path)
+    (let ((parts (osu-split-on out "=")))
+      (if (null (cdr parts))
+          (dbms-storage-hex-normalize out)
+          (dbms-storage-hex-normalize (second parts))))))
+
+(defun dbms-storage-audit-entry-hash-legacy (audit-key prev-hash record)
   (dbms-storage-audit-hash-string
    (string-append audit-key "|" prev-hash "|" (format nil "~S" (dbms-storage-audit-record-body record)))))
+
+(defun dbms-storage-audit-entry-hash (audit-key prev-hash record)
+  (dbms-storage-openssl-hmac-sha256
+   audit-key
+   (string-append prev-hash "|" (format nil "~S" (dbms-storage-audit-record-body record)))))
+
+(defun dbms-storage-audit-current-signed-record-p (audit-key record)
+  (and (dbms-storage-audit-record-p record)
+       (string= (dbms-storage-audit-record-entry-hash record)
+                (dbms-storage-audit-entry-hash audit-key
+                                              (dbms-storage-audit-record-prev-hash record)
+                                              record))))
 
 (defun dbms-storage-audit-sign-record (audit-key prev-hash record)
   (let ((entry-hash (dbms-storage-audit-entry-hash audit-key prev-hash record)))
@@ -1255,9 +1342,9 @@
           prev-hash
           entry-hash)))
 
-(defun dbms-storage-audit-normalize-log-with-key (entries audit-key)
+(defun dbms-storage-audit-normalize-log-with-key-from (entries audit-key initial-prev-hash)
   (let ((rest entries)
-        (prev-hash "")
+        (prev-hash initial-prev-hash)
         (out '())
         (tampered '()))
     (while (and (null tampered) (not (null rest)))
@@ -1265,18 +1352,27 @@
              (signed (if (= (length entry) 9)
                          entry
                          (dbms-storage-audit-sign-record audit-key prev-hash entry)))
-             (expected (dbms-storage-audit-entry-hash audit-key
-                                                     (dbms-storage-audit-record-prev-hash signed)
-                                                     signed)))
+             (expected (dbms-storage-audit-entry-hash audit-key prev-hash signed))
+             (legacy-expected (dbms-storage-audit-entry-hash-legacy audit-key prev-hash signed))
+             (legacy-ok (and (dbms-storage-audit-record-p signed)
+                             (string= (dbms-storage-audit-record-prev-hash signed) prev-hash)
+                             (string= (dbms-storage-audit-record-entry-hash signed) legacy-expected)))
+             (normalized-signed (if (and (= (length signed) 9) legacy-ok)
+                                    (dbms-storage-audit-sign-record audit-key prev-hash signed)
+                                    signed)))
         (if (or (not (dbms-storage-audit-record-p signed))
                 (not (string= (dbms-storage-audit-record-prev-hash signed) prev-hash))
-                (not (string= (dbms-storage-audit-record-entry-hash signed) expected)))
+                (and (not legacy-ok)
+                     (not (string= (dbms-storage-audit-record-entry-hash signed) expected))))
             (setq tampered (dbms-make-error 'dbms/audit-tamper-detected "audit log tamper detected" signed))
             (progn
-              (setq out (append out (list signed)))
-              (setq prev-hash (dbms-storage-audit-record-entry-hash signed)))))
+              (setq out (append out (list normalized-signed)))
+              (setq prev-hash (dbms-storage-audit-record-entry-hash normalized-signed)))))
       (setq rest (cdr rest)))
     (if (dbms-error-p tampered) tampered out)))
+
+(defun dbms-storage-audit-normalize-log-with-key (entries audit-key)
+  (dbms-storage-audit-normalize-log-with-key-from entries audit-key ""))
 
 (defun dbms-storage-audit-archive-list-from-seq (seq)
   (let ((path (dbms-storage-audit-archive-path seq)))
@@ -1300,16 +1396,14 @@
           nil
           (let* ((entries (dbms-storage-read-sexpr-file path))
                  (norm (if (listp entries)
-                           (dbms-storage-audit-normalize-log-with-key entries audit-key)
+                           (dbms-storage-audit-normalize-log-with-key-from entries audit-key last-hash)
                            '())))
             (if (dbms-error-p norm)
                 (setq failed norm)
                 (progn
                   (if (not (null norm))
                       (progn
-                        (if (not (string= (dbms-storage-audit-record-prev-hash (car norm)) last-hash))
-                            (setq failed (dbms-make-error 'dbms/audit-tamper-detected "audit chain boundary mismatch" path))
-                            (setq last-hash (dbms-storage-audit-record-entry-hash (dbms-storage-string-last norm))))
+                        (setq last-hash (dbms-storage-audit-record-entry-hash (dbms-storage-string-last norm)))
                         (setq checked (+ checked (length norm))))
                       nil))))))
     (if (dbms-error-p failed)
@@ -1327,7 +1421,11 @@
   (let* ((security (dbms-storage-load-security-meta))
          (audit-key (dbms-security-meta-audit-key security))
          (entries (dbms-storage-load-audit-log))
-         (normalized (dbms-storage-audit-normalize-log-with-key entries audit-key)))
+         (last-entry (if (null entries) '() (dbms-storage-string-last entries)))
+         (normalized (if (or (null last-entry)
+                             (dbms-storage-audit-current-signed-record-p audit-key last-entry))
+                         entries
+                         (dbms-storage-audit-normalize-log-with-key entries audit-key))))
     (if (dbms-error-p normalized)
         normalized
         (let* ((prev-hash (if (null normalized)

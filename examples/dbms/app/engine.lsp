@@ -26,12 +26,19 @@
 ;;   SERIALIZABLE  : SELECT S lock is tx-boundary
 (defglobal *dbms-session-isolation-level* 'READ-COMMITTED)
 (defglobal *dbms-tx-isolation-level* 'READ-COMMITTED)
-(defglobal *dbms-session-user* "admin")
+(defglobal *dbms-session-user* "")
 (defglobal *dbms-session-active-role* "")
 (defglobal *dbms-metrics* '())
 (defglobal *dbms-catalog-cache* '())
 (defglobal *dbms-table-cache* '())
 (defglobal *dbms-index-cache* '())
+
+(defun starts-with (s prefix)
+  (let ((n (length s))
+        (m (length prefix)))
+    (if (< n m)
+        nil
+        (string= (substring s 0 m) prefix))))
 
 (defun dbms-metrics-empty ()
   (list 'dbms-metrics
@@ -133,6 +140,7 @@
   (let ((recovered (dbms-storage-recover-from-wal))
         (next-tx-id (+ (dbms-storage-wal-max-txid) 1))
         (session-user (getenv "DBMS_SESSION_USER"))
+        (allow-implicit-admin (string= (let ((v (getenv "DBMS_ALLOW_IMPLICIT_ADMIN"))) (if (null v) "0" v)) "1"))
         (auth '())
         (security '()))
     ;; Startup path: ensure tx runtime state is reset and txid monotonicity survives restart.
@@ -153,9 +161,13 @@
         (if (dbms-auth-string-list-member-p session-user (dbms-auth-meta-users auth))
             (setq *dbms-session-user* session-user)
             (progn
-              (format t "[dbms-auth-warning] unknown session user '~A'; fallback to admin~%" session-user)
-              (setq *dbms-session-user* "admin")))
-        (setq *dbms-session-user* "admin"))
+              (format t "[dbms-auth-warning] unknown session user '~A'; fallback to unauthenticated session~%" session-user)
+              (setq *dbms-session-user* "")))
+        (if allow-implicit-admin
+            (progn
+              (format t "[dbms-auth-warning] implicit admin session is enabled by DBMS_ALLOW_IMPLICIT_ADMIN=1~%")
+              (setq *dbms-session-user* "admin"))
+            (setq *dbms-session-user* "")))
     (setq *dbms-session-active-role* "")
     (dbms-catalog-load)))
 
@@ -307,9 +319,12 @@
         (dbms-storage-save-auth-meta normalized))))
 
 (defun dbms-security-kdf-rounds (_meta)
-  32)
+  100000)
 
 (defun dbms-security-hash-password-with-salt (salt password rounds)
+  (dbms-storage-openssl-pbkdf2-sha256 password salt rounds))
+
+(defun dbms-security-legacy-hash-password-with-salt (salt password rounds)
   (let ((i 0)
         (digest (string-append salt "|" password)))
     (while (< i rounds)
@@ -319,7 +334,28 @@
     digest))
 
 (defun dbms-security-make-salt (user)
-  (string-append user ":" (format nil "~A" (get-universal-time)) ":" (format nil "~A" (length user))))
+  (string-append user "-" (os-generate-token)))
+
+(defun dbms-security-initial-admin-password-file ()
+  "/tmp/isl-dbms-initial-admin-password.txt")
+
+(defun dbms-security-initial-admin-password ()
+  (let ((env-password (getenv "DBMS_INITIAL_ADMIN_PASSWORD"))
+        (allow-default (string= (let ((v (getenv "DBMS_BOOTSTRAP_ALLOW_DEFAULT_ADMIN")))
+                                  (if (null v) "0" v))
+                                "1"))
+        (path (dbms-security-initial-admin-password-file)))
+    (cond
+     ((and (stringp env-password) (not (string= env-password "")))
+      env-password)
+     (allow-default
+      "admin")
+     ((not (null (probe-file path)))
+      (os-read-file-text path))
+     (t
+      (let ((generated (os-generate-token)))
+        (os-write-file-text path generated)
+        generated)))))
 
 (defun dbms-security-build-credential (user password meta)
   (let* ((salt (dbms-security-make-salt user))
@@ -327,10 +363,38 @@
          (digest (dbms-security-hash-password-with-salt salt password rounds)))
     (dbms-make-security-credential user salt rounds digest)))
 
+(defun dbms-security-hex-char-p (ch)
+  (or (not (null (string-index ch "0123456789")))
+      (not (null (string-index ch "abcdef")))
+      (not (null (string-index ch "ABCDEF")))))
+
+(defun dbms-security-hex64-p (s)
+  (let ((i 0)
+        (ok (and (stringp s) (= (length s) 64))))
+    (while (and ok (< i 64))
+      (if (dbms-security-hex-char-p (substring s i (+ i 1)))
+          nil
+          (setq ok nil))
+      (setq i (+ i 1)))
+    ok))
+
+(defun dbms-security-legacy-credential-p (cred)
+  (and (dbms-security-credential-p cred)
+       (let ((rounds (fourth cred))
+             (stored (fifth cred)))
+         (or (<= rounds 32)
+             (not (dbms-security-hex64-p stored))))))
+
 (defun dbms-security-credential-valid-p (cred password)
   (and (dbms-security-credential-p cred)
-       (string= (fifth cred)
-                (dbms-security-hash-password-with-salt (third cred) password (fourth cred)))))
+       (let ((salt (third cred))
+             (rounds (fourth cred))
+             (stored (fifth cred)))
+         (or (string= stored
+                      (dbms-security-hash-password-with-salt salt password rounds))
+             (and (dbms-security-legacy-credential-p cred)
+                  (string= stored
+                           (dbms-security-legacy-hash-password-with-salt salt password rounds)))))))
 
 (defun dbms-security-meta-with-credentials (meta credentials)
   (list 'dbms-security-meta
@@ -359,20 +423,22 @@
          (audit-key (dbms-security-meta-audit-key base))
          (creds (dbms-security-meta-credentials base))
          (admin-cred (dbms-storage-security-find-credential creds "admin")))
-    (if (or (null audit-key) (string= audit-key ""))
-        (setq audit-key "dbms-audit-bootstrap-key")
+    (if (or (null audit-key)
+            (string= audit-key "")
+            (string= audit-key "dbms-audit-bootstrap-key"))
+        (setq audit-key (os-generate-token))
         nil)
     (if (and (dbms-auth-meta-p auth)
              (dbms-auth-string-list-member-p "admin" (dbms-auth-meta-users auth))
              (null admin-cred))
         (setq creds (dbms-storage-security-put-credential creds
                                                           (dbms-security-build-credential "admin"
-                                                                                          "admin"
+                                                                                          (dbms-security-initial-admin-password)
                                                                                           base)))
         nil)
     (list 'dbms-security-meta
           (second base)
-          (dbms-security-meta-kdf-spec base)
+          "PBKDF2-HMAC-SHA256-100000"
           creds
           (dbms-security-meta-tls-mode base)
           (dbms-security-meta-cert-path base)
