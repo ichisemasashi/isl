@@ -1740,6 +1740,100 @@
 (defun query-param (name)
   (parse-form-field (env-or-empty "QUERY_STRING") name))
 
+(defun int-min (a b)
+  (if (< a b) a b))
+
+(defun int-max (a b)
+  (if (> a b) a b))
+
+(defun admin-list-page-number ()
+  (let ((n (parse-int-safe (query-param "page"))))
+    (if (or (null n) (< n 1))
+        1
+        n)))
+
+(defun admin-list-per-page ()
+  (let ((n (parse-int-safe (query-param "per_page"))))
+    (if (or (null n)
+            (and (not (= n 25))
+                 (not (= n 50))
+                 (not (= n 100))))
+        50
+        n)))
+
+(defun drop-list-items (xs count)
+  (let ((rest xs)
+        (n count))
+    (while (and (> n 0) (not (null rest)))
+      (setq rest (cdr rest))
+      (setq n (- n 1)))
+    rest))
+
+(defun take-list-items (xs count)
+  (let ((rest xs)
+        (n count)
+        (out '()))
+    (while (and (> n 0) (not (null rest)))
+      (setq out (cons (car rest) out))
+      (setq rest (cdr rest))
+      (setq n (- n 1)))
+    (reverse out)))
+
+(defun paginate-rows (rows page per-page)
+  (take-list-items (drop-list-items rows (* (- page 1) per-page)) per-page))
+
+(defun pagination-total-pages (total per-page)
+  (if (<= total 0)
+      1
+      (+ (/ (- total 1) per-page) 1)))
+
+(defun pagination-summary-range (page-rows page per-page total)
+  (if (or (<= total 0) (null page-rows))
+      (list 0 0)
+      (let ((start (+ (* (- page 1) per-page) 1)))
+        (list start (+ start (length page-rows) -1)))))
+
+(defun admin-pagination-url (path page per-page)
+  (string-append
+   (app-base)
+   path
+   "?page="
+   (format nil "~A" page)
+   "&per_page="
+   (format nil "~A" per-page)))
+
+(defun render-admin-per-page-links (path page per-page)
+  (format t "<p><small>表示件数: ")
+  (dolist (size '(25 50 100))
+    (if (= size per-page)
+        (format t "<strong>~A</strong>" size)
+        (format t "<a href=\"~A\">~A</a>" (admin-pagination-url path page size) size))
+    (if (not (= size 100))
+        (format t " | ")
+        nil))
+  (format t "</small></p>~%"))
+
+(defun render-admin-pagination (path page per-page total total-pages)
+  (let ((window-start (int-max 1 (- page 2)))
+        (window-end (int-min total-pages (+ page 2))))
+    (if (> total-pages 1)
+        (progn
+          (format t "<nav aria-label=\"Pagination\"><p>")
+          (if (> page 1)
+              (format t "<a href=\"~A\">Previous</a> " (admin-pagination-url path (- page 1) per-page))
+              (format t "<span style=\"color:#666\">Previous</span> "))
+          (let ((n window-start))
+            (while (<= n window-end)
+              (if (= n page)
+                  (format t "<strong>[~A]</strong> " n)
+                  (format t "<a href=\"~A\">~A</a> " (admin-pagination-url path n per-page) n))
+              (setq n (+ n 1))))
+          (if (< page total-pages)
+              (format t "<a href=\"~A\">Next</a>" (admin-pagination-url path (+ page 1) per-page))
+              (format t "<span style=\"color:#666\">Next</span>"))
+          (format t "</p></nav>~%"))
+        nil)))
+
 (defun blank-text-p (s)
   (let ((text (safe-text s))
         (i 0)
@@ -4001,12 +4095,24 @@
     (print-layout-foot)))
 
 (defun render-admin-media (db)
-  (let ((base (app-base))
-        (rows (fetch-media-list db)))
+  (let* ((base (app-base))
+         (all-rows (fetch-media-list db))
+         (per-page (admin-list-per-page))
+         (total (length all-rows))
+         (total-pages (pagination-total-pages total per-page))
+         (page (int-min (admin-list-page-number) total-pages))
+         (rows (paginate-rows all-rows page per-page))
+         (range (pagination-summary-range rows page per-page total)))
     (print-headers-ok)
     (print-layout-head "Media Management")
     (format t "<h1>Media Management</h1>~%")
     (format t "<p><a href=\"~A/admin\">System Management</a> | <a href=\"~A/media/new\">Add Media</a> | <a href=\"~A/admin/deleted-media\">Deleted Media</a></p>~%" base base base)
+    (format t "<p><small>表示中: ~A-~A / ~A 件</small></p>~%"
+            (html-escape (format nil "~A" (first range)))
+            (html-escape (format nil "~A" (second range)))
+            (html-escape (format nil "~A" total)))
+    (render-admin-per-page-links "/admin/media" page per-page)
+    (render-admin-pagination "/admin/media" page per-page total total-pages)
     (if (null rows)
         (format t "<p>メディアはまだありません。</p>~%")
         (progn
@@ -4037,6 +4143,7 @@
               (format t "</td>~%")
               (format t "</tr>~%")))
           (format t "</tbody></table>~%")))
+    (render-admin-pagination "/admin/media" page per-page total total-pages)
     (print-layout-foot)))
 
 (defun create-admin-user (db)
@@ -4157,11 +4264,22 @@
             (json-escape (sixth stats)))))
 
 (defun render-admin-audit (db)
-  (let ((rows (fetch-audit-logs db)))
+  (let* ((all-rows (fetch-audit-logs db))
+         (per-page (admin-list-per-page))
+         (total (length all-rows))
+         (total-pages (pagination-total-pages total per-page))
+         (page (int-min (admin-list-page-number) total-pages))
+         (rows (paginate-rows all-rows page per-page))
+         (range (pagination-summary-range rows page per-page total)))
     (print-headers-ok)
     (print-layout-head "Audit Log")
     (format t "<h1>Audit Log</h1>~%")
-    (format t "<p><small>Latest 100 events</small></p>~%")
+    (format t "<p><small>表示中: ~A-~A / ~A 件</small></p>~%"
+            (html-escape (format nil "~A" (first range)))
+            (html-escape (format nil "~A" (second range)))
+            (html-escape (format nil "~A" total)))
+    (render-admin-per-page-links "/admin/audit" page per-page)
+    (render-admin-pagination "/admin/audit" page per-page total total-pages)
     (if (null rows)
         (format t "<p>監査ログはまだありません。</p>~%")
         (progn
@@ -4183,6 +4301,7 @@
               (format t "<td style=\"vertical-align:top;border-bottom:1px solid #eee;padding:.4rem\"><pre style=\"margin:0\">~A</pre></td>~%" (html-escape meta-json))
               (format t "</tr>~%")))
           (format t "</tbody></table>~%")))
+    (render-admin-pagination "/admin/audit" page per-page total total-pages)
     (print-layout-foot)))
 
 (defun render-admin-backup-form (db)
