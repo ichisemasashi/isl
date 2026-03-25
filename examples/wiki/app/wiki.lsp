@@ -198,6 +198,66 @@
       (setq i (+ i 1)))
     out))
 
+(defun wiki-password-rounds ()
+  32)
+
+(defun wiki-password-prefix ()
+  "kdfv1$")
+
+(defun wiki-password-encoded-p (value)
+  (starts-with (safe-text value) (wiki-password-prefix)))
+
+(defun wiki-password-hash (password)
+  (let* ((salt (string-append "wiki:" (os-generate-token)))
+         (rounds (wiki-password-rounds))
+         (digest (dbms-security-hash-password-with-salt salt password rounds)))
+    (string-append (wiki-password-prefix)
+                   salt
+                   "$"
+                   (format nil "~A" rounds)
+                   "$"
+                   digest)))
+
+(defun wiki-password-valid-p (stored password)
+  (let ((current (safe-text stored)))
+    (if (wiki-password-encoded-p current)
+        (let ((parts (split-on current "$")))
+          (and (= (length parts) 4)
+               (string= (first parts) "kdfv1")
+               (string= (fourth parts)
+                        (dbms-security-hash-password-with-salt
+                         (second parts)
+                         password
+                         (parse-int-safe (third parts))))))
+        (string= current password))))
+
+(defun wiki-password-needs-upgrade-p (stored)
+  (not (wiki-password-encoded-p stored)))
+
+(defun save-user-password-hash! (username password-hash)
+  (db-update-table-rows!
+   "users"
+   (lambda (row)
+     (string= (db-row-value row "username") username))
+   (lambda (row)
+     (db-update-row-fields
+      row
+      (list (list "password_hash" password-hash)
+            (list "updated_at" (db-now-text)))))))
+
+(defun initial-admin-password ()
+  (let ((configured (env-or-empty "WIKI_INITIAL_ADMIN_PASSWORD")))
+    (if (not (blank-text-p configured))
+        configured
+        (if (string= (env-or-empty "WIKI_BOOTSTRAP_ALLOW_DEFAULT_ADMIN") "1")
+            "admin"
+            (let ((generated (os-generate-token))
+                  (notice-path "/tmp/isl-wiki-initial-admin-password.txt"))
+              (os-write-file-text
+               notice-path
+               (string-append "Initial admin password: " generated "\n"))
+              generated)))))
+
 (defun json-escape (s)
   (let ((text (safe-text s))
         (i 0)
@@ -481,6 +541,15 @@
                   "; Path="
                   (cookie-path)
                   "; HttpOnly; SameSite=Lax")))
+
+(defun safe-redirect-target (target)
+  (let ((value (safe-text target)))
+    (if (or (blank-text-p value)
+            (not (starts-with value (app-base)))
+            (not (null (string-index "\r" value)))
+            (not (null (string-index "\n" value))))
+        (app-base)
+        value)))
 
 (defun current-request-target ()
   (let ((path (env-or-empty "PATH_INFO"))
@@ -1388,7 +1457,10 @@
       nil)
   (if (null (find-user-row "admin"))
       (db-exec! catalog
-                "INSERT INTO users (username, display_name, password_hash, role_name, enabled) VALUES ('admin', 'Administrator', 'admin', 'admin', TRUE);")
+                (string-append
+                 "INSERT INTO users (username, display_name, password_hash, role_name, enabled) VALUES ('admin', 'Administrator', "
+                 (db-text-sql (wiki-password-hash (initial-admin-password)))
+                 ", 'admin', TRUE);"))
       nil)
   (if (null (find-page-row-any "home"))
       (progn
@@ -2389,11 +2461,15 @@
   (let ((row (find-user-row username)))
     (if (or (null row)
             (not (eq (db-row-nullable row "enabled") t))
-            (not (string= (db-row-value row "password_hash") password)))
+            (not (wiki-password-valid-p (db-row-value row "password_hash") password)))
         '()
-        (list (db-row-value row "username")
-              (db-row-value row "display_name")
-              (db-row-value row "role_name")))))
+        (progn
+          (if (wiki-password-needs-upgrade-p (db-row-value row "password_hash"))
+              (save-user-password-hash! username (wiki-password-hash password))
+              nil)
+          (list (db-row-value row "username")
+                (db-row-value row "display_name")
+                (db-row-value row "role_name"))))))
 
 (defun fetch-user-by-session-token (db token)
   (let ((session-row
@@ -2589,6 +2665,15 @@
     "');")))
 
 (defun print-extra-headers ()
+  (if (null (find-first-row *response-extra-headers* (lambda (header) (string= (first header) "X-Frame-Options"))))
+      (add-response-header "X-Frame-Options" "DENY")
+      nil)
+  (if (null (find-first-row *response-extra-headers* (lambda (header) (string= (first header) "X-Content-Type-Options"))))
+      (add-response-header "X-Content-Type-Options" "nosniff")
+      nil)
+  (if (null (find-first-row *response-extra-headers* (lambda (header) (string= (first header) "Referrer-Policy"))))
+      (add-response-header "Referrer-Policy" "same-origin")
+      nil)
   (dolist (header (wiki-reverse *response-extra-headers*))
     (format t "~A: ~A~%" (first header) (second header)))
   (clear-response-extra-headers))
@@ -2808,7 +2893,7 @@
 
 (defun next-after-login ()
   (let ((next (query-param "next")))
-    (if (blank-text-p next) (app-base) next)))
+    (safe-redirect-target next)))
 
 (defun render-login-form (message next-value)
   (let ((next (if (blank-text-p next-value) (next-after-login) next-value)))
@@ -2824,7 +2909,7 @@
     (format t "  <p><label>Password<br><input type=\"password\" name=\"password\" value=\"\" style=\"width:100%\"></label></p>~%")
     (format t "  <p><button type=\"submit\">Login</button></p>~%")
     (format t "</form>~%")
-    (format t "<p><small>initial admin: <code>admin</code> / <code>admin</code> (change immediately after setup)</small></p>~%")
+    (format t "<p><small>initial admin password is taken from <code>WIKI_INITIAL_ADMIN_PASSWORD</code>. If omitted, a one-time password is written to <code>/tmp/isl-wiki-initial-admin-password.txt</code>.</small></p>~%")
     (print-layout-foot)))
 
 (defun handle-login (db)
@@ -2842,7 +2927,7 @@
                     (render-login-form "invalid username or password" next)
                     (let ((token (issue-session-token))
                           (csrf-token (issue-csrf-token))
-                          (dest (if (blank-text-p next) (app-base) next)))
+                          (dest (safe-redirect-target next)))
                       (create-user-session db (first user) token csrf-token)
                       (update-last-login-at db (first user))
                       (setq *wiki-current-user* (list (first user) (second user) (third user) token csrf-token))
@@ -4267,7 +4352,7 @@
                               "INSERT INTO users (username, display_name, password_hash, role_name, enabled) VALUES ("
                               (db-text-sql username) ", "
                               (db-text-sql display-name) ", "
-                              (db-text-sql password) ", "
+                              (db-text-sql (wiki-password-hash password)) ", "
                               (db-text-sql role-name) ", "
                               (db-bool-sql enabled)
                               ");"))
@@ -4317,7 +4402,7 @@
                                    (list "updated_at" (db-now-text)))
                              (if (blank-text-p password)
                                  '()
-                                 (list (list "password_hash" password)))))))
+                                 (list (list "password_hash" (wiki-password-hash password)))))))))
                         (save-user-home-preference! db username home-slug)
                         (write-audit-log
                          db
@@ -4332,7 +4417,7 @@
                           "\"password_changed\":\"" (json-escape (if (blank-text-p password) "false" "true")) "\","
                           "\"home_slug\":\"" (json-escape home-slug) "\""
                           "}"))
-                        (render-see-other (string-append (app-base) "/admin/users"))))))))))
+                        (render-see-other (string-append (app-base) "/admin/users")))))))))
 
 (defun render-healthz (db)
   (let ((db-ok (not (null db))))

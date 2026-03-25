@@ -1,3 +1,7 @@
+(defun env-or-default (name default)
+  (let ((v (getenv name)))
+    (if (null v) default v)))
+
 (defun token-kind-in-p (token kinds)
   (let ((k (inline-token-kind token))
         (rest kinds)
@@ -1685,8 +1689,12 @@
           (list (+ j 3) (make-inline-math pos (apply-latex-macros (substring text (+ i 3) j)) t)))))
    (t '())))
 
+(defun allow-raw-html-p ()
+  (string= (env-or-default "MD2HTML_ALLOW_RAW_HTML" "0") "1"))
+
 (defun parse-inline-raw-html-at (text i pos)
-  (if (not (string= (substring text i (+ i 1)) "<"))
+  (if (or (not (allow-raw-html-p))
+          (not (string= (substring text i (+ i 1)) "<")))
       '()
       (let ((j (find-substring-from text ">" (+ i 1))))
         (if (or (null j) (<= j i))
@@ -2378,7 +2386,8 @@
           (list (make-block-math pos (apply-latex-macros (trim-line body))) q)))))
 
 (defun parse-block-raw-html (rest)
-  (if (or (null rest)
+  (if (or (not (allow-raw-html-p))
+          (null rest)
           (not (eq (line-token-kind (first rest)) 'paragraph)))
       '()
       (let ((first-line (trim-line (line-token-text (first rest)))))

@@ -15,6 +15,20 @@
       (setq r (cdr r)))
     ok))
 
+(defun ascii-downcase-string (s)
+  (let ((i 0)
+        (out ""))
+    (while (< i (length s))
+      (let* ((ch (substring s i (+ i 1)))
+             (p (string-index ch "ABCDEFGHIJKLMNOPQRSTUVWXYZ")))
+        (setq out
+              (string-append out
+                             (if (null p)
+                                 ch
+                                 (substring "abcdefghijklmnopqrstuvwxyz" p (+ p 1))))))
+      (setq i (+ i 1)))
+    out))
+
 (defun trim-slash-both (s)
   (let ((t s))
     (while (and (> (length t) 0) (string= (substring t 0 1) "/"))
@@ -26,6 +40,17 @@
 (defun relative-url-p (u)
   (and (> (length u) 0)
        (not (starts-with-any u '("http://" "https://" "mailto:" "data:" "/" "#" "file://")))))
+
+(defun safe-link-url-p (u)
+  (let ((v (attr-escape (rebase-url u))))
+    (not (starts-with-any (ascii-downcase-string v)
+                          '("javascript:" "vbscript:" "data:text/html" "data:application/javascript")))))
+
+(defun safe-render-url (u)
+  (let ((v (rebase-url u)))
+    (if (safe-link-url-p v)
+        v
+        "#unsafe-link")))
 
 (defun rebase-url (u)
   (if (or (not (rebase-relative-enabled-p))
@@ -184,13 +209,13 @@
    ((eq (inline-kind n) 'inline-strong)
     (string-append "<strong>" (render-inline-nodes (inline-children n)) "</strong>"))
    ((eq (inline-kind n) 'inline-link)
-    (string-append "<a href=\"" (attr-escape (rebase-url (inline-link-url n))) "\""
+    (string-append "<a href=\"" (attr-escape (safe-render-url (inline-link-url n))) "\""
                    (render-attr-bundle (inline-link-id n) (inline-link-classes n) (inline-link-attrs n))
                    ">"
                    (render-inline-nodes (inline-children n))
                    "</a>"))
    ((eq (inline-kind n) 'inline-image)
-    (string-append "<img src=\"" (attr-escape (rebase-url (inline-image-url n)))
+    (string-append "<img src=\"" (attr-escape (safe-render-url (inline-image-url n)))
                    "\" alt=\"" (attr-escape (inline-plain-text (inline-children n))) "\" />"))
    ((eq (inline-kind n) 'inline-span)
     (string-append "<span"
