@@ -1,1 +1,1 @@
-(dbms-table-state "wiki_settings" () 1)
+(dbms-table-state "wiki_settings" ((dbms-row 1 (("setting_key" "system_default_home_slug") ("setting_value" "") ("updated_at" "3983404643") ("updated_by" "admin")))) 2)

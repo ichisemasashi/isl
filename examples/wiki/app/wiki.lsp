@@ -1774,10 +1774,10 @@
         (n count)
         (out '()))
     (while (and (> n 0) (not (null rest)))
-      (setq out (cons (car rest) out))
+      (setq out (append out (list (car rest))))
       (setq rest (cdr rest))
       (setq n (- n 1)))
-    (reverse out)))
+    out))
 
 (defun paginate-rows (rows page per-page)
   (take-list-items (drop-list-items rows (* (- page 1) per-page)) per-page))
@@ -1811,9 +1811,9 @@
     (while (not (null rest))
       (if (string= (first (car rest)) key)
           nil
-          (setq out (cons (car rest) out)))
+          (setq out (append out (list (car rest)))))
       (setq rest (cdr rest)))
-    (reverse out)))
+    out))
 
 (defun encode-query-pairs (pairs)
   (let ((rest pairs)
