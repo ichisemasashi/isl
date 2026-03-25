@@ -98,6 +98,8 @@
           (wiki-reverse acc)))))
 
 (defglobal *wiki-config-cache* '())
+(defglobal *wiki-db-bootstrap-root* "")
+(defglobal *wiki-db-bootstrap-ready* nil)
 
 (defun wiki-config ()
   (if (null *wiki-config-cache*)
@@ -923,6 +925,14 @@
         (wiki-config-get "db_root" "./examples/dbms/storage/wiki")
         v)))
 
+(defun wiki-db-bootstrap-cache-valid-p ()
+  (and *wiki-db-bootstrap-ready*
+       (string= *wiki-db-bootstrap-root* (db-root))))
+
+(defun mark-wiki-db-bootstrap-ready! ()
+  (setq *wiki-db-bootstrap-root* (db-root))
+  (setq *wiki-db-bootstrap-ready* t))
+
 (defun db-display-target ()
   (db-root))
 
@@ -1373,12 +1383,14 @@
   (handler-case
     (let ((catalog '()))
       (setq catalog (dbms-engine-init))
-      (setq catalog (ensure-wiki-home-settings-schema catalog))
-      (if (wiki-dbms-schema-ready-p catalog)
+      (if (wiki-db-bootstrap-cache-valid-p)
           t
           (progn
-            (ensure-wiki-dbms-schema catalog)
-            t))
+            (setq catalog (ensure-wiki-home-settings-schema catalog))
+            (if (wiki-dbms-schema-ready-p catalog)
+                nil
+                (ensure-wiki-dbms-schema catalog))
+            (mark-wiki-db-bootstrap-ready!)))
       t)
     (error (e)
       '())))
