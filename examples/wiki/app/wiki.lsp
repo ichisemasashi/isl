@@ -1793,14 +1793,55 @@
       (let ((start (+ (* (- page 1) per-page) 1)))
         (list start (+ start (length page-rows) -1)))))
 
+(defun current-query-pairs ()
+  (let ((raw (env-or-empty "QUERY_STRING")))
+    (if (blank-text-p raw)
+        '()
+        (mapcar
+         (lambda (pair)
+           (let* ((kv (split-once pair "="))
+                  (key (url-decode (first kv)))
+                  (value (url-decode (second kv))))
+             (list key value)))
+         (split-on raw "&")))))
+
+(defun remove-query-pair-key (pairs key)
+  (let ((rest pairs)
+        (out '()))
+    (while (not (null rest))
+      (if (string= (first (car rest)) key)
+          nil
+          (setq out (cons (car rest) out)))
+      (setq rest (cdr rest)))
+    (reverse out)))
+
+(defun encode-query-pairs (pairs)
+  (let ((rest pairs)
+        (out ""))
+    (while (not (null rest))
+      (let* ((pair (car rest))
+             (segment (string-append
+                       (url-encode-lite (first pair))
+                       "="
+                       (url-encode-lite (second pair)))))
+        (setq out
+              (if (string= out "")
+                  segment
+                  (string-append out "&" segment))))
+      (setq rest (cdr rest)))
+    out))
+
 (defun admin-pagination-url (path page per-page)
-  (string-append
-   (app-base)
-   path
-   "?page="
-   (format nil "~A" page)
-   "&per_page="
-   (format nil "~A" per-page)))
+  (let* ((pairs (current-query-pairs))
+         (without-page (remove-query-pair-key pairs "page"))
+         (without-page-size (remove-query-pair-key without-page "per_page"))
+         (final-pairs (append without-page-size
+                              (list (list "page" (format nil "~A" page))
+                                    (list "per_page" (format nil "~A" per-page)))))
+         (query (encode-query-pairs final-pairs)))
+    (if (string= query "")
+        (string-append (app-base) path)
+        (string-append (app-base) path "?" query))))
 
 (defun render-admin-per-page-links (path page per-page)
   (format t "<p><small>表示件数: ")
