@@ -2335,18 +2335,50 @@
                   (setq out (append out (list tag))))))))
     out))
 
+(defun string-list-member-p (value xs)
+  (not (null (find-first-row xs (lambda (current) (string= current value))))))
+
+(defun fetch-page-tag-rows (slug)
+  (let ((page-id (page-id-by-slug slug))
+        (out '()))
+    (if (null page-id)
+        '()
+        (progn
+          (dolist (row (db-table-rows "page_tags"))
+            (if (= (db-row-nullable row "page_id") page-id)
+                (setq out (cons row out))
+                nil))
+          out))))
+
 (defun sync-page-tags (db slug tags)
-  (let ((page-id (fetch-page-id-any db slug)))
+  (let ((page-id (fetch-page-id-any db slug))
+        (existing-rows (fetch-page-tag-rows slug))
+        (existing-tags '()))
     (if (blank-text-p page-id)
         nil
         (progn
-          (db-exec! db (string-append "DELETE FROM page_tags WHERE page_id=" page-id ";"))
+          (setq existing-tags
+                (mapcar (lambda (row) (db-row-value row "tag"))
+                        existing-rows))
+          (dolist (row existing-rows)
+            (let ((existing-tag (db-row-value row "tag"))
+                  (tag-id (db-row-nullable row "id")))
+              (if (or (null tag-id) (string-list-member-p existing-tag tags))
+                  nil
+                  (db-exec!
+                   db
+                   (string-append
+                    "DELETE FROM page_tags WHERE id="
+                    (format nil "~A" tag-id)
+                    ";")))))
           (dolist (tag tags)
-            (db-exec!
-             db
-             (string-append
-              "INSERT INTO page_tags (page_id, tag) VALUES ("
-              page-id ", '" (sql-escape tag) "');")))))))
+            (if (string-list-member-p tag existing-tags)
+                nil
+                (db-exec!
+                 db
+                 (string-append
+                  "INSERT INTO page_tags (page_id, tag) VALUES ("
+                  page-id ", '" (sql-escape tag) "');"))))))))
 
 (defun fetch-page-history (db slug)
   (let ((page-id (page-id-by-slug slug))
