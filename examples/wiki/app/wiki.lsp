@@ -1007,6 +1007,8 @@
 
 (defun configure-dbms-root ()
   (setenv "DBMS_STORAGE_ROOT" (db-root))
+  ;; Wiki handles authorization at the app layer; embedded DB access stays internal.
+  (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
   (dbms-set-active-profile *dbms-profile-wiki-compat-v1*))
 
 (defun db-result-error-message (result fallback)
@@ -1023,6 +1025,23 @@
              (not (eq (second result) 'error)))
         result
         (error (db-result-error-message result "dbms exec failed") sql))))
+
+(defun db-query-rows (catalog sql)
+  (configure-dbms-root)
+  (let ((result (dbms-exec-sql catalog sql)))
+    (if (and (dbms-result-p result)
+             (eq (second result) 'rows))
+        (second (third result))
+        (error (db-result-error-message result "dbms query failed") sql))))
+
+(defun query-row-nullable (row index)
+  (list-nth-or-empty row index))
+
+(defun query-row-value (row index)
+  (let ((v (query-row-nullable row index)))
+    (if (eq v 'NULL)
+        ""
+        (if (stringp v) v (format nil "~A" v)))))
 
 (defun db-rollback-safe! (db)
   (handler-case
@@ -2110,33 +2129,27 @@
 (defun fetch-pages (db)
   (mapcar
    (lambda (row)
-     (list (db-row-value row "slug")
-           (db-row-value row "title")
-           (format-db-timestamp (db-row-value row "updated_at"))
-           (db-row-value row "status")))
-   (sort-rows-by
-    (filter-rows
-     (db-table-rows "pages")
-     (lambda (row)
-       (and (string= (db-row-value row "deleted_at") "")
-            (visible-page-p (db-row-value row "status")))))
-    (lambda (row) (db-row-value row "slug"))
-    nil)))
+     (list (query-row-value row 0)
+           (query-row-value row 1)
+           (format-db-timestamp (query-row-value row 2))
+           (query-row-value row 3)))
+   (filter-rows
+    (db-query-rows db "SELECT slug, title, updated_at, status, deleted_at FROM pages ORDER BY slug;")
+    (lambda (row)
+      (and (string= (query-row-value row 4) "")
+           (visible-page-p (query-row-value row 3)))))))
 
 (defun fetch-pages-for-admin (db)
   (mapcar
    (lambda (row)
-     (list (db-row-value row "slug")
-           (db-row-value row "title")
-           (format-db-timestamp (db-row-value row "updated_at"))
-           (db-row-value row "status")))
-   (sort-rows-by
-    (filter-rows
-     (db-table-rows "pages")
-     (lambda (row)
-       (string= (db-row-value row "deleted_at") "")))
-    (lambda (row) (db-row-value row "slug"))
-    nil)))
+     (list (query-row-value row 0)
+           (query-row-value row 1)
+           (format-db-timestamp (query-row-value row 2))
+           (query-row-value row 3)))
+   (filter-rows
+    (db-query-rows db "SELECT slug, title, updated_at, status, deleted_at FROM pages ORDER BY slug;")
+    (lambda (row)
+      (string= (query-row-value row 4) "")))))
 
 (defun fetch-pages-by-query (db q)
   (fetch-pages-by-query-filtered db q "" ""))
@@ -2157,9 +2170,9 @@
 
 (defun build-page-tag-lookup ()
   (let ((lookup '()))
-    (dolist (row (db-table-rows "page_tags"))
-      (let ((page-id (db-row-nullable row "page_id"))
-            (tag (db-row-value row "tag")))
+    (dolist (row (db-query-rows nil "SELECT page_id, tag FROM page_tags ORDER BY tag;"))
+      (let ((page-id (query-row-nullable row 0))
+            (tag (query-row-value row 1)))
         (if (null page-id)
             nil
             (let ((entry (page-tag-lookup-find lookup page-id)))
@@ -2192,12 +2205,12 @@
   (let ((matched '())
         (needle (ascii-downcase-string q))
         (page-tag-lookup (build-page-tag-lookup)))
-    (dolist (row (db-table-rows "pages"))
-      (let ((page-id (db-row-nullable row "id"))
-            (page-status (db-row-value row "status"))
+    (dolist (row (db-query-rows db "SELECT id, slug, title, body_md, updated_at, status, deleted_at FROM pages ORDER BY updated_at DESC;"))
+      (let ((page-id (query-row-nullable row 0))
+            (page-status (query-row-value row 5))
             (page-tags '()))
         (setq page-tags (page-tag-lookup-tags page-tag-lookup page-id))
-        (if (and (string= (db-row-value row "deleted_at") "")
+        (if (and (string= (query-row-value row 6) "")
                  (visible-page-p page-status)
                  (or (blank-text-p status) (string= page-status status))
                  (or (blank-text-p tag)
@@ -2205,32 +2218,31 @@
                                                 (lambda (current-tag)
                                                   (string= current-tag tag))))))
                  (or (blank-text-p needle)
-                     (string-contains-ci-p needle (db-row-value row "title"))
-                     (string-contains-ci-p needle (db-row-value row "body_md"))))
+                     (string-contains-ci-p needle (query-row-value row 2))
+                     (string-contains-ci-p needle (query-row-value row 3))))
             (setq matched (cons row matched))
             nil)))
     (setq matched
           (sort-rows-by matched
                         (lambda (row)
-                          (if (string-contains-ci-p needle (db-row-value row "title")) 0 1))
+                          (if (string-contains-ci-p needle (query-row-value row 2)) 0 1))
                         nil))
-    (setq matched (sort-rows-by matched (lambda (row) (db-row-value row "updated_at")) t))
     (mapcar
      (lambda (row)
-       (let ((page-id (db-row-nullable row "id")))
-         (list (db-row-value row "slug")
-               (db-row-value row "title")
-               (format-db-timestamp (db-row-value row "updated_at"))
+       (let ((page-id (query-row-nullable row 0)))
+         (list (query-row-value row 1)
+               (query-row-value row 2)
+               (format-db-timestamp (query-row-value row 4))
                ""
                (join-tag-list-text (page-tag-lookup-tags page-tag-lookup page-id))
-               (db-row-value row "status"))))
+               (query-row-value row 5))))
      matched)))
 
 (defun fetch-search-tags (db)
   (let ((seen '())
         (out '()))
-    (dolist (row (db-table-rows "page_tags"))
-      (let ((tag (db-row-value row "tag")))
+    (dolist (row (db-query-rows db "SELECT tag FROM page_tags ORDER BY tag;"))
+      (let ((tag (query-row-value row 0)))
         (if (null (find-first-row seen (lambda (v) (string= v tag))))
             (progn
               (setq seen (cons tag seen))
