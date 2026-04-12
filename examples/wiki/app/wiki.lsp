@@ -2019,6 +2019,26 @@
     (lambda ()
       (render-top-page-features-fragment db t)))))
 
+(defun markdown-cache-dir ()
+  "/tmp/isl-wiki-markdown-cache")
+
+(defun ensure-markdown-cache-dir ()
+  (os-mkdir-p (markdown-cache-dir)))
+
+(defun markdown-cache-role-key ()
+  (let ((role (current-role)))
+    (if (blank-text-p role) "guest" role)))
+
+(defun markdown-cache-path (slug rev-no)
+  (string-append (markdown-cache-dir)
+                 "/"
+                 slug
+                 "--"
+                 (safe-text rev-no)
+                 "--"
+                 (markdown-cache-role-key)
+                 ".html"))
+
 (defun markdown->html (db body-md)
   (let* ((normalized-md (expand-top-page-features-token db (expand-wiki-links body-md)))
          (base (next-temp-base))
@@ -2039,6 +2059,17 @@
             (safe-delete-file md-path)
             (safe-delete-file html-path)
             (string-append "<pre>" (html-escape normalized-md) "</pre>"))))))
+
+(defun markdown->html-cached (db slug rev-no body-md)
+  (if (or (blank-text-p slug) (blank-text-p rev-no))
+      (markdown->html db body-md)
+      (let ((cache-path (markdown-cache-path slug rev-no)))
+        (if (null (probe-file cache-path))
+            (let ((html (markdown->html db body-md)))
+              (ensure-markdown-cache-dir)
+              (write-file-text cache-path html)
+              html)
+            (read-file-text cache-path)))))
 
 (defun fetch-pages (db)
   (mapcar
@@ -3162,14 +3193,14 @@
 		                  (current-rev-no (page-current-rev-no row))
                       (page-status (page-status row))
                       (tags-text (sixth row))
-		                  (updated-at (seventh row))
-		                  (latest-summary (eighth row))
-		                  (media-rows (ninth row))
-	                  (search-q (query-param "q")))
-	              (let ((body-html (markdown->html db body-md)))
-              (print-headers-ok)
-              (print-layout-head title)
-	              (format t "<h1>~A</h1>~%" (html-escape title))
+			                  (updated-at (seventh row))
+			                  (latest-summary (eighth row))
+			                  (media-rows (ninth row))
+		                  (search-q (query-param "q")))
+		              (let ((body-html (markdown->html-cached db slug current-rev-no body-md)))
+	              (print-headers-ok)
+	              (print-layout-head title)
+		              (format t "<h1>~A</h1>~%" (html-escape title))
 	              (if (editor-or-admin-p)
 	                  (format t "<p><a href=\"~A/~A/edit\">Edit this page</a> | <a href=\"~A/~A/history\">History</a></p>~%"
 	                          base
