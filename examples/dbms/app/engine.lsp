@@ -1109,6 +1109,7 @@
       (let ((state (dbms-make-table-state table-name rows (+ (length rows) 1))))
         (setq *dbms-tx-staged-table-states*
               (dbms-put-staged-table-state table-name state *dbms-tx-staged-table-states*))
+        (dbms-tx-record-table-write! table-name)
         state)
       (let ((saved (dbms-storage-save-table-rows table-name rows))
             (state (dbms-make-table-state table-name rows (+ (length rows) 1))))
@@ -1709,6 +1710,20 @@
           (setq out (append out (list (car rest)))))
       (setq rest (cdr rest)))
     out))
+
+(defun dbms-tx-record-table-write! (table-name)
+  (if (and (eq (dbms-tx-state-status *dbms-tx-state*) 'active)
+           (stringp table-name)
+           (not (string= table-name "")))
+      (let ((tx-id (dbms-tx-state-tx-id *dbms-tx-state*))
+            (read-set (dbms-tx-state-read-set *dbms-tx-state*))
+            (write-set (dbms-tx-state-write-set *dbms-tx-state*)))
+        (setq *dbms-tx-state*
+              (dbms-make-tx-state 'active
+                                  read-set
+                                  (dbms-set-union-strings write-set (list table-name))
+                                  tx-id)))
+      nil))
 
 (defun dbms-stmt-kind-write-p (kind)
   (or (eq kind 'insert)
