@@ -1024,6 +1024,21 @@
         result
         (error (db-result-error-message result "dbms exec failed") sql))))
 
+(defun db-rollback-safe! (db)
+  (handler-case
+    (db-exec! db "ROLLBACK")
+    (error (e) nil)))
+
+(defun with-db-transaction (db thunk)
+  (db-exec! db "BEGIN")
+  (handler-case
+    (let ((result (funcall thunk)))
+      (db-exec! db "COMMIT")
+      result)
+    (error (e)
+      (db-rollback-safe! db)
+      (error (format nil "~A" e)))))
+
 (defun db-table-rows (table-name)
   (let ((cached (db-table-cache-get table-name)))
     (if (null cached)
@@ -3492,34 +3507,37 @@
                                 (render-edit-conflict db slug title body-md edit-summary expected-rev actual-rev)
                                 (let* ((page-id (page-id-by-slug slug))
                                        (next-rev (+ (parse-int-safe actual-rev) 1)))
-                                  (db-exec!
+                                  (with-db-transaction
                                    db
-                                   (string-append
-                                    "UPDATE pages SET title=" (db-text-sql title)
-                                    ", body_md=" (db-text-sql body-md)
-                                    ", status=" (db-text-sql status)
-                                    ", last_edited_by=" (db-text-sql (current-username))
-                                    ", current_rev_no=" (format nil "~A" next-rev)
-                                    " WHERE slug=" (db-text-sql slug)
-                                    " AND current_rev_no=" expected-rev ";"))
-                                  (db-exec!
-                                   db
-                                   (string-append
-                                    "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
-                                    (format nil "~A" page-id) ", "
-                                    (format nil "~A" next-rev) ", "
-                                    (db-text-sql title) ", "
-                                    (db-text-sql body-md) ", "
-                                    (db-text-sql (current-username)) ", "
-                                    (db-text-sql edit-summary)
-                                    ");"))
-                                  (sync-page-tags db slug (split-tags-input tags-raw))
-                                  (write-audit-log
-                                   db
-                                   "page.update"
-                                   "page"
-                                   slug
-                                   (make-audit-meta-2 "title" title "edit_summary" edit-summary))
+                                   (lambda ()
+                                     (db-exec!
+                                      db
+                                      (string-append
+                                       "UPDATE pages SET title=" (db-text-sql title)
+                                       ", body_md=" (db-text-sql body-md)
+                                       ", status=" (db-text-sql status)
+                                       ", last_edited_by=" (db-text-sql (current-username))
+                                       ", current_rev_no=" (format nil "~A" next-rev)
+                                       " WHERE slug=" (db-text-sql slug)
+                                       " AND current_rev_no=" expected-rev ";"))
+                                     (db-exec!
+                                      db
+                                      (string-append
+                                       "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
+                                       (format nil "~A" page-id) ", "
+                                       (format nil "~A" next-rev) ", "
+                                       (db-text-sql title) ", "
+                                       (db-text-sql body-md) ", "
+                                       (db-text-sql (current-username)) ", "
+                                       (db-text-sql edit-summary)
+                                       ");"))
+                                     (sync-page-tags db slug (split-tags-input tags-raw))
+                                     (write-audit-log
+                                      db
+                                      "page.update"
+                                      "page"
+                                      slug
+                                      (make-audit-meta-2 "title" title "edit_summary" edit-summary))))
                                   (write-structured-log
                                    "info"
                                    "page.update"
@@ -3547,33 +3565,36 @@
                       (render-bad-request "status must be draft/published/private")
                       (if (null (fetch-page-any db slug))
                           (let ((page-id '()))
-                            (db-exec!
+                            (with-db-transaction
                              db
-                             (string-append
-                              "INSERT INTO pages (slug, title, body_md, status, last_edited_by, current_rev_no) VALUES ("
-                              (db-text-sql slug) ", "
-                              (db-text-sql title) ", "
-                              (db-text-sql body-md) ", "
-                              (db-text-sql status) ", "
-                              (db-text-sql (current-username)) ", 1);"))
-                            (setq page-id (page-id-by-slug slug))
-                            (db-exec!
-                             db
-                             (string-append
-                              "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
-                              (format nil "~A" page-id) ", 1, "
-                              (db-text-sql title) ", "
-                              (db-text-sql body-md) ", "
-                              (db-text-sql (current-username)) ", "
-                              (db-text-sql edit-summary)
-                              ");"))
-                            (sync-page-tags db slug (split-tags-input tags-raw))
-                            (write-audit-log
-                             db
-                             "page.create"
-                             "page"
-                             slug
-                             (make-audit-meta-2 "title" title "edit_summary" edit-summary))
+                             (lambda ()
+                               (db-exec!
+                                db
+                                (string-append
+                                 "INSERT INTO pages (slug, title, body_md, status, last_edited_by, current_rev_no) VALUES ("
+                                 (db-text-sql slug) ", "
+                                 (db-text-sql title) ", "
+                                 (db-text-sql body-md) ", "
+                                 (db-text-sql status) ", "
+                                 (db-text-sql (current-username)) ", 1);"))
+                               (setq page-id (page-id-by-slug slug))
+                               (db-exec!
+                                db
+                                (string-append
+                                 "INSERT INTO page_revisions (page_id, rev_no, title, body_md, edited_by, edit_summary) VALUES ("
+                                 (format nil "~A" page-id) ", 1, "
+                                 (db-text-sql title) ", "
+                                 (db-text-sql body-md) ", "
+                                 (db-text-sql (current-username)) ", "
+                                 (db-text-sql edit-summary)
+                                 ");"))
+                               (sync-page-tags db slug (split-tags-input tags-raw))
+                               (write-audit-log
+                                db
+                                "page.create"
+                                "page"
+                                slug
+                                (make-audit-meta-2 "title" title "edit_summary" edit-summary))))
                             (write-structured-log
                              "info"
                              "page.create"
