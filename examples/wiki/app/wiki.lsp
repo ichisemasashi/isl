@@ -2084,15 +2084,33 @@
   (let ((role (current-role)))
     (if (blank-text-p role) "guest" role)))
 
-(defun markdown-cache-path (slug rev-no)
+(defun markdown-cache-path-for-role (slug rev-no role-key)
   (string-append (markdown-cache-dir)
                  "/"
                  slug
                  "--"
                  (safe-text rev-no)
                  "--"
-                 (markdown-cache-role-key)
+                 role-key
                  ".html"))
+
+(defun markdown-cache-path (slug rev-no)
+  (markdown-cache-path-for-role slug rev-no (markdown-cache-role-key)))
+
+(defun markdown-cache-role-keys ()
+  (list "guest" "viewer" "editor" "admin"))
+
+(defun markdown-render-user-for-role (role-key)
+  (if (string= role-key "guest")
+      '()
+      (list role-key role-key role-key "" "")))
+
+(defun with-markdown-render-role (role-key thunk)
+  (let ((saved-user *wiki-current-user*))
+    (setq *wiki-current-user* (markdown-render-user-for-role role-key))
+    (let ((result (funcall thunk)))
+      (setq *wiki-current-user* saved-user)
+      result)))
 
 (defun markdown->html (db body-md)
   (let* ((normalized-md (expand-top-page-features-token db (expand-wiki-links body-md)))
@@ -2115,15 +2133,28 @@
             (safe-delete-file html-path)
             (string-append "<pre>" (html-escape normalized-md) "</pre>"))))))
 
+(defun warm-markdown-cache! (db slug rev-no body-md)
+  (if (or (blank-text-p slug) (blank-text-p rev-no))
+      nil
+      (progn
+        (ensure-markdown-cache-dir)
+        (dolist (role-key (markdown-cache-role-keys))
+          (with-markdown-render-role
+           role-key
+           (lambda ()
+             (write-file-text (markdown-cache-path-for-role slug rev-no role-key)
+                              (markdown->html db body-md))))))))
+
 (defun markdown->html-cached (db slug rev-no body-md)
   (if (or (blank-text-p slug) (blank-text-p rev-no))
       (markdown->html db body-md)
       (let ((cache-path (markdown-cache-path slug rev-no)))
         (if (null (probe-file cache-path))
-            (let ((html (markdown->html db body-md)))
-              (ensure-markdown-cache-dir)
-              (write-file-text cache-path html)
-              html)
+            (progn
+              (warm-markdown-cache! db slug rev-no body-md)
+              (if (null (probe-file cache-path))
+                  (markdown->html db body-md)
+                  (read-file-text cache-path)))
             (read-file-text cache-path)))))
 
 (defun fetch-pages (db)
@@ -3416,7 +3447,7 @@
                   (edited-by (fourth rev))
                   (edit-summary (fifth rev))
                   (created-at (sixth rev)))
-              (let ((body-html (markdown->html db body-md)))
+              (let ((body-html (markdown->html-cached db slug found-rev-no body-md)))
                 (print-headers-ok)
                 (print-layout-head (string-append "Revision " found-rev-no ": " title))
                 (format t "<h1>Revision ~A: ~A</h1>~%" (html-escape found-rev-no) (html-escape title))
@@ -3512,6 +3543,7 @@
                   "title" title
                   "edited_by" (current-username)
                   "edit_summary" (string-append "rollback to rev " target-rev-no)))
+                (warm-markdown-cache! db slug (format nil "~A" next-rev) body-md)
                 (render-see-other (string-append (app-base) "/" slug))))))))
 
 (defun save-page (db slug)
@@ -3578,6 +3610,7 @@
                                     "slug" slug
                                     "title" title
                                     "edit_summary" edit-summary))
+                                  (warm-markdown-cache! db slug (format nil "~A" next-rev) body-md)
                                   (render-see-other (string-append (app-base) "/" slug)))))))))))))
 
 (defun create-page (db)
@@ -3635,6 +3668,7 @@
                               "slug" slug
                               "title" title
                               "edit_summary" edit-summary))
+                            (warm-markdown-cache! db slug "1" body-md)
                             (render-see-other (string-append (app-base) "/" slug)))
                           (render-bad-request "slug already exists (or is soft-deleted; restore it from admin)")))))))))
 
