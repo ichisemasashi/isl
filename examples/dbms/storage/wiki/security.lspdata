@@ -1,1 +1,1 @@
-(dbms-security-meta 1 "KDF-V1-32" ((dbms-credential "admin" "admin:3982803465:5" 32 "4a9e5238")) "DISABLED" "" "" "" "dbms-audit-bootstrap-key")
+(dbms-security-meta 1 "PBKDF2-HMAC-SHA256-100000" ((dbms-credential "admin" "admin:3982803465:5" 32 "4a9e5238")) "DISABLED" "" "" "" "044b2939-1380-46a5-b5f7-de93fa6feff1")

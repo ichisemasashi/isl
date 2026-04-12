@@ -2074,22 +2074,69 @@
 (defun fetch-pages-by-query (db q)
   (fetch-pages-by-query-filtered db q "" ""))
 
+(defun page-tag-lookup-find (lookup page-id)
+  (find-first-row
+   lookup
+   (lambda (entry) (= (first entry) page-id))))
+
+(defun page-tag-lookup-tags (lookup page-id)
+  (let ((entry (page-tag-lookup-find lookup page-id)))
+    (if (null entry) '() (second entry))))
+
+(defun page-tag-list-add (tags tag)
+  (if (null (find-first-row tags (lambda (current) (string= current tag))))
+      (append tags (list tag))
+      tags))
+
+(defun build-page-tag-lookup ()
+  (let ((lookup '()))
+    (dolist (row (db-table-rows "page_tags"))
+      (let ((page-id (db-row-nullable row "page_id"))
+            (tag (db-row-value row "tag")))
+        (if (null page-id)
+            nil
+            (let ((entry (page-tag-lookup-find lookup page-id)))
+              (if (null entry)
+                  (setq lookup (cons (list page-id (list tag)) lookup))
+                  (setq lookup
+                        (cons (list page-id (page-tag-list-add (second entry) tag))
+                              (filter-rows
+                               lookup
+                               (lambda (current)
+                                 (not (= (first current) page-id)))))))))))
+    lookup))
+
+(defun sort-string-list (xs)
+  (sort-rows-by xs (lambda (v) v) nil))
+
+(defun join-tag-list-text (tags)
+  (let ((rows (sort-string-list tags))
+        (out "")
+        (first-tag t))
+    (dolist (tag rows)
+      (if first-tag
+          (progn
+            (setq out tag)
+            (setq first-tag nil))
+          (setq out (string-append out ", " tag))))
+    out))
+
 (defun fetch-pages-by-query-filtered (db q tag status)
   (let ((matched '())
-        (needle (ascii-downcase-string q)))
+        (needle (ascii-downcase-string q))
+        (page-tag-lookup (build-page-tag-lookup)))
     (dolist (row (db-table-rows "pages"))
       (let ((page-id (db-row-nullable row "id"))
-            (page-status (db-row-value row "status")))
+            (page-status (db-row-value row "status"))
+            (page-tags '()))
+        (setq page-tags (page-tag-lookup-tags page-tag-lookup page-id))
         (if (and (string= (db-row-value row "deleted_at") "")
                  (visible-page-p page-status)
                  (or (blank-text-p status) (string= page-status status))
                  (or (blank-text-p tag)
-                     (not (null (find-first-row
-                                 (db-table-rows "page_tags")
-                                 (lambda (tag-row)
-                                   (and (= (db-row-nullable tag-row "page_id") page-id)
-                                        (string= (db-row-value tag-row "tag") tag))))))
-                 )
+                     (not (null (find-first-row page-tags
+                                                (lambda (current-tag)
+                                                  (string= current-tag tag))))))
                  (or (blank-text-p needle)
                      (string-contains-ci-p needle (db-row-value row "title"))
                      (string-contains-ci-p needle (db-row-value row "body_md"))))
@@ -2103,12 +2150,13 @@
     (setq matched (sort-rows-by matched (lambda (row) (db-row-value row "updated_at")) t))
     (mapcar
      (lambda (row)
-       (list (db-row-value row "slug")
-             (db-row-value row "title")
-             (format-db-timestamp (db-row-value row "updated_at"))
-             ""
-             (fetch-page-tags-text db (db-row-value row "slug"))
-             (db-row-value row "status")))
+       (let ((page-id (db-row-nullable row "id")))
+         (list (db-row-value row "slug")
+               (db-row-value row "title")
+               (format-db-timestamp (db-row-value row "updated_at"))
+               ""
+               (join-tag-list-text (page-tag-lookup-tags page-tag-lookup page-id))
+               (db-row-value row "status"))))
      matched)))
 
 (defun fetch-search-tags (db)
