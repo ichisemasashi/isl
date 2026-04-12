@@ -1151,22 +1151,43 @@
       (> a b)
       (value-string< b a)))
 
-(defun sort-rows-by-insert (row rows key-fn desc)
+(defun sort-rows-split-halves (rows)
   (if (null rows)
-      (list row)
-      (let ((left (funcall key-fn row))
-            (right (funcall key-fn (car rows))))
-        (if (if desc (value> left right) (value< left right))
-            (cons row rows)
-            (cons (car rows) (sort-rows-by-insert row (cdr rows) key-fn desc))))))
+      (list '() '())
+      (if (null (cdr rows))
+          (list (list (car rows)) '())
+          (let* ((rest (sort-rows-split-halves (cdr (cdr rows))))
+                 (left (first rest))
+                 (right (second rest)))
+            (list (cons (car rows) left)
+                  (cons (car (cdr rows)) right))))))
+
+(defun sort-rows-before-p (left right key-fn desc)
+  (let ((left-key (funcall key-fn left))
+        (right-key (funcall key-fn right)))
+    (if desc
+        (value> left-key right-key)
+        (value< left-key right-key))))
+
+(defun sort-rows-merge (left right key-fn desc)
+  (if (null left)
+      right
+      (if (null right)
+          left
+          (if (sort-rows-before-p (car left) (car right) key-fn desc)
+              (cons (car left) (sort-rows-merge (cdr left) right key-fn desc))
+              (if (sort-rows-before-p (car right) (car left) key-fn desc)
+                  (cons (car right) (sort-rows-merge left (cdr right) key-fn desc))
+                  ;; Stable: when keys compare equal, keep left-side order first.
+                  (cons (car left) (sort-rows-merge (cdr left) right key-fn desc)))))))
 
 (defun sort-rows-by (rows key-fn desc)
-  (if (null rows)
-      '()
-      (sort-rows-by-insert (car rows)
-                           (sort-rows-by (cdr rows) key-fn desc)
-                           key-fn
-                           desc)))
+  (if (or (null rows) (null (cdr rows)))
+      rows
+      (let* ((halves (sort-rows-split-halves rows))
+             (left (sort-rows-by (first halves) key-fn desc))
+             (right (sort-rows-by (second halves) key-fn desc)))
+        (sort-rows-merge left right key-fn desc))))
 
 (defun find-first-row (rows pred)
   (if (null rows)
