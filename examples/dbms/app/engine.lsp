@@ -1120,6 +1120,17 @@
               (dbms-engine-cache-table-put! table-name state)
               saved)))))
 
+(defun dbms-engine-save-table-rows-delta (table-name old-rows new-rows)
+  (if (dbms-tx-active-p)
+      (dbms-engine-save-table-rows table-name new-rows)
+      (let ((saved (dbms-storage-save-table-rows-delta table-name old-rows new-rows))
+            (state (dbms-make-table-state table-name new-rows (+ (length new-rows) 1))))
+        (if (dbms-error-p saved)
+            saved
+            (progn
+              (dbms-engine-cache-table-put! table-name state)
+              saved)))))
+
 (defun dbms-engine-load-index (table-name index-name)
   (let ((cached (dbms-engine-cache-index-get table-name index-name)))
     (if (dbms-btree-index-p cached)
@@ -1353,6 +1364,73 @@
                                                          (dbms-index-entry-name idx)
                                                          (dbms-index-entry-column idx)
                                                          rows)))
+            (if (dbms-error-p saved)
+                (setq failed saved)
+                nil))))
+    (if (dbms-error-p failed) failed t)))
+
+(defun dbms-engine-table-state-rows-or-empty (table-name staged-states)
+  (let ((entry (dbms-find-staged-table-state-pair table-name staged-states)))
+    (if (and (listp entry)
+             (dbms-table-state-p (second entry)))
+        (third (second entry))
+        '())))
+
+(defun dbms-engine-apply-index-delta-for-entry (table-name idx-entry old-rows new-rows)
+  (let* ((index-name (dbms-index-entry-name idx-entry))
+         (column-name (dbms-index-entry-column idx-entry))
+         (loaded (dbms-storage-load-index table-name index-name))
+         (idx (if (dbms-btree-index-p loaded)
+                  loaded
+                  (dbms-storage-btree-new-index table-name index-name column-name)))
+         (failed '()))
+    (dolist (old-row old-rows)
+      (if (dbms-error-p failed)
+          nil
+          (let ((new-row (dbms-find-row-by-id new-rows (dbms-row-id old-row))))
+            (if (null new-row)
+                (let ((next (dbms-storage-btree-delete idx
+                                                       (dbms-row-get-value old-row column-name)
+                                                       (dbms-row-id old-row))))
+                  (if (dbms-error-p next)
+                      (setq failed next)
+                      (setq idx next)))
+                (let ((old-key (dbms-row-get-value old-row column-name))
+                      (new-key (dbms-row-get-value new-row column-name)))
+                  (if (equal old-key new-key)
+                      nil
+                      (let ((deleted (dbms-storage-btree-delete idx old-key (dbms-row-id old-row))))
+                        (if (dbms-error-p deleted)
+                            (setq failed deleted)
+                            (let ((inserted (dbms-storage-btree-insert deleted new-key (dbms-row-id new-row))))
+                              (if (dbms-error-p inserted)
+                                  (setq failed inserted)
+                                  (setq idx inserted)))))))))))
+    (dolist (new-row new-rows)
+      (if (dbms-error-p failed)
+          nil
+          (if (null (dbms-find-row-by-id old-rows (dbms-row-id new-row)))
+              (let ((next (dbms-storage-btree-insert idx
+                                                     (dbms-row-get-value new-row column-name)
+                                                     (dbms-row-id new-row))))
+                (if (dbms-error-p next)
+                    (setq failed next)
+                    (setq idx next)))
+              nil)))
+    (if (dbms-error-p failed)
+        failed
+        (let ((saved (dbms-storage-save-index table-name index-name idx)))
+          (if (dbms-error-p saved)
+              saved
+              (dbms-engine-cache-index-put! table-name index-name idx))))))
+
+(defun dbms-engine-sync-table-indexes-delta-from-def (table-name table-def old-rows new-rows)
+  (let ((indexes (dbms-table-indexes table-def))
+        (failed '()))
+    (dolist (idx-entry indexes)
+      (if (dbms-error-p failed)
+          nil
+          (let ((saved (dbms-engine-apply-index-delta-for-entry table-name idx-entry old-rows new-rows)))
             (if (dbms-error-p saved)
                 (setq failed saved)
                 nil))))
@@ -2447,46 +2525,49 @@
             (and (not (null col))
                  (eq (dbms-column-def-type col) 'TIMESTAMPTZ))))))
 
+(defun dbms-engine-apply-update-assignments (row table-cols set-pairs values)
+  (if (null set-pairs)
+      values
+      (let* ((assignment (car set-pairs))
+             (col-name (if (and (listp assignment) (not (null assignment)))
+                           (first assignment)
+                           '()))
+             (expr (if (and (listp assignment) (> (length assignment) 1))
+                       (second assignment)
+                       '()))
+             (col-def (if (stringp col-name)
+                          (dbms-find-column-def table-cols col-name)
+                          '())))
+        (if (or (null col-name) (not (stringp col-name)) (null col-def))
+            (dbms-make-error 'dbms/column-not-found "column not found" col-name)
+            (let ((ev (dbms-eval-expr expr row table-cols)))
+              (if (dbms-error-p ev)
+                  ev
+                  (let ((et (first ev))
+                        (evv (second ev))
+                        (target-type (dbms-column-def-type col-def)))
+                    (if (dbms-type-compatible-p target-type et)
+                        (dbms-engine-apply-update-assignments
+                         row
+                         table-cols
+                         (cdr set-pairs)
+                         (dbms-row-values-set values col-name evv))
+                        (dbms-make-error 'dbms/type-mismatch
+                                         "update value type mismatch"
+                                         (list col-name target-type et))))))))))
+
 (defun dbms-engine-build-updated-row (table-name table-def table-cols row set-pairs auto-touch-updated-at)
   (let ((lock-r (dbms-engine-acquire-row-x-lock-if-needed table-name table-def row)))
     (if (dbms-error-p lock-r)
         lock-r
-        (let ((newvals (dbms-row-values row))
-              (sr set-pairs)
-              (failed '()))
-          (while (and (null failed) (not (null sr)))
-            (let* ((assignment (car sr))
-                   (col-name (if (and (listp assignment) (not (null assignment)))
-                                 (first assignment)
-                                 '()))
-                   (expr (if (and (listp assignment) (> (length assignment) 1))
-                             (second assignment)
-                             '()))
-                   (col-def (if (stringp col-name)
-                                (dbms-find-column-def table-cols col-name)
-                                '())))
-              (if (or (null col-name) (not (stringp col-name)) (null col-def))
-                  (setq failed (dbms-make-error 'dbms/column-not-found "column not found" col-name))
-                  (let ((ev (dbms-eval-expr expr row table-cols)))
-                    (if (dbms-error-p ev)
-                        (setq failed ev)
-                        (let ((et (first ev))
-                              (evv (second ev))
-                              (target-type (dbms-column-def-type col-def)))
-                          (if (dbms-type-compatible-p target-type et)
-                              (setq newvals (dbms-row-values-set newvals col-name evv))
-                              (setq failed
-                                    (dbms-make-error 'dbms/type-mismatch
-                                                     "update value type mismatch"
-                                                     (list col-name target-type et))))))))
-            (setq sr (cdr sr)))
-          (if (dbms-error-p failed)
-              failed
+        (let ((newvals (dbms-engine-apply-update-assignments row table-cols set-pairs (dbms-row-values row))))
+          (if (dbms-error-p newvals)
+              newvals
               (progn
                 (if auto-touch-updated-at
                     (setq newvals (dbms-row-values-set newvals "updated_at" (dbms-current-timestamptz)))
                     nil)
-                (dbms-make-row (dbms-row-id row) newvals))))))))
+                (dbms-make-row (dbms-row-id row) newvals)))))))
 
 (defun dbms-rows-filter-by-predicate (rows pred table-columns)
   (let ((rest rows)
@@ -3511,11 +3592,12 @@
                 (if (null entry)
                     nil
                     (let* ((state (second entry))
-                           (saved (dbms-storage-save-table-rows name (third state))))
+                           (old-rows (dbms-engine-table-state-rows-or-empty name *dbms-tx-snapshot-states*))
+                           (saved (dbms-storage-save-table-rows-delta name old-rows (third state))))
                       (if (dbms-error-p saved)
                           (setq failed saved)
                           nil))))))
-        ;; Rebuild index files for tables touched in this transaction.
+        ;; Apply incremental index updates for tables touched in this transaction.
         (dolist (name writes)
           (if (dbms-error-p failed)
               nil
@@ -3525,12 +3607,14 @@
                     (let* ((entry (dbms-find-staged-table-state-pair name *dbms-tx-staged-table-states*))
                            (state (if (null entry)
                                       (dbms-storage-load-table-rows name)
-                                      (second entry))))
+                                      (second entry)))
+                           (old-rows (dbms-engine-table-state-rows-or-empty name *dbms-tx-snapshot-states*)))
                       (if (dbms-error-p state)
                           (setq failed state)
-                          (let ((rebuild (dbms-engine-rebuild-table-indexes-from-def name table-def (third state))))
-                            (if (dbms-error-p rebuild)
-                                (setq failed rebuild)
+                          (let ((updated-indexes (dbms-engine-sync-table-indexes-delta-from-def
+                                                  name table-def old-rows (third state))))
+                            (if (dbms-error-p updated-indexes)
+                                (setq failed updated-indexes)
                                 nil))))))))
         (setq result
               (if (dbms-error-p failed)

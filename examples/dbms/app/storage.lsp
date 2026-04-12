@@ -1744,6 +1744,42 @@
                                                        flags)))
           (dbms-make-data-page new-header new-slots)))))
 
+(defun dbms-page-find-row-slot-index (slots rid idx)
+  (if (null slots)
+      -1
+      (let ((slot (car slots)))
+        (if (and (not (dbms-slot-free-p slot))
+                 (= (dbms-row-id slot) rid))
+            idx
+            (dbms-page-find-row-slot-index (cdr slots) rid (+ idx 1))))))
+
+(defun dbms-page-with-updated-slots (page slots)
+  (let* ((header (second page))
+         (free-count (dbms-count-free-slots slots))
+         (flags (if (= free-count *dbms-data-page-slot-capacity*) '(free) '())))
+    (dbms-make-data-page
+     (dbms-make-data-page-header (second header)
+                                 (+ (third header) 1)
+                                 (dbms-page-checksum slots)
+                                 free-count
+                                 flags)
+     slots)))
+
+(defun dbms-page-replace-row (page row)
+  (let* ((rid (dbms-row-id row))
+         (slots (third page))
+         (slot-idx (dbms-page-find-row-slot-index slots rid 0)))
+    (if (< slot-idx 0)
+        '()
+        (dbms-page-with-updated-slots page (dbms-list-set-nth slots slot-idx row)))))
+
+(defun dbms-page-delete-row (page rid)
+  (let* ((slots (third page))
+         (slot-idx (dbms-page-find-row-slot-index slots rid 0)))
+    (if (< slot-idx 0)
+        '()
+        (dbms-page-with-updated-slots page (dbms-list-set-nth slots slot-idx '())))))
+
 (defun dbms-page-row-list-from-slots (slots)
   (if (null slots)
       '()
@@ -1850,6 +1886,94 @@
          (repacked (dbms-data-page-file-repack-with-rows loaded rows)))
     (dbms-storage-save-table-pages-file table-name repacked)))
 
+(defun dbms-storage-page-file-recompute-free-pages (pages)
+  (let ((free-pages '()))
+    (dolist (pair pages)
+      (let* ((pid (dbms-page-pair-page-id pair))
+             (page (dbms-page-pair-page pair)))
+        (if (> (dbms-count-free-slots (third page)) 0)
+            (setq free-pages (dbms-list-add-number-unique free-pages pid))
+            nil)))
+    free-pages))
+
+(defun dbms-storage-page-file-put-row (page-file row)
+  (let ((pages (dbms-data-page-file-pages page-file))
+        (free-pages (dbms-data-page-file-free-pages page-file))
+        (next-id (dbms-data-page-file-next-page-id page-file))
+        (placed nil)
+        (candidates (dbms-data-page-file-free-pages page-file)))
+    (while (and (not placed) (not (null candidates)))
+      (let* ((pid (car candidates))
+             (pair (dbms-find-page-pair pages pid))
+             (page (if (null pair) '() (dbms-page-pair-page pair)))
+             (next-page (if (null page) '() (dbms-page-put-row page row))))
+        (if (null next-page)
+            nil
+            (progn
+              (setq pages (dbms-put-page-pair pages pid next-page))
+              (setq placed t))))
+      (setq candidates (cdr candidates)))
+    (if (not placed)
+        (let* ((pid next-id)
+               (fresh (dbms-data-page-empty pid))
+               (used (dbms-page-put-row fresh row)))
+          (setq pages (dbms-put-page-pair pages pid used))
+          (setq next-id (+ next-id 1)))
+        nil)
+    (dbms-make-data-page-file 1
+                              *dbms-data-page-size*
+                              *dbms-data-page-slot-capacity*
+                              next-id
+                              (dbms-storage-page-file-recompute-free-pages pages)
+                              pages)))
+
+(defun dbms-storage-page-file-replace-row (page-file row)
+  (let ((pages (dbms-data-page-file-pages page-file))
+        (rid (dbms-row-id row))
+        (updated nil))
+    (dolist (pair pages)
+      (if updated
+          nil
+          (let* ((pid (dbms-page-pair-page-id pair))
+                 (page (dbms-page-pair-page pair))
+                 (next-page (dbms-page-replace-row page row)))
+            (if (null next-page)
+                nil
+                (progn
+                  (setq pages (dbms-put-page-pair pages pid next-page))
+                  (setq updated t))))))
+    (if updated
+        (dbms-make-data-page-file 1
+                                  *dbms-data-page-size*
+                                  *dbms-data-page-slot-capacity*
+                                  (dbms-data-page-file-next-page-id page-file)
+                                  (dbms-storage-page-file-recompute-free-pages pages)
+                                  pages)
+        '())))
+
+(defun dbms-storage-page-file-delete-row (page-file rid)
+  (let ((pages (dbms-data-page-file-pages page-file))
+        (deleted nil))
+    (dolist (pair pages)
+      (if deleted
+          nil
+          (let* ((pid (dbms-page-pair-page-id pair))
+                 (page (dbms-page-pair-page pair))
+                 (next-page (dbms-page-delete-row page rid)))
+            (if (null next-page)
+                nil
+                (progn
+                  (setq pages (dbms-put-page-pair pages pid next-page))
+                  (setq deleted t))))))
+    (if deleted
+        (dbms-make-data-page-file 1
+                                  *dbms-data-page-size*
+                                  *dbms-data-page-slot-capacity*
+                                  (dbms-data-page-file-next-page-id page-file)
+                                  (dbms-storage-page-file-recompute-free-pages pages)
+                                  pages)
+        '())))
+
 (defun dbms-storage-load-table-rows-from-pages (table-name)
   (let* ((pf (dbms-storage-load-table-pages-file table-name))
          (rows (dbms-page-file-row-list (dbms-data-page-file-pages pf)))
@@ -1930,6 +2054,43 @@
               saved
               (let ((psaved (dbms-storage-save-table-pages table-name rows)))
                 (if (dbms-error-p psaved) psaved saved)))))))
+
+(defun dbms-storage-save-table-rows-delta (table-name old-rows new-rows)
+  (if (or (null table-name) (string= table-name ""))
+      (dbms-make-error 'dbms/invalid-representation "table-name must be non-empty string" table-name)
+      (let* ((state (dbms-make-table-state table-name new-rows (+ (length new-rows) 1)))
+             (saved (dbms-storage-atomic-replace (dbms-storage-table-path table-name) state)))
+        (if (dbms-error-p saved)
+            saved
+            (let ((page-file (dbms-storage-load-table-pages-file table-name))
+                  (failed '()))
+              (dolist (old-row old-rows)
+                (if (dbms-error-p failed)
+                    nil
+                    (if (null (dbms-storage-find-row-by-id new-rows (dbms-row-id old-row)))
+                        (let ((next-file (dbms-storage-page-file-delete-row page-file (dbms-row-id old-row))))
+                          (if (null next-file)
+                              (setq failed (dbms-make-error 'dbms/invalid-representation "row delete target missing in page file" (dbms-row-id old-row)))
+                              (setq page-file next-file)))
+                        nil)))
+              (dolist (new-row new-rows)
+                (if (dbms-error-p failed)
+                    nil
+                    (let ((old-row (dbms-storage-find-row-by-id old-rows (dbms-row-id new-row))))
+                      (if (null old-row)
+                          (setq page-file (dbms-storage-page-file-put-row page-file new-row))
+                          (if (equal (dbms-row-values old-row) (dbms-row-values new-row))
+                              nil
+                              (let ((next-file (dbms-storage-page-file-replace-row page-file new-row)))
+                                (if (null next-file)
+                                    (setq failed (dbms-make-error 'dbms/invalid-representation "row update target missing in page file" (dbms-row-id new-row)))
+                                    (setq page-file next-file))))))))
+              (if (dbms-error-p failed)
+                  failed
+                  (let ((pages-saved (dbms-storage-save-table-pages-file table-name page-file)))
+                    (if (dbms-error-p pages-saved)
+                        pages-saved
+                        saved))))))))
 
 ;; ------------------------------------------------------------------
 ;; B+Tree index storage (P3-002)
@@ -2374,6 +2535,52 @@
             (dbms-list-take out limit)
             out))))
 
+(defun dbms-btree-delete-leaf-entry (entries key rid)
+  (if (null entries)
+      '()
+      (let ((entry (car entries)))
+        (if (and (= (dbms-btree-key-compare (dbms-btree-entry-key entry) key) 0)
+                 (= (dbms-btree-leaf-entry-rid entry) rid))
+            (cdr entries)
+            (cons entry (dbms-btree-delete-leaf-entry (cdr entries) key rid))))))
+
+(defun dbms-storage-btree-delete-from-leaf-chain (index-data leaf-id key rid)
+  (if (null leaf-id)
+      index-data
+      (let ((page (dbms-btree-get-page index-data leaf-id)))
+        (if (or (null page) (not (eq (third page) 'leaf)))
+            index-data
+            (let* ((entries (fourth page))
+                   (next-entries (dbms-btree-delete-leaf-entry entries key rid))
+                   (right-id (dbms-sixth page)))
+              (if (< (length next-entries) (length entries))
+                  (dbms-btree-put-page
+                   index-data
+                   leaf-id
+                   (dbms-make-btree-page
+                    (dbms-btree-header-with-flags leaf-id
+                                                  (if (= leaf-id (dbms-btree-index-root-page-id index-data))
+                                                      '(root)
+                                                      '()))
+                    'leaf
+                    next-entries
+                    '()
+                    right-id))
+                  (if (or (null right-id) (null entries))
+                      index-data
+                      (let ((last-key (dbms-btree-entry-key (car (dbms-list-drop entries (- (length entries) 1))))))
+                        (if (> (dbms-btree-key-compare last-key key) 0)
+                            index-data
+                            (dbms-storage-btree-delete-from-leaf-chain index-data right-id key rid))))))))))
+
+(defun dbms-storage-btree-delete (index-data key rid)
+  (if (not (dbms-btree-index-p index-data))
+      (dbms-make-error 'dbms/invalid-representation "index-data must be dbms-btree-index" index-data)
+      (dbms-storage-btree-delete-from-leaf-chain index-data
+                                                 (dbms-btree-find-leaf-page-id index-data key)
+                                                 key
+                                                 rid)))
+
 (defun dbms-row-id (row)
   (second row))
 
@@ -2389,6 +2596,13 @@
 
 (defun dbms-row-get-value (row col-name)
   (dbms-row-value-from-pairs (dbms-row-values row) col-name))
+
+(defun dbms-storage-find-row-by-id (rows rid)
+  (if (null rows)
+      '()
+      (if (= (dbms-row-id (car rows)) rid)
+          (car rows)
+          (dbms-storage-find-row-by-id (cdr rows) rid))))
 
 (defun dbms-storage-build-btree-index (table-name index-name column-name rows)
   (let ((idx (dbms-storage-btree-new-index table-name index-name column-name))
