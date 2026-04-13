@@ -2168,6 +2168,43 @@
                         pages-saved
                         saved))))))))
 
+(defun dbms-storage-save-table-rows-ops (table-name final-rows row-ops)
+  (if (or (null table-name) (string= table-name ""))
+      (dbms-make-error 'dbms/invalid-representation "table-name must be non-empty string" table-name)
+      (let* ((state (dbms-make-table-state table-name final-rows (+ (length final-rows) 1)))
+             (saved (dbms-storage-atomic-replace (dbms-storage-table-path table-name) state)))
+        (if (dbms-error-p saved)
+            saved
+            (let ((page-file (dbms-storage-load-table-pages-file table-name))
+                  (failed '()))
+              (dolist (op row-ops)
+                (if (dbms-error-p failed)
+                    nil
+                    (let ((kind (first op))
+                          (old-row (second op))
+                          (new-row (third op)))
+                      (cond
+                       ((eq kind 'insert)
+                        (setq page-file (dbms-storage-page-file-put-row page-file new-row)))
+                       ((eq kind 'update)
+                        (let ((next-file (dbms-storage-page-file-replace-row page-file new-row)))
+                          (if (null next-file)
+                              (setq failed (dbms-make-error 'dbms/invalid-representation "row update target missing in page file" (dbms-row-id new-row)))
+                              (setq page-file next-file))))
+                       ((eq kind 'delete)
+                        (let ((next-file (dbms-storage-page-file-delete-row page-file (dbms-row-id old-row))))
+                          (if (null next-file)
+                              (setq failed (dbms-make-error 'dbms/invalid-representation "row delete target missing in page file" (dbms-row-id old-row)))
+                              (setq page-file next-file))))
+                       (t
+                        (setq failed (dbms-make-error 'dbms/invalid-representation "unknown row op" op)))))))
+              (if (dbms-error-p failed)
+                  failed
+                  (let ((pages-saved (dbms-storage-save-table-pages-file table-name page-file)))
+                    (if (dbms-error-p pages-saved)
+                        pages-saved
+                        saved))))))))
+
 ;; ------------------------------------------------------------------
 ;; B+Tree index storage (P3-002)
 ;; ------------------------------------------------------------------
