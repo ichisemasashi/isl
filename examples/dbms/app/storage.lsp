@@ -2114,6 +2114,12 @@
 (defun dbms-tenth (xs)
   (first (cdr (cdr (cdr (cdr (cdr (cdr (cdr (cdr (cdr xs)))))))))))
 
+(defun dbms-string-list-p (xs)
+  (if (null xs)
+      t
+      (and (stringp (car xs))
+           (dbms-string-list-p (cdr xs)))))
+
 (defun dbms-btree-index-p (v)
   ;; (dbms-btree-index <table> <index> <column> <root-page-id> <next-page-id> <pages>)
   (and (listp v)
@@ -2121,7 +2127,9 @@
        (eq (first v) 'dbms-btree-index)
        (stringp (second v))
        (stringp (third v))
-       (stringp (fourth v))
+       (or (stringp (fourth v))
+           (and (listp (fourth v))
+                (dbms-string-list-p (fourth v))))
        (dbms-positive-int-p (fifth v))
        (dbms-positive-int-p (dbms-sixth v))
        (listp (dbms-seventh v))))
@@ -2203,7 +2211,7 @@
 (defun dbms-btree-header-with-flags (page-id flags)
   (dbms-make-btree-page-header page-id 0 0 *dbms-btree-page-header-size* *dbms-btree-page-size* flags))
 
-(defun dbms-btree-key-compare (a b)
+(defun dbms-btree-key-compare-atom (a b)
   (if (and (eq a 'NULL) (eq b 'NULL))
       0
       (if (eq a 'NULL)
@@ -2220,6 +2228,29 @@
                                 (ib (if (eq b t) 1 0)))
                             (if (< ia ib) -1 (if (> ia ib) 1 0)))
                           0)))))))
+
+(defun dbms-btree-key-compare-list (a b)
+  (if (null a)
+      (if (null b) 0 -1)
+      (if (null b)
+          1
+          (let ((cmp (dbms-btree-key-compare (car a) (car b))))
+            (if (= cmp 0)
+                (dbms-btree-key-compare-list (cdr a) (cdr b))
+                cmp)))))
+
+(defun dbms-btree-key-compare (a b)
+  (if (eq a '__dbms-key-min__)
+      (if (eq b '__dbms-key-min__) 0 -1)
+      (if (eq a '__dbms-key-max__)
+          (if (eq b '__dbms-key-max__) 0 1)
+          (if (eq b '__dbms-key-min__)
+              1
+              (if (eq b '__dbms-key-max__)
+                  -1
+                  (if (and (listp a) (listp b))
+                      (dbms-btree-key-compare-list a b)
+                      (dbms-btree-key-compare-atom a b)))))))
 
 (defun dbms-btree-entry-key (entry)
   (second entry))
@@ -2604,14 +2635,34 @@
           (car rows)
           (dbms-storage-find-row-by-id (cdr rows) rid))))
 
-(defun dbms-storage-build-btree-index (table-name index-name column-name rows)
-  (let ((idx (dbms-storage-btree-new-index table-name index-name column-name))
+(defun dbms-storage-index-key-from-row (row index-columns)
+  (if (and (listp index-columns) (not (null index-columns)))
+      (if (= (length index-columns) 1)
+          (dbms-row-get-value row (car index-columns))
+          (mapcar (lambda (col-name) (dbms-row-get-value row col-name)) index-columns))
+      'NULL))
+
+(defun dbms-storage-repeat-value (n value)
+  (if (<= n 0)
+      '()
+      (cons value (dbms-storage-repeat-value (- n 1) value))))
+
+(defun dbms-storage-index-prefix-lower-bound (index-columns prefix-values)
+  (let ((pad (- (length index-columns) (length prefix-values))))
+    (append prefix-values (dbms-storage-repeat-value pad '__dbms-key-min__))))
+
+(defun dbms-storage-index-prefix-upper-bound (index-columns prefix-values)
+  (let ((pad (- (length index-columns) (length prefix-values))))
+    (append prefix-values (dbms-storage-repeat-value pad '__dbms-key-max__))))
+
+(defun dbms-storage-build-btree-index (table-name index-name index-columns rows)
+  (let ((idx (dbms-storage-btree-new-index table-name index-name index-columns))
         (rest rows)
         (failed '()))
     (while (and (null failed) (not (null rest)))
       (let* ((row (car rest))
              (rid (dbms-row-id row))
-             (key (dbms-row-get-value row column-name))
+             (key (dbms-storage-index-key-from-row row index-columns))
              (next (dbms-storage-btree-insert idx key rid)))
         (if (dbms-error-p next)
             (setq failed next)

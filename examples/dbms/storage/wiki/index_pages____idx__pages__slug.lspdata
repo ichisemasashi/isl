@@ -1,0 +1,1 @@
+(dbms-btree-index "pages" "__idx__pages__slug" ("slug") 1 2 ((1 (dbms-btree-page (dbms-btree-page-header 1 0 0 64 4096 (root)) leaf ((dbms-btree-leaf-entry "home" 1)) () ()))))

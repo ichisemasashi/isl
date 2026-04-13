@@ -169,7 +169,7 @@
               (setq *dbms-session-user* "admin"))
             (setq *dbms-session-user* "")))
     (setq *dbms-session-active-role* "")
-    (dbms-catalog-load)))
+    (dbms-engine-ensure-catalog-compat-indexes! (dbms-catalog-load))))
 
 (defun dbms-current-tx-state ()
   *dbms-tx-state*)
@@ -1244,8 +1244,18 @@
 (defun dbms-index-entry-name (idx-entry)
   (dbms-assoc-get idx-entry "name"))
 
+(defun dbms-index-entry-columns (idx-entry)
+  (let ((cols (dbms-assoc-get idx-entry "columns"))
+        (col (dbms-assoc-get idx-entry "column")))
+    (if (and (listp cols) (not (null cols)))
+        cols
+        (if (and (stringp col) (not (string= col "")))
+            (list col)
+            '()))))
+
 (defun dbms-index-entry-column (idx-entry)
-  (dbms-assoc-get idx-entry "column"))
+  (let ((cols (dbms-index-entry-columns idx-entry)))
+    (if (null cols) '() (first cols))))
 
 (defun dbms-table-find-index-by-name (indexes index-name)
   (if (null indexes)
@@ -1261,6 +1271,23 @@
           (car indexes)
           (dbms-table-find-index-by-column (cdr indexes) col-name))))
 
+(defun dbms-string-list-prefix-p (xs prefix)
+  (if (null prefix)
+      t
+      (if (null xs)
+          nil
+          (if (string= (car xs) (car prefix))
+              (dbms-string-list-prefix-p (cdr xs) (cdr prefix))
+              nil))))
+
+(defun dbms-table-find-index-by-column-prefix (indexes col-prefix)
+  (if (null indexes)
+      '()
+      (let ((idx (car indexes)))
+        (if (dbms-string-list-prefix-p (dbms-index-entry-columns idx) col-prefix)
+            idx
+            (dbms-table-find-index-by-column-prefix (cdr indexes) col-prefix)))))
+
 (defun dbms-table-def-with-indexes (table-def indexes)
   (let* ((opts (dbms-table-def-options table-def))
          (new-opts (dbms-assoc-put opts "indexes" indexes)))
@@ -1274,6 +1301,14 @@
 
 (defun dbms-index-name-for-unique (table-name col-name)
   (string-append "__uq__" table-name "__" col-name))
+
+(defun dbms-index-name-for-columns (table-name columns)
+  (let ((rest columns)
+        (out (string-append "__idx__" table-name)))
+    (while (not (null rest))
+      (setq out (string-append out "__" (car rest)))
+      (setq rest (cdr rest)))
+    out))
 
 (defun dbms-column-has-attr-p (column-def attr)
   (dbms-symbol-in-list-p attr (dbms-column-def-attrs column-def)))
@@ -1345,8 +1380,70 @@
           nil))
     (dbms-table-def-with-indexes table-def indexes)))
 
-(defun dbms-engine-build-and-save-index (table-name index-name column-name rows)
-  (let ((built (dbms-storage-build-btree-index table-name index-name column-name rows)))
+(defun dbms-index-list-contains-columns-p (indexes columns)
+  (if (null indexes)
+      nil
+      (if (equal (dbms-index-entry-columns (car indexes)) columns)
+          t
+          (dbms-index-list-contains-columns-p (cdr indexes) columns))))
+
+(defun dbms-add-index-entry-if-missing (table-name indexes columns)
+  (if (dbms-index-list-contains-columns-p indexes columns)
+      indexes
+      (append indexes
+              (list (list (list "name" (dbms-index-name-for-columns table-name columns))
+                          (list "column" (first columns))
+                          (list "columns" columns)
+                          (list "kind" "btree"))))))
+
+(defun dbms-ensure-wiki-compat-indexes-on-table-def (table-def)
+  (let* ((table-name (dbms-table-def-name table-def))
+         (indexes (dbms-table-indexes table-def)))
+    (if (string= table-name "pages")
+        (progn
+          (setq indexes (dbms-add-index-entry-if-missing table-name indexes '("slug")))
+          (setq indexes (dbms-add-index-entry-if-missing table-name indexes '("updated_at")))
+          (setq indexes (dbms-add-index-entry-if-missing table-name indexes '("status" "deleted_at" "slug")))
+          (setq indexes (dbms-add-index-entry-if-missing table-name indexes '("status" "deleted_at" "updated_at"))))
+        nil)
+    (if (string= table-name "page_tags")
+        (progn
+          (setq indexes (dbms-add-index-entry-if-missing table-name indexes '("tag")))
+          (setq indexes (dbms-add-index-entry-if-missing table-name indexes '("page_id" "tag"))))
+        nil)
+    (dbms-table-def-with-indexes table-def indexes)))
+
+(defun dbms-engine-ensure-catalog-compat-indexes! (catalog)
+  (let ((names (dbms-catalog-table-names catalog))
+        (cur catalog)
+        (changed nil))
+    (dolist (name names)
+      (let ((table-def (dbms-catalog-find-table cur name)))
+        (if (null table-def)
+            nil
+            (let* ((normalized (dbms-ensure-wiki-compat-indexes-on-table-def
+                                (dbms-ensure-constraint-indexes-on-table-def table-def))))
+              (if (equal normalized table-def)
+                  nil
+                  (progn
+                    (setq cur (dbms-catalog-replace-table-def cur normalized))
+                    (setq changed t)))))))
+    (if changed
+        (progn
+          (dbms-catalog-save cur)
+          (dolist (name names)
+            (let ((table-def (dbms-catalog-find-table cur name)))
+              (if (null table-def)
+                  nil
+                  (let ((state (dbms-engine-load-table-rows name)))
+                    (if (dbms-error-p state)
+                        nil
+                        (dbms-engine-rebuild-table-indexes-from-def name table-def (third state)))))))
+          cur)
+        cur)))
+
+(defun dbms-engine-build-and-save-index (table-name index-name index-columns rows)
+  (let ((built (dbms-storage-build-btree-index table-name index-name index-columns rows)))
     (if (dbms-error-p built)
         built
         (let ((saved (dbms-storage-save-index table-name index-name built)))
@@ -1362,7 +1459,7 @@
           nil
           (let ((saved (dbms-engine-build-and-save-index table-name
                                                          (dbms-index-entry-name idx)
-                                                         (dbms-index-entry-column idx)
+                                                         (dbms-index-entry-columns idx)
                                                          rows)))
             (if (dbms-error-p saved)
                 (setq failed saved)
@@ -1378,11 +1475,11 @@
 
 (defun dbms-engine-apply-index-delta-for-entry (table-name idx-entry old-rows new-rows)
   (let* ((index-name (dbms-index-entry-name idx-entry))
-         (column-name (dbms-index-entry-column idx-entry))
+         (index-columns (dbms-index-entry-columns idx-entry))
          (loaded (dbms-storage-load-index table-name index-name))
          (idx (if (dbms-btree-index-p loaded)
                   loaded
-                  (dbms-storage-btree-new-index table-name index-name column-name)))
+                  (dbms-storage-btree-new-index table-name index-name index-columns)))
          (failed '()))
     (dolist (old-row old-rows)
       (if (dbms-error-p failed)
@@ -1390,13 +1487,13 @@
           (let ((new-row (dbms-find-row-by-id new-rows (dbms-row-id old-row))))
             (if (null new-row)
                 (let ((next (dbms-storage-btree-delete idx
-                                                       (dbms-row-get-value old-row column-name)
+                                                       (dbms-storage-index-key-from-row old-row index-columns)
                                                        (dbms-row-id old-row))))
                   (if (dbms-error-p next)
                       (setq failed next)
                       (setq idx next)))
-                (let ((old-key (dbms-row-get-value old-row column-name))
-                      (new-key (dbms-row-get-value new-row column-name)))
+                (let ((old-key (dbms-storage-index-key-from-row old-row index-columns))
+                      (new-key (dbms-storage-index-key-from-row new-row index-columns)))
                   (if (equal old-key new-key)
                       nil
                       (let ((deleted (dbms-storage-btree-delete idx old-key (dbms-row-id old-row))))
@@ -1411,7 +1508,7 @@
           nil
           (if (null (dbms-find-row-by-id old-rows (dbms-row-id new-row)))
               (let ((next (dbms-storage-btree-insert idx
-                                                     (dbms-row-get-value new-row column-name)
+                                                     (dbms-storage-index-key-from-row new-row index-columns)
                                                      (dbms-row-id new-row))))
                 (if (dbms-error-p next)
                     (setq failed next)
@@ -1504,6 +1601,97 @@
                 (eq (fourth expr) 'NULL))
             '()
             (list (second pred) op (fourth expr) (third expr))))))
+
+(defun dbms-predicate-conjunction-eq-probes (pred)
+  (if (null pred)
+      '()
+      (let ((eqp (dbms-predicate-simple-indexable-eq pred)))
+        (if (null eqp) '() (list eqp)))))
+
+(defun dbms-composite-index-prefix-for-select (eq-probes order-by)
+  (let ((prefix '()))
+    (dolist (probe eq-probes)
+      (setq prefix (append prefix (list (first probe)))))
+    (if (and (not (null order-by))
+             (not (dbms-string-in-list-p (first order-by) prefix)))
+        (append prefix (list (first order-by)))
+        prefix)))
+
+(defun dbms-select-best-index-entry (table-def eq-probes range-probe order-by)
+  (let* ((indexes (dbms-table-indexes table-def))
+         (order-col (if (null order-by) "" (first order-by)))
+         (eq-prefix (dbms-composite-index-prefix-for-select eq-probes order-by))
+         (range-prefix (if (and (not (null range-probe)) (stringp (first range-probe)))
+                           (list (first range-probe))
+                           '()))
+         (order-prefix (if (string= order-col "") '() (list order-col))))
+    (or (and (not (null eq-prefix))
+             (dbms-table-find-index-by-column-prefix indexes eq-prefix))
+        (and (not (null range-prefix))
+             (dbms-table-find-index-by-column-prefix indexes range-prefix))
+        (and (not (null eq-probes))
+             (dbms-table-find-index-by-column-prefix indexes (list (first (car eq-probes)))))
+        (and (not (null order-prefix))
+             (dbms-table-find-index-by-column-prefix indexes order-prefix))
+        '())))
+
+(defun dbms-probes-type-compatible-p (table-cols eq-probes range-probe)
+  (let ((ok t))
+    (dolist (probe eq-probes)
+      (if ok
+          (setq ok (dbms-probe-type-compatible-p table-cols (first probe) (third probe)))
+          nil))
+    (if (and ok (not (null range-probe)))
+        (setq ok (dbms-probe-type-compatible-p table-cols (first range-probe) (fourth range-probe)))
+        nil)
+    ok))
+
+(defun dbms-find-eq-probe-for-column (eq-probes col-name)
+  (if (null eq-probes)
+      '()
+      (if (string= (first (car eq-probes)) col-name)
+          (car eq-probes)
+          (dbms-find-eq-probe-for-column (cdr eq-probes) col-name))))
+
+(defun dbms-index-prefix-values-from-eq-probes (index-columns eq-probes)
+  (let ((rest index-columns)
+        (out '())
+        (done nil))
+    (while (and (not done) (not (null rest)))
+      (let ((probe (dbms-find-eq-probe-for-column eq-probes (car rest))))
+        (if (null probe)
+            (setq done t)
+            (setq out (append out (list (second probe))))))
+      (setq rest (cdr rest)))
+    out))
+
+(defun dbms-index-order-covered-p (idx-entry eq-probes order-by)
+  (if (or (null idx-entry) (null order-by))
+      nil
+      (let* ((columns (dbms-index-entry-columns idx-entry))
+             (prefix-values (dbms-index-prefix-values-from-eq-probes columns eq-probes))
+             (prefix-len (length prefix-values)))
+        (and (< prefix-len (length columns))
+             (string= (nth prefix-len columns) (first order-by))))))
+
+(defun dbms-index-rids-for-select (idx-data idx-entry eq-probes range-probe where-pred order-by limit-n)
+  (let* ((columns (dbms-index-entry-columns idx-entry))
+         (prefix-values (dbms-index-prefix-values-from-eq-probes columns eq-probes))
+         (can-use-prefix (and (> (length prefix-values) 0)
+                              (> (length columns) (length prefix-values))))
+         (limit-effective (if (and (numberp limit-n)
+                                   (or (null order-by)
+                                       (eq (second order-by) 'ASC)))
+                              limit-n
+                              '())))
+    (if can-use-prefix
+        (dbms-storage-btree-range-search idx-data
+                                         (dbms-storage-index-prefix-lower-bound columns prefix-values)
+                                         t
+                                         (dbms-storage-index-prefix-upper-bound columns prefix-values)
+                                         t
+                                         limit-effective)
+        (dbms-index-rids-for-where idx-data where-pred limit-effective))))
 
 (defun dbms-row-id-in-list-p (rid ids)
   (if (null ids)
@@ -2811,34 +2999,28 @@
                (all-rows (third state))
                (table-cols (dbms-table-def-columns table-def))
                (eq-probe (dbms-predicate-simple-indexable-eq where-pred))
+               (eq-probes (dbms-predicate-conjunction-eq-probes where-pred))
                (range-probe (dbms-predicate-simple-indexable-range where-pred))
                (order-col (if (null order-by) "" (first order-by)))
                (order-dir (if (null order-by) 'ASC (second order-by)))
-               (scan-col (if (and (not (null range-probe)) (stringp (first range-probe)))
-                             (first range-probe)
-                             (if (and (not (null eq-probe)) (stringp (first eq-probe)))
-                                 (first eq-probe)
-                                 (if (null order-by) "" order-col))))
-               (idx-entry (if (or (dbms-tx-active-p) (string= scan-col ""))
+               (idx-entry (if (dbms-tx-active-p)
                               '()
-                              (dbms-table-find-index-by-column (dbms-table-indexes table-def) scan-col)))
+                              (dbms-select-best-index-entry table-def eq-probes range-probe order-by)))
+               (scan-col (if (null idx-entry)
+                             (if (and (not (null range-probe)) (stringp (first range-probe)))
+                                 (first range-probe)
+                                 (if (and (not (null eq-probe)) (stringp (first eq-probe)))
+                                     (first eq-probe)
+                                     (if (null order-by) "" order-col)))
+                             (dbms-index-entry-column idx-entry)))
                (idx-data (if (null idx-entry)
                              '()
                              (dbms-engine-load-index table-name (dbms-index-entry-name idx-entry))))
-               (probe-type-ok (if (not (null eq-probe))
-                                  (dbms-probe-type-compatible-p table-cols (first eq-probe) (third eq-probe))
-                                  (if (not (null range-probe))
-                                      (dbms-probe-type-compatible-p table-cols (first range-probe) (fourth range-probe))
-                                      t)))
+               (probe-type-ok (dbms-probes-type-compatible-p table-cols eq-probes range-probe))
                (index-eligible (and (not (dbms-tx-active-p))
                                     (not (null idx-entry))
                                     (dbms-btree-index-p idx-data)
-                                    probe-type-ok
-                                    (or (null where-pred)
-                                        (and (not (null eq-probe))
-                                             (string= scan-col (first eq-probe)))
-                                        (and (not (null range-probe))
-                                             (string= scan-col (first range-probe))))))
+                                    probe-type-ok))
                (plan-details (dbms-optimizer-plan-details table-def
                                                           (length all-rows)
                                                           index-eligible
@@ -2877,7 +3059,8 @@
         (let* ((normalized (dbms-catalog-find-table created (dbms-table-def-name table-def)))
                (table-def2 (if (null normalized)
                                table-def
-                               (dbms-ensure-constraint-indexes-on-table-def normalized)))
+                               (dbms-ensure-wiki-compat-indexes-on-table-def
+                                (dbms-ensure-constraint-indexes-on-table-def normalized))))
                (catalog2 (dbms-catalog-replace-table-def created table-def2)))
           (if (dbms-error-p catalog2)
               (dbms-make-result 'error catalog2)
@@ -2916,43 +3099,45 @@
          (table-def (dbms-catalog-find-table catalog table-name)))
     (if (null table-def)
         (dbms-make-result-error 'dbms/table-not-found "table not found" table-name)
-        (if (not (= (length columns) 1))
-            ;; Multi-column index is accepted for wiki-compat SQL surface.
-            ;; Physical B+Tree build in P3-002 is single-column only.
-            (dbms-make-result-ok 'ok)
-            (let* ((column-name (first columns))
-                   (column-def (dbms-find-column-def (dbms-table-def-columns table-def) column-name))
-                   (indexes (dbms-table-indexes table-def))
-                   (exists (dbms-table-find-index-by-name indexes index-name)))
-              (if (null column-def)
-                  (dbms-make-result-error 'dbms/column-not-found "column not found" column-name)
-                  (if (not (null exists))
-                      (if if-not-exists
-                          (dbms-make-result-ok 'ok)
-                          (dbms-make-result-error 'dbms/invalid-representation "index already exists" index-name))
-                      (let* ((new-entry (list (list "name" index-name)
-                                              (list "column" column-name)
-                                              (list "kind" "btree")))
-                             (new-table-def (dbms-table-def-with-indexes table-def (append indexes (list new-entry))))
-                             (new-catalog (dbms-catalog-replace-table-def catalog new-table-def)))
-                        (if (dbms-error-p new-catalog)
-                            (dbms-make-result 'error new-catalog)
-                            (if (dbms-tx-active-p)
-                                (let ((saved (dbms-engine-save-catalog new-catalog)))
-                                  (if (dbms-error-p saved)
-                                      (dbms-make-result 'error saved)
-                                      (dbms-make-result-ok 'ok)))
-                                (let* ((state (dbms-engine-load-table-rows table-name))
-                                       (rows (if (dbms-error-p state) '() (third state)))
-                                       (saved-index (if (dbms-error-p state)
-                                                        state
-                                                        (dbms-engine-build-and-save-index table-name index-name column-name rows))))
-                                  (if (dbms-error-p saved-index)
-                                      (dbms-make-result 'error saved-index)
-                                      (let ((saved-catalog (dbms-engine-save-catalog new-catalog)))
-                                        (if (dbms-error-p saved-catalog)
-                                            (dbms-make-result 'error saved-catalog)
-                                            (dbms-make-result-ok 'ok)))))))))))))))
+        (let* ((column-name (if (null columns) '() (first columns)))
+               (indexes (dbms-table-indexes table-def))
+               (exists (dbms-table-find-index-by-name indexes index-name))
+               (column-defs-ok t))
+          (dolist (col-name columns)
+            (if (and column-defs-ok
+                     (null (dbms-find-column-def (dbms-table-def-columns table-def) col-name)))
+                (setq column-defs-ok nil)
+                nil))
+          (if (or (null column-name) (not column-defs-ok))
+              (dbms-make-result-error 'dbms/column-not-found "column not found" columns)
+              (if (not (null exists))
+                  (if if-not-exists
+                      (dbms-make-result-ok 'ok)
+                      (dbms-make-result-error 'dbms/invalid-representation "index already exists" index-name))
+                  (let* ((new-entry (list (list "name" index-name)
+                                          (list "column" column-name)
+                                          (list "columns" columns)
+                                          (list "kind" "btree")))
+                         (new-table-def (dbms-table-def-with-indexes table-def (append indexes (list new-entry))))
+                         (new-catalog (dbms-catalog-replace-table-def catalog new-table-def)))
+                    (if (dbms-error-p new-catalog)
+                        (dbms-make-result 'error new-catalog)
+                        (if (dbms-tx-active-p)
+                            (let ((saved (dbms-engine-save-catalog new-catalog)))
+                              (if (dbms-error-p saved)
+                                  (dbms-make-result 'error saved)
+                                  (dbms-make-result-ok 'ok)))
+                            (let* ((state (dbms-engine-load-table-rows table-name))
+                                   (rows (if (dbms-error-p state) '() (third state)))
+                                   (saved-index (if (dbms-error-p state)
+                                                    state
+                                                    (dbms-engine-build-and-save-index table-name index-name columns rows))))
+                              (if (dbms-error-p saved-index)
+                                  (dbms-make-result 'error saved-index)
+                                  (let ((saved-catalog (dbms-engine-save-catalog new-catalog)))
+                                    (if (dbms-error-p saved-catalog)
+                                        (dbms-make-result 'error saved-catalog)
+                                        (dbms-make-result-ok 'ok))))))))))))))
 
 (defun dbms-engine-catalog-put-constraint-state (catalog table-name constraint-name state)
   (let ((table-def (dbms-catalog-find-table catalog table-name)))
@@ -3123,34 +3308,28 @@
                (all-rows (third state))
                (table-cols (dbms-table-def-columns table-def))
                (eq-probe (dbms-predicate-simple-indexable-eq where-pred))
+               (eq-probes (dbms-predicate-conjunction-eq-probes where-pred))
                (range-probe (dbms-predicate-simple-indexable-range where-pred))
                (order-col (if (null order-by) "" (first order-by)))
                (order-dir (if (null order-by) 'ASC (second order-by)))
-               (scan-col (if (and (not (null range-probe)) (stringp (first range-probe)))
-                             (first range-probe)
-                             (if (and (not (null eq-probe)) (stringp (first eq-probe)))
-                                 (first eq-probe)
-                                 (if (null order-by) "" order-col))))
-               (idx-entry (if (or (dbms-tx-active-p) (string= scan-col ""))
+               (idx-entry (if (dbms-tx-active-p)
                               '()
-                              (dbms-table-find-index-by-column (dbms-table-indexes table-def) scan-col)))
+                              (dbms-select-best-index-entry table-def eq-probes range-probe order-by)))
+               (scan-col (if (null idx-entry)
+                             (if (and (not (null range-probe)) (stringp (first range-probe)))
+                                 (first range-probe)
+                                 (if (and (not (null eq-probe)) (stringp (first eq-probe)))
+                                     (first eq-probe)
+                                     (if (null order-by) "" order-col)))
+                             (dbms-index-entry-column idx-entry)))
                (idx-data (if (null idx-entry)
                              '()
-                             (dbms-storage-load-index table-name (dbms-index-entry-name idx-entry))))
-               (probe-type-ok (if (not (null eq-probe))
-                                  (dbms-probe-type-compatible-p table-cols (first eq-probe) (third eq-probe))
-                                  (if (not (null range-probe))
-                                      (dbms-probe-type-compatible-p table-cols (first range-probe) (fourth range-probe))
-                                      t)))
+                             (dbms-engine-load-index table-name (dbms-index-entry-name idx-entry))))
+               (probe-type-ok (dbms-probes-type-compatible-p table-cols eq-probes range-probe))
                (index-eligible (and (not (dbms-tx-active-p))
                                     (not (null idx-entry))
                                     (dbms-btree-index-p idx-data)
-                                    probe-type-ok
-                                    (or (null where-pred)
-                                        (and (not (null eq-probe))
-                                             (string= scan-col (first eq-probe)))
-                                        (and (not (null range-probe))
-                                             (string= scan-col (first range-probe))))))
+                                    probe-type-ok))
                (plan-details (dbms-optimizer-plan-details table-def
                                                           (length all-rows)
                                                           index-eligible
@@ -3163,14 +3342,13 @@
                (plan-choice (dbms-assoc-get plan-details "scan-choice"))
                (use-index (and index-eligible (string= plan-choice "INDEX")))
                (idx-rids (if use-index
-                             (dbms-index-rids-for-where idx-data
-                                                        where-pred
-                                                        (if (and (numberp limit-n)
-                                                                 (or (null order-by)
-                                                                     (and (string= scan-col order-col)
-                                                                          (eq order-dir 'ASC))))
-                                                            limit-n
-                                                            '()))
+                             (dbms-index-rids-for-select idx-data
+                                                         idx-entry
+                                                         eq-probes
+                                                         range-probe
+                                                         where-pred
+                                                         order-by
+                                                         limit-n)
                              '()))
                (filtered
                 (if (and use-index (not (dbms-error-p idx-rids)))
@@ -3199,7 +3377,8 @@
                                 (if (null (dbms-find-column-def table-cols order-col))
                                     'ORDER-BY-COLUMN-MISSING
                                     (if (and use-index
-                                             (string= scan-col order-col))
+                                             (or (string= scan-col order-col)
+                                                 (dbms-index-order-covered-p idx-entry eq-probes order-by)))
                                         (if (eq order-dir 'DESC)
                                             (dbms-reverse filtered)
                                             filtered)
