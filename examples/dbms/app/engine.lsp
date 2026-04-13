@@ -101,6 +101,10 @@
   (setq *dbms-table-cache* (dbms-assoc-put *dbms-table-cache* table-name table-state))
   table-state)
 
+(defun dbms-engine-cache-table-remove! (table-name)
+  (setq *dbms-table-cache* (dbms-assoc-remove *dbms-table-cache* table-name))
+  'ok)
+
 (defun dbms-engine-index-cache-key (table-name index-name)
   (string-append table-name "\t" index-name))
 
@@ -128,6 +132,32 @@
       (setq rest (cdr rest)))
     (setq *dbms-index-cache* (dbms-reverse out))
     'ok))
+
+(defun dbms-engine-cache-invalidate-table! (table-name)
+  (dbms-engine-cache-table-remove! table-name)
+  (dbms-engine-cache-index-remove-table! table-name)
+  (dbms-storage-invalidate-table-read-cache! table-name)
+  'ok)
+
+(defun dbms-engine-cache-invalidate-tables! (table-names)
+  (dolist (name table-names)
+    (if (and (stringp name) (not (string= name "")))
+        (dbms-engine-cache-invalidate-table! name)
+        nil))
+  'ok)
+
+(defun dbms-engine-cache-invalidate-catalog! ()
+  (setq *dbms-catalog-cache* '())
+  (dbms-storage-invalidate-catalog-read-cache!)
+  'ok)
+
+(defun dbms-engine-cache-invalidate-auth! ()
+  (dbms-storage-invalidate-auth-read-cache!)
+  'ok)
+
+(defun dbms-engine-cache-invalidate-security! ()
+  (dbms-storage-invalidate-security-read-cache!)
+  'ok)
 
 (defun dbms-engine-recovery-lag-from-report (recovered)
   (if (and (listp recovered)
@@ -316,7 +346,12 @@
         (progn
           (setq *dbms-tx-staged-auth* normalized)
           normalized)
-        (dbms-storage-save-auth-meta normalized))))
+        (let ((saved (dbms-storage-save-auth-meta normalized)))
+          (if (dbms-error-p saved)
+              saved
+              (progn
+                (dbms-engine-cache-invalidate-auth!)
+                saved))))))
 
 (defun dbms-security-kdf-rounds (_meta)
   100000)
@@ -1077,7 +1112,6 @@
             saved
             (progn
               (setq *dbms-catalog-cache* catalog)
-              (setq *dbms-table-cache* '())
               saved)))))
 
 (defun dbms-engine-load-table-rows (table-name)
@@ -1116,6 +1150,7 @@
         (if (dbms-error-p saved)
             saved
             (progn
+              (dbms-storage-invalidate-table-read-cache! table-name)
               (dbms-engine-cache-index-remove-table! table-name)
               (dbms-engine-cache-table-put! table-name state)
               saved)))))
@@ -1128,6 +1163,8 @@
         (if (dbms-error-p saved)
             saved
             (progn
+              (dbms-storage-invalidate-table-read-cache! table-name)
+              (dbms-engine-cache-index-remove-table! table-name)
               (dbms-engine-cache-table-put! table-name state)
               saved)))))
 
@@ -3720,8 +3757,12 @@
   (if (eq (dbms-tx-state-status *dbms-tx-state*) 'active)
       (let ((tx-id (dbms-tx-state-tx-id *dbms-tx-state*))
             (writes (dbms-tx-state-write-set *dbms-tx-state*))
+            (catalog-changed nil)
+            (auth-changed nil)
             (failed '())
             (result '()))
+        (setq catalog-changed (not (equal *dbms-tx-staged-catalog* *dbms-tx-snapshot-catalog*)))
+        (setq auth-changed (not (equal *dbms-tx-staged-auth* *dbms-tx-snapshot-auth*)))
         ;; WAL append/flush must complete before any data file writes.
         (let ((wal-begin (dbms-storage-wal-append-record tx-id 'begin 'tx-begin '())))
           (if (dbms-error-p wal-begin)
@@ -3841,7 +3882,16 @@
         (setq *dbms-tx-staged-table-states* '())
         (setq *dbms-tx-staged-auth* '())
         (setq *dbms-tx-isolation-level* 'READ-COMMITTED)
-        (dbms-engine-clear-read-cache!)
+        (if (dbms-error-p result)
+            (dbms-engine-clear-read-cache!)
+            (progn
+              (dbms-engine-cache-invalidate-tables! writes)
+              (if catalog-changed
+                  (dbms-engine-cache-invalidate-catalog!)
+                  nil)
+              (if auth-changed
+                  (dbms-engine-cache-invalidate-auth!)
+                  nil)))
         result)
       (progn
         (setq *dbms-tx-state* (dbms-tx-state-idle))
@@ -3857,6 +3907,7 @@
 (defun dbms-engine-rollback (_catalog _stmt)
   (if (eq (dbms-tx-state-status *dbms-tx-state*) 'active)
       (let ((tx-id (dbms-tx-state-tx-id *dbms-tx-state*))
+            (writes (dbms-tx-state-write-set *dbms-tx-state*))
             (failed '()))
         ;; Restore catalog first, then table states captured at BEGIN.
         (if (dbms-catalog-p *dbms-tx-snapshot-catalog*)
@@ -3899,7 +3950,12 @@
         (setq *dbms-tx-staged-catalog* '())
         (setq *dbms-tx-staged-table-states* '())
         (setq *dbms-tx-staged-auth* '())
-        (dbms-engine-clear-read-cache!)
+        (if (dbms-error-p failed)
+            (dbms-engine-clear-read-cache!)
+            (progn
+              (dbms-engine-cache-invalidate-tables! writes)
+              (dbms-engine-cache-invalidate-catalog!)
+              (dbms-engine-cache-invalidate-auth!)))
         (if (dbms-error-p failed)
             (dbms-make-result 'error failed)
             (dbms-make-result-ok 'ok)))

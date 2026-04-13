@@ -57,6 +57,17 @@
             (dbms-storage-cache-remove (cdr cache) path)
             (cons entry (dbms-storage-cache-remove (cdr cache) path))))))
 
+(defun dbms-storage-cache-remove-prefix (cache prefix)
+  (if (null cache)
+      '()
+      (let ((entry (car cache)))
+        (if (and (listp entry)
+                 (= (length entry) 3)
+                 (stringp (first entry))
+                 (starts-with (first entry) prefix))
+            (dbms-storage-cache-remove-prefix (cdr cache) prefix)
+            (cons entry (dbms-storage-cache-remove-prefix (cdr cache) prefix))))))
+
 (defun dbms-storage-cache-put-sexpr! (path value)
   (setq *dbms-storage-sexpr-cache*
         (dbms-storage-cache-put *dbms-storage-sexpr-cache* path value))
@@ -72,6 +83,13 @@
         (dbms-storage-cache-remove *dbms-storage-sexpr-cache* path))
   (setq *dbms-storage-sexpr-list-cache*
         (dbms-storage-cache-remove *dbms-storage-sexpr-list-cache* path))
+  'ok)
+
+(defun dbms-storage-cache-invalidate-prefix! (prefix)
+  (setq *dbms-storage-sexpr-cache*
+        (dbms-storage-cache-remove-prefix *dbms-storage-sexpr-cache* prefix))
+  (setq *dbms-storage-sexpr-list-cache*
+        (dbms-storage-cache-remove-prefix *dbms-storage-sexpr-list-cache* prefix))
   'ok)
 
 (defun dbms-storage-clear-read-cache! ()
@@ -94,6 +112,9 @@
 (defun dbms-storage-table-pages-path (table-name)
   (string-append (dbms-storage-root) "/table_" table-name ".pages.lspdata"))
 
+(defun dbms-storage-index-path-prefix (table-name)
+  (string-append (dbms-storage-root) "/index_" table-name "__"))
+
 (defun dbms-storage-wal-path ()
   (string-append (dbms-storage-root) "/wal.log"))
 
@@ -105,6 +126,21 @@
 
 (defun dbms-storage-security-path ()
   (string-append (dbms-storage-root) "/security.lspdata"))
+
+(defun dbms-storage-invalidate-table-read-cache! (table-name)
+  (dbms-storage-cache-invalidate-path! (dbms-storage-table-path table-name))
+  (dbms-storage-cache-invalidate-path! (dbms-storage-table-pages-path table-name))
+  (dbms-storage-cache-invalidate-prefix! (dbms-storage-index-path-prefix table-name))
+  'ok)
+
+(defun dbms-storage-invalidate-catalog-read-cache! ()
+  (dbms-storage-cache-invalidate-path! (dbms-storage-catalog-path)))
+
+(defun dbms-storage-invalidate-auth-read-cache! ()
+  (dbms-storage-cache-invalidate-path! (dbms-storage-auth-path)))
+
+(defun dbms-storage-invalidate-security-read-cache! ()
+  (dbms-storage-cache-invalidate-path! (dbms-storage-security-path)))
 
 (defun dbms-storage-audit-path ()
   (string-append (dbms-storage-root) "/audit.lspdata"))
