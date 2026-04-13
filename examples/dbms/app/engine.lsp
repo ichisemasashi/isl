@@ -1452,6 +1452,20 @@
         (dbms-engine-rebuild-table-indexes-from-def table-name table-def new-rows)
         updated)))
 
+(defun dbms-engine-persist-table-change-stable (table-name table-def old-rows new-rows)
+  (if (dbms-tx-active-p)
+      (dbms-engine-save-table-rows table-name new-rows)
+      (let ((saved (dbms-engine-save-table-rows-commit-stable table-name old-rows new-rows)))
+        (if (dbms-error-p saved)
+            saved
+            (let ((updated-indexes (dbms-engine-sync-table-indexes-commit-stable
+                                    table-name table-def old-rows new-rows)))
+              (if (dbms-error-p updated-indexes)
+                  updated-indexes
+                  (let ((state (dbms-make-table-state table-name new-rows (+ (length new-rows) 1))))
+                    (dbms-engine-cache-table-put! table-name state)
+                    t)))))))
+
 (defun dbms-predicate-simple-indexable-eq (pred)
   ;; Returns (<column-name> <literal-value> <literal-type>) for `=`.
   (if (or (null pred)
@@ -3089,15 +3103,11 @@
                     (let ((nv (dbms-enforce-not-valid-constraints-on-row catalog table-def new-row)))
                       (if (dbms-error-p nv)
                           (dbms-make-result 'error nv)
-                          (let ((saved (dbms-engine-save-table-rows table-name new-rows)))
+                          (let ((saved (dbms-engine-persist-table-change-stable
+                                        table-name table-def rows new-rows)))
                             (if (dbms-error-p saved)
                                 (dbms-make-result 'error saved)
-                                (if (dbms-tx-active-p)
-                                    (dbms-make-result-count 1)
-                                    (let ((rebuild (dbms-engine-rebuild-table-indexes-from-def table-name table-def new-rows)))
-                                      (if (dbms-error-p rebuild)
-                                          (dbms-make-result 'error rebuild)
-                                          (dbms-make-result-count 1)))))))))))))))
+                                (dbms-make-result-count 1))))))))))))
 
 (defun dbms-engine-select (catalog stmt)
   (let* ((payload (third stmt))
@@ -3264,16 +3274,11 @@
                               (let ((nv (dbms-enforce-not-valid-constraints-on-rows catalog table-def touched-rows)))
                                 (if (dbms-error-p nv)
                                     (dbms-make-result 'error nv)
-                                    (let ((saved (dbms-engine-save-table-rows table-name updated-rows)))
+                                    (let ((saved (dbms-engine-persist-table-change-stable
+                                                  table-name table-def rows updated-rows)))
                                       (if (dbms-error-p saved)
                                           (dbms-make-result 'error saved)
-                                          (if (dbms-tx-active-p)
-                                              (dbms-make-result-count affected)
-                                              (let ((rebuild (dbms-engine-rebuild-table-indexes-from-def
-                                                              table-name table-def updated-rows)))
-                                                (if (dbms-error-p rebuild)
-                                                    (dbms-make-result 'error rebuild)
-                                                    (dbms-make-result-count affected))))))))))))))))))
+                                          (dbms-make-result-count affected)))))))))))))))
 
 (defun dbms-collect-referencing-fks (catalog target-table)
   (let ((pairs (dbms-catalog-tables catalog))
@@ -3332,7 +3337,8 @@
                   (let ((valid (dbms-validate-rows new-rows child-def catalog)))
                     (if (dbms-error-p valid)
                         (setq failed valid)
-                        (let ((saved (dbms-engine-save-table-rows child-name new-rows)))
+                        (let ((saved (dbms-engine-persist-table-change-stable
+                                      child-name child-def rows new-rows)))
                           (if (dbms-error-p saved)
                               (setq failed saved)
                               nil)))))))))
@@ -3369,18 +3375,14 @@
                           (setq kept (append kept (list row))))))))
           (if (dbms-error-p failed)
               (dbms-make-result 'error failed)
-              (let ((saved (dbms-engine-save-table-rows table-name kept)))
+              (let ((saved (dbms-engine-persist-table-change-stable
+                            table-name table-def rows kept)))
                 (if (dbms-error-p saved)
                     (dbms-make-result 'error saved)
                     (let ((prop (dbms-propagate-on-delete catalog table-name deleted)))
                       (if (dbms-error-p prop)
                           (dbms-make-result 'error prop)
-                          (if (dbms-tx-active-p)
-                              (dbms-make-result-count affected)
-                              (let ((rebuild (dbms-engine-rebuild-table-indexes-from-def table-name table-def kept)))
-                                (if (dbms-error-p rebuild)
-                                    (dbms-make-result 'error rebuild)
-                                    (dbms-make-result-count affected)))))))))))))
+                          (dbms-make-result-count affected))))))))))
 
 (defun dbms-auth-meta-with-users (auth users)
   (dbms-make-auth-meta users
