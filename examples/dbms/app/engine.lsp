@@ -1436,6 +1436,22 @@
                 nil))))
     (if (dbms-error-p failed) failed t)))
 
+(defun dbms-engine-save-table-rows-commit-stable (table-name old-rows new-rows)
+  (let ((saved (dbms-storage-save-table-rows-delta table-name old-rows new-rows)))
+    (if (dbms-error-p saved)
+        ;; Fall back to the full save path so commit can still complete even if
+        ;; the incremental page-file state is temporarily inconsistent.
+        (dbms-storage-save-table-rows table-name new-rows)
+        saved)))
+
+(defun dbms-engine-sync-table-indexes-commit-stable (table-name table-def old-rows new-rows)
+  (let ((updated (dbms-engine-sync-table-indexes-delta-from-def table-name table-def old-rows new-rows)))
+    (if (dbms-error-p updated)
+        ;; Preserve correctness by rebuilding from committed rows when the
+        ;; incremental index path cannot be applied cleanly.
+        (dbms-engine-rebuild-table-indexes-from-def table-name table-def new-rows)
+        updated)))
+
 (defun dbms-predicate-simple-indexable-eq (pred)
   ;; Returns (<column-name> <literal-value> <literal-type>) for `=`.
   (if (or (null pred)
@@ -3593,7 +3609,7 @@
                     nil
                     (let* ((state (second entry))
                            (old-rows (dbms-engine-table-state-rows-or-empty name *dbms-tx-snapshot-states*))
-                           (saved (dbms-storage-save-table-rows-delta name old-rows (third state))))
+                           (saved (dbms-engine-save-table-rows-commit-stable name old-rows (third state))))
                       (if (dbms-error-p saved)
                           (setq failed saved)
                           nil))))))
@@ -3611,7 +3627,7 @@
                            (old-rows (dbms-engine-table-state-rows-or-empty name *dbms-tx-snapshot-states*)))
                       (if (dbms-error-p state)
                           (setq failed state)
-                          (let ((updated-indexes (dbms-engine-sync-table-indexes-delta-from-def
+                          (let ((updated-indexes (dbms-engine-sync-table-indexes-commit-stable
                                                   name table-def old-rows (third state))))
                             (if (dbms-error-p updated-indexes)
                                 (setq failed updated-indexes)
