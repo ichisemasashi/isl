@@ -97,6 +97,12 @@
   (setq *dbms-storage-sexpr-list-cache* '())
   'ok)
 
+(defun dbms-storage-invalidate-wal-read-cache! ()
+  (dbms-storage-cache-invalidate-path! (dbms-storage-wal-path)))
+
+(defun dbms-storage-invalidate-checkpoint-read-cache! ()
+  (dbms-storage-cache-invalidate-path! (dbms-storage-checkpoint-path)))
+
 (defun dbms-storage-root ()
   (let ((v (getenv "DBMS_STORAGE_ROOT")))
     (if (or (null v) (string= v ""))
@@ -763,7 +769,12 @@
 
 (defun dbms-storage-save-checkpoint-meta (checkpoint)
   (if (dbms-checkpoint-meta-p checkpoint)
-      (dbms-storage-atomic-replace (dbms-storage-checkpoint-path) checkpoint)
+      (let ((saved (dbms-storage-atomic-replace (dbms-storage-checkpoint-path) checkpoint)))
+        (if (dbms-error-p saved)
+            saved
+            (progn
+              (dbms-storage-invalidate-checkpoint-read-cache!)
+              saved)))
       (dbms-make-error 'dbms/invalid-representation "checkpoint must be dbms-checkpoint" checkpoint)))
 
 (defun dbms-storage-checkpoint-last-lsn (checkpoint)
@@ -826,7 +837,11 @@
 
 (defun dbms-storage-wal-next-lsn ()
   (let ((records (dbms-storage-load-wal-records))
-        (mx 0))
+        (mx 0)
+        (checkpoint (dbms-storage-load-checkpoint-meta)))
+    (if (> (dbms-storage-checkpoint-last-lsn checkpoint) mx)
+        (setq mx (dbms-storage-checkpoint-last-lsn checkpoint))
+        nil)
     (dolist (r records)
       (if (> (dbms-wal-record-lsn r) mx)
           (setq mx (dbms-wal-record-lsn r))
@@ -1096,7 +1111,12 @@
               (setq ok nil)))
         (if (not ok)
             (dbms-make-error 'dbms/invalid-representation "records must contain dbms-wal-record only" records)
-            (dbms-storage-atomic-replace (dbms-storage-wal-path) records)))))
+            (let ((saved (dbms-storage-atomic-replace (dbms-storage-wal-path) records)))
+              (if (dbms-error-p saved)
+                  saved
+                  (progn
+                    (dbms-storage-invalidate-wal-read-cache!)
+                    saved)))))))
 
 (defun dbms-storage-wal-records-after-lsn (records lsn)
   (let ((rest records)
@@ -1108,6 +1128,15 @@
       (setq rest (cdr rest)))
     (dbms-storage-reverse out)))
 
+(defun dbms-storage-wal-trim-through-lsn (target-lsn)
+  (let ((records (dbms-storage-load-wal-records))
+        (kept '()))
+    (dolist (r records)
+      (if (> (dbms-wal-record-lsn r) target-lsn)
+          (setq kept (append kept (list r)))
+          nil))
+    (dbms-storage-save-wal-records kept)))
+
 (defun dbms-storage-create-checkpoint ()
   (let* ((last-lsn (dbms-storage-wal-max-lsn))
          (max-txid (dbms-storage-wal-max-txid))
@@ -1118,7 +1147,10 @@
          (saved (dbms-storage-save-checkpoint-meta checkpoint)))
     (if (dbms-error-p saved)
         saved
-        checkpoint)))
+        (let ((trimmed (dbms-storage-wal-trim-through-lsn last-lsn)))
+          (if (dbms-error-p trimmed)
+              trimmed
+              checkpoint)))))
 
 (defun dbms-storage-save-table-state (table-name table-state)
   (if (or (null table-name) (string= table-name ""))
@@ -1531,16 +1563,18 @@
          (committed (dbms-storage-wal-committed-txids records))
          (applied 0)
          (failed '()))
-    (dolist (r records)
-      (if (dbms-error-p failed)
-          nil
-          (if (and (eq (fourth r) 'data)
-                   (dbms-number-in-list-p (third r) committed))
-              (let ((saved (dbms-storage-wal-apply-data-record r)))
-                (if (dbms-error-p saved)
-                    (setq failed saved)
-                    (setq applied (+ applied 1))))
-              nil)))
+    (if (null records)
+        nil
+        (dolist (r records)
+          (if (dbms-error-p failed)
+              nil
+              (if (and (eq (fourth r) 'data)
+                       (dbms-number-in-list-p (third r) committed))
+                  (let ((saved (dbms-storage-wal-apply-data-record r)))
+                    (if (dbms-error-p saved)
+                        (setq failed saved)
+                        (setq applied (+ applied 1))))
+                  nil))))
     (if (dbms-error-p failed)
         failed
         (list 'dbms-recovery-report
