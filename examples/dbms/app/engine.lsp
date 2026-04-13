@@ -1518,6 +1518,12 @@
         (third (second entry))
         '())))
 
+(defun dbms-engine-rows-append-only-p (old-rows new-rows)
+  (dbms-storage-rows-append-only-p old-rows new-rows))
+
+(defun dbms-engine-rows-append-tail (old-rows new-rows)
+  (dbms-storage-rows-append-tail old-rows new-rows))
+
 (defun dbms-engine-apply-index-delta-for-entry (table-name idx-entry old-rows new-rows)
   (let* ((index-name (dbms-index-entry-name idx-entry))
          (index-columns (dbms-index-entry-columns idx-entry))
@@ -1526,39 +1532,50 @@
                   loaded
                   (dbms-storage-btree-new-index table-name index-name index-columns)))
          (failed '()))
-    (dolist (old-row old-rows)
-      (if (dbms-error-p failed)
-          nil
-          (let ((new-row (dbms-find-row-by-id new-rows (dbms-row-id old-row))))
-            (if (null new-row)
-                (let ((next (dbms-storage-btree-delete idx
-                                                       (dbms-storage-index-key-from-row old-row index-columns)
-                                                       (dbms-row-id old-row))))
-                  (if (dbms-error-p next)
-                      (setq failed next)
-                      (setq idx next)))
-                (let ((old-key (dbms-storage-index-key-from-row old-row index-columns))
-                      (new-key (dbms-storage-index-key-from-row new-row index-columns)))
-                  (if (equal old-key new-key)
-                      nil
-                      (let ((deleted (dbms-storage-btree-delete idx old-key (dbms-row-id old-row))))
-                        (if (dbms-error-p deleted)
-                            (setq failed deleted)
-                            (let ((inserted (dbms-storage-btree-insert deleted new-key (dbms-row-id new-row))))
-                              (if (dbms-error-p inserted)
-                                  (setq failed inserted)
-                                  (setq idx inserted)))))))))))
-    (dolist (new-row new-rows)
-      (if (dbms-error-p failed)
-          nil
-          (if (null (dbms-find-row-by-id old-rows (dbms-row-id new-row)))
+    (if (dbms-engine-rows-append-only-p old-rows new-rows)
+        (dolist (new-row (dbms-engine-rows-append-tail old-rows new-rows))
+          (if (dbms-error-p failed)
+              nil
               (let ((next (dbms-storage-btree-insert idx
                                                      (dbms-storage-index-key-from-row new-row index-columns)
                                                      (dbms-row-id new-row))))
                 (if (dbms-error-p next)
                     (setq failed next)
-                    (setq idx next)))
-              nil)))
+                    (setq idx next)))))
+        (progn
+          (dolist (old-row old-rows)
+            (if (dbms-error-p failed)
+                nil
+                (let ((new-row (dbms-find-row-by-id new-rows (dbms-row-id old-row))))
+                  (if (null new-row)
+                      (let ((next (dbms-storage-btree-delete idx
+                                                             (dbms-storage-index-key-from-row old-row index-columns)
+                                                             (dbms-row-id old-row))))
+                        (if (dbms-error-p next)
+                            (setq failed next)
+                            (setq idx next)))
+                      (let ((old-key (dbms-storage-index-key-from-row old-row index-columns))
+                            (new-key (dbms-storage-index-key-from-row new-row index-columns)))
+                        (if (equal old-key new-key)
+                            nil
+                            (let ((deleted (dbms-storage-btree-delete idx old-key (dbms-row-id old-row))))
+                              (if (dbms-error-p deleted)
+                                  (setq failed deleted)
+                                  (let ((inserted (dbms-storage-btree-insert deleted new-key (dbms-row-id new-row))))
+                                    (if (dbms-error-p inserted)
+                                        (setq failed inserted)
+                                        (setq idx inserted)))))))))))
+          (dolist (new-row new-rows)
+            (if (dbms-error-p failed)
+                nil
+                (if (null (dbms-find-row-by-id old-rows (dbms-row-id new-row)))
+                    (let ((next (dbms-storage-btree-insert idx
+                                                           (dbms-storage-index-key-from-row new-row index-columns)
+                                                           (dbms-row-id new-row))))
+                      (if (dbms-error-p next)
+                          (setq failed next)
+                          (setq idx next)))
+                    nil)))))
     (if (dbms-error-p failed)
         failed
         (let ((saved (dbms-storage-save-index table-name index-name idx)))

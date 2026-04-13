@@ -2134,27 +2134,33 @@
             saved
             (let ((page-file (dbms-storage-load-table-pages-file table-name))
                   (failed '()))
-              (dolist (old-row old-rows)
-                (if (dbms-error-p failed)
-                    nil
-                    (if (null (dbms-storage-find-row-by-id new-rows (dbms-row-id old-row)))
-                        (let ((next-file (dbms-storage-page-file-delete-row page-file (dbms-row-id old-row))))
-                          (if (null next-file)
-                              (setq failed (dbms-make-error 'dbms/invalid-representation "row delete target missing in page file" (dbms-row-id old-row)))
-                              (setq page-file next-file)))
-                        nil)))
-              (dolist (new-row new-rows)
-                (if (dbms-error-p failed)
-                    nil
-                    (let ((old-row (dbms-storage-find-row-by-id old-rows (dbms-row-id new-row))))
-                      (if (null old-row)
-                          (setq page-file (dbms-storage-page-file-put-row page-file new-row))
-                          (if (equal (dbms-row-values old-row) (dbms-row-values new-row))
-                              nil
-                              (let ((next-file (dbms-storage-page-file-replace-row page-file new-row)))
+              (if (dbms-storage-rows-append-only-p old-rows new-rows)
+                  (dolist (new-row (dbms-storage-rows-append-tail old-rows new-rows))
+                    (if (dbms-error-p failed)
+                        nil
+                        (setq page-file (dbms-storage-page-file-put-row page-file new-row))))
+                  (progn
+                    (dolist (old-row old-rows)
+                      (if (dbms-error-p failed)
+                          nil
+                          (if (null (dbms-storage-find-row-by-id new-rows (dbms-row-id old-row)))
+                              (let ((next-file (dbms-storage-page-file-delete-row page-file (dbms-row-id old-row))))
                                 (if (null next-file)
-                                    (setq failed (dbms-make-error 'dbms/invalid-representation "row update target missing in page file" (dbms-row-id new-row)))
-                                    (setq page-file next-file))))))))
+                                    (setq failed (dbms-make-error 'dbms/invalid-representation "row delete target missing in page file" (dbms-row-id old-row)))
+                                    (setq page-file next-file)))
+                              nil)))
+                    (dolist (new-row new-rows)
+                      (if (dbms-error-p failed)
+                          nil
+                          (let ((old-row (dbms-storage-find-row-by-id old-rows (dbms-row-id new-row))))
+                            (if (null old-row)
+                                (setq page-file (dbms-storage-page-file-put-row page-file new-row))
+                                (if (equal (dbms-row-values old-row) (dbms-row-values new-row))
+                                    nil
+                                    (let ((next-file (dbms-storage-page-file-replace-row page-file new-row)))
+                                      (if (null next-file)
+                                          (setq failed (dbms-make-error 'dbms/invalid-representation "row update target missing in page file" (dbms-row-id new-row)))
+                                          (setq page-file next-file))))))))))
               (if (dbms-error-p failed)
                   failed
                   (let ((pages-saved (dbms-storage-save-table-pages-file table-name page-file)))
@@ -2704,6 +2710,22 @@
       (if (= (dbms-row-id (car rows)) rid)
           (car rows)
           (dbms-storage-find-row-by-id (cdr rows) rid))))
+
+(defun dbms-storage-rows-prefix-equal-p (old-rows new-rows)
+  (if (null old-rows)
+      t
+      (if (null new-rows)
+          nil
+          (if (equal (car old-rows) (car new-rows))
+              (dbms-storage-rows-prefix-equal-p (cdr old-rows) (cdr new-rows))
+              nil))))
+
+(defun dbms-storage-rows-append-only-p (old-rows new-rows)
+  (and (<= (length old-rows) (length new-rows))
+       (dbms-storage-rows-prefix-equal-p old-rows new-rows)))
+
+(defun dbms-storage-rows-append-tail (old-rows new-rows)
+  (dbms-list-drop new-rows (length old-rows)))
 
 (defun dbms-storage-index-key-from-row (row index-columns)
   (if (and (listp index-columns) (not (null index-columns)))
