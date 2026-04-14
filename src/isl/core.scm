@@ -2186,6 +2186,38 @@
      bindings)
     let-env))
 
+(define (eval-pair-place-target place env who)
+  (let ((target (eval-islisp* (cadr place) env #f)))
+    (unless (pair? target)
+      (error who "target must be pair" target))
+    target))
+
+(define (eval-setf-pair-place place env val)
+  (let ((target (eval-pair-place-target place
+                                        env
+                                        (if (eq? (car place) 'car)
+                                            "setf car"
+                                            "setf cdr"))))
+    (if (eq? (car place) 'car)
+        (set-car! target val)
+        (set-cdr! target val))
+    val))
+
+(define (eval-incf-pair-place place env delta)
+  (let* ((target (eval-pair-place-target place
+                                         env
+                                         (if (eq? (car place) 'car)
+                                             "incf car"
+                                             "incf cdr")))
+         (current (if (eq? (car place) 'car)
+                      (car target)
+                      (cdr target)))
+         (new (+ current delta)))
+    (if (eq? (car place) 'car)
+        (set-car! target new)
+        (set-cdr! target new))
+    new))
+
 (define (eval-defpackage args)
   (unless (>= (length args) 1)
     (error "defpackage needs package name" args))
@@ -2640,13 +2672,9 @@
                            val)
                val)
               ((and (pair? place) (eq? (car place) 'car) (= (length place) 2))
-               (let ((target (eval-islisp* (cadr place) env #f)))
-                 (set-car! target val)
-                 val))
+               (eval-setf-pair-place place env val))
               ((and (pair? place) (eq? (car place) 'cdr) (= (length place) 2))
-               (let ((target (eval-islisp* (cadr place) env #f)))
-                 (set-cdr! target val)
-                 val))
+               (eval-setf-pair-place place env val))
               ((and (pair? place)
                     (or (eq? (car place) 'vector-ref) (eq? (car place) 'aref))
                     (= (length place) 3))
@@ -2697,15 +2725,9 @@
                  (frame-set! env sym new)
                  new))
               ((and (pair? place) (eq? (car place) 'car) (= (length place) 2))
-               (let* ((target (eval-islisp* (cadr place) env #f))
-                      (new (+ (car target) delta)))
-                 (set-car! target new)
-                 new))
+               (eval-incf-pair-place place env delta))
               ((and (pair? place) (eq? (car place) 'cdr) (= (length place) 2))
-               (let* ((target (eval-islisp* (cadr place) env #f))
-                      (new (+ (cdr target) delta)))
-                 (set-cdr! target new)
-                 new))
+               (eval-incf-pair-place place env delta))
               (else
                (error "Unsupported incf place" place))))
            (error "incf takes place and optional delta" form)))

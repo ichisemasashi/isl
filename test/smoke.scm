@@ -592,6 +592,10 @@
 (check '(1 . 7) '(progn (defglobal p4 (cons 1 2)) (incf (cdr p4) 5) p4))
 (check '(9 . 2) '(progn (defglobal p (cons 1 2)) (setf (car p) 9) p))
 (check '(9 . 8) '(progn (defglobal p2 (cons 9 2)) (setf (cdr p2) 8) p2))
+(check-error '(setf (car 1) 9))
+(check-error '(setf (cdr 1) 9))
+(check-error '(incf (car 1) 3))
+(check-error '(incf (cdr 1) 3))
 (check 10 '(progn
              (defglobal wi 0)
              (defglobal wsum 0)
