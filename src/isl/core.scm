@@ -2396,6 +2396,23 @@
     (error "lambda needs params and body" form))
   (make-callable-definition (car args) (cdr args) env #f #f))
 
+(define (eval-defglobal args env form)
+  (if (= (length args) 2)
+      (define-global-binding! env
+                              (car args)
+                              (eval-islisp* (cadr args) env #f)
+                              "defglobal needs a symbol")
+      (error "defglobal takes symbol and expression" form)))
+
+(define (eval-defvar args env form)
+  (if (= (length args) 2)
+      (define-global-binding-if-missing! env
+                                         (car args)
+                                         (lambda ()
+                                           (eval-islisp* (cadr args) env #f))
+                                         "defvar needs a symbol")
+      (error "defvar takes symbol and expression" form)))
+
 (define (eval-progn args env tail?)
   (eval-sequence* args env tail?))
 
@@ -2846,20 +2863,9 @@
       ((lambda)
        (eval-lambda args env form))
       ((defglobal)
-       (if (= (length args) 2)
-           (define-global-binding! env
-                                   (car args)
-                                   (eval-islisp* (cadr args) env #f)
-                                   "defglobal needs a symbol")
-           (error "defglobal takes symbol and expression" form)))
+       (eval-defglobal args env form))
       ((defvar)
-       (if (= (length args) 2)
-           (define-global-binding-if-missing! env
-                                              (car args)
-                                              (lambda ()
-                                                (eval-islisp* (cadr args) env #f))
-                                              "defvar needs a symbol")
-           (error "defvar takes symbol and expression" form)))
+       (eval-defvar args env form))
       ((setq)
        (eval-setq args env form))
       ((setf)
