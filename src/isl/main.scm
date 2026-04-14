@@ -13,29 +13,68 @@
     (and (>= n m)
          (string=? (substring s 0 m) prefix))))
 
-(define (run-file path env)
-  (call-with-input-file path
-    (lambda (p)
-      (for-each (lambda (form)
-                  (eval-islisp form env))
-                (read-all p)))))
+(define (option-arg? arg)
+  (and (> (string-length arg) 0)
+       (char=? (string-ref arg 0) #\-)))
 
-(define (parse-main-args argv)
-  (let loop ((xs argv) (profile 'extended) (files '()))
+(define (parse-profile-value value)
+  (cond
+   ((string-ci=? value "strict") (list 'ok 'strict))
+   ((string-ci=? value "extended") (list 'ok 'extended))
+   (else
+    (list 'error
+          (string-append "unknown profile: "
+                         value
+                         " (expected strict or extended)")))))
+
+(define (parse-profile-option value rest files)
+  (let ((parsed (parse-profile-value value)))
+    (if (eq? (car parsed) 'ok)
+        (parse-main-args-loop rest (cadr parsed) files)
+        parsed)))
+
+(define (eval-forms forms env)
+  (for-each (lambda (form)
+              (eval-islisp form env))
+            forms))
+
+(define (run-file path env)
+  (guard (e
+          (else
+           (error "Failed to load file" path e)))
+    (call-with-input-file path
+      (lambda (p)
+        (eval-forms (read-all p) env)))))
+
+(define (parse-main-args-loop xs profile files)
     (if (null? xs)
         (list 'ok profile (reverse files))
         (let ((arg (car xs)))
           (cond
            ((or (string=? arg "-h") (string=? arg "--help"))
             (list 'help))
+           ((string=? arg "--")
+            (list 'ok profile (append (reverse files) (cdr xs))))
            ((string=? arg "--profile")
             (if (null? (cdr xs))
                 (list 'error "--profile requires a value: strict or extended")
-                (loop (cddr xs) (cadr xs) files)))
+                (parse-profile-option (cadr xs) (cddr xs) files)))
            ((starts-with? arg "--profile=")
-            (loop (cdr xs) (substring arg 10 (string-length arg)) files))
+            (parse-profile-option (substring arg 10 (string-length arg))
+                                  (cdr xs)
+                                  files))
+           ((and (option-arg? arg) (not (string=? arg "-")))
+            (list 'error (string-append "unknown option: " arg)))
            (else
-            (loop (cdr xs) profile (cons arg files))))))))
+            (parse-main-args-loop (cdr xs) profile (cons arg files)))))))
+
+(define (parse-main-args argv)
+  (parse-main-args-loop argv 'extended '()))
+
+(define (run-files files env)
+  (for-each (lambda (path)
+              (run-file path env))
+            files))
 
 (define (main args)
   (let ((parsed (parse-main-args (cdr args))))
@@ -63,9 +102,7 @@
                (repl env)
                0)
              (begin
-               (for-each (lambda (path)
-                           (run-file path env))
-                         files)
+               (run-files files env)
                0))))
       (else
        (usage)
