@@ -601,6 +601,12 @@
                    (return-from inner 6)
                    0))))
 (check 42 '(progn (defglobal s 0) (setf s 42) s))
+(check '(3 3 3) '(progn
+                   (defglobal sx 0)
+                   (defglobal sy 0)
+                   (list (setq sx 1 sy (+ sx 2) sx sy)
+                         sx
+                         sy)))
 (check 11 '(progn (defglobal incx 10) (incf incx)))
 (check 15 '(progn (defglobal incx2 10) (incf incx2 5)))
 (check '(4 . 2) '(progn (defglobal p3 (cons 1 2)) (incf (car p3) 3) p3))

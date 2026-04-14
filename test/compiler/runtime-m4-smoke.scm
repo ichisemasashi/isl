@@ -56,4 +56,15 @@
   'strict)
  "let-init-left-to-right")
 
+(assert-equal
+ '(3 3 3)
+ (run-forms
+  '((defglobal m4-sx 0)
+    (defglobal m4-sy 0)
+    (list (setq m4-sx 1 m4-sy (+ m4-sx 2) m4-sx m4-sy)
+          m4-sx
+          m4-sy))
+  'strict)
+ "multi-setq-left-to-right")
+
 (display "runtime M4 smoke passed\n")
