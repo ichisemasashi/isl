@@ -332,6 +332,7 @@
 (defglobal *wiki-request-id* "")
 (defglobal *db-table-cache* '())
 (defglobal *wiki-request-body-override* '())
+(defglobal *wiki-media-name-counter* 0)
 (defglobal *wiki-embed-mutex* (mutex-open))
 
 (defun clear-response-extra-headers ()
@@ -2813,6 +2814,12 @@
                 '())
               raw-body)))))
 
+(defmacro with-valid-form-body (raw-body require-csrf &rest body)
+  `(let ((,raw-body (read-form-body-or-render ,require-csrf)))
+     (if (null ,raw-body)
+         nil
+         (progn ,@body))))
+
 (defun backup-confirm-phrase ()
   "RUN BACKUP")
 
@@ -4138,8 +4145,8 @@
             ");"))
           (if (or (blank-text-p edit-summary) (blank-text-p page-slug))
               nil
-              (let ((page (fetch-page-any db page-slug))
-                    (next-rev (+ (parse-int-safe (page-current-rev-no (fetch-page-any db page-slug))) 1)))
+              (let* ((page (fetch-page-any db page-slug))
+                     (next-rev (+ (parse-int-safe (page-current-rev-no page)) 1)))
                 (db-exec!
                db
                (string-append
@@ -4172,8 +4179,23 @@
            (make-log-fields-3
             "page_slug" page-slug
             "stored_filename" stored-name
-            "mime_type" mime-type))
+           "mime_type" mime-type))
           ""))))
+
+(defun next-media-name-suffix ()
+  (setq *wiki-media-name-counter* (+ *wiki-media-name-counter* 1))
+  (string-append
+   (format nil "~A" (get-universal-time))
+   "-"
+   (format nil "~A" *wiki-media-name-counter*)))
+
+(defun build-stored-media-name (prefix original-filename)
+  (string-append
+   prefix
+   "-"
+   (next-media-name-suffix)
+   "-"
+   (sanitize-filename (basename original-filename))))
 
 (defun move-upload-into-media-dir (temp-path stored-name)
     (let ((dest-path (string-append (media-root-dir) "/" stored-name)))
@@ -4199,17 +4221,11 @@
             (if (null (probe-file source-path))
                 (render-bad-request "source file not found")
                 (let* ((base-name (basename source-path))
-                       (safe-name (sanitize-filename base-name))
                        (media-type (if (blank-text-p media-type-input)
                                        (infer-media-type base-name)
                                        media-type-input))
                        (validation (validate-media-upload source-path base-name mime-type-input))
-                       (stored-name (string-append
-                                     (format nil "~A" (get-universal-time))
-                                     "-"
-                                     (format nil "~A" *markdown-temp-counter*)
-                                     "-"
-                                     safe-name))
+                       (stored-name (build-stored-media-name "source" base-name))
                        (storage-path (string-append (media-root-dir) "/" stored-name))
                        (public-url (media-delivery-url stored-name)))
                   (if (not (valid-media-type-p media-type))
@@ -4283,13 +4299,7 @@
                                        (validation
                                         (validate-media-upload upload-temp-path upload-filename declared-mime))
                                        (stored-name
-                                        (string-append
-                                         "upload-"
-                                         (format nil "~A" (get-universal-time))
-                                         "-"
-                                         (format nil "~A" *markdown-temp-counter*)
-                                         "-"
-                                         safe-name)))
+                                        (build-stored-media-name "upload" upload-filename)))
                                   (if (not (valid-media-type-p media-type))
                                       (render-bad-request "media_type must be image/video/audio/file")
                                       (if (not (string= (first validation) "ok"))
@@ -4879,88 +4889,82 @@
                 (render-see-other (string-append (app-base) "/media"))))))))))
 
 (defun delete-page (db slug)
-  (let ((raw-body (read-form-body-or-render t)))
-    (if (null raw-body)
-        nil
-        (let ((page (fetch-page db slug)))
-          (if (null page)
-              (render-not-found)
-              (let ((title (second page)))
-                (db-update-table-rows!
-                 "pages"
-                 (lambda (row)
-                   (string= (db-row-value row "slug") slug))
-                 (lambda (row)
-                   (db-update-row-fields
-                    row
-                    (list (list "deleted_at" (db-now-text))
-                          (list "deleted_by" (current-username))
-                          (list "updated_at" (db-now-text))))))
-                (write-audit-log
-                 db
-                 "page.delete"
-                 "page"
-                 slug
-                 (make-audit-meta-2
-                  "title" title
-                  "deleted_by" (current-username)))
-                (render-see-other (app-base))))))))
+  (with-valid-form-body raw-body t
+    (let ((page (fetch-page db slug)))
+      (if (null page)
+          (render-not-found)
+          (let ((title (second page)))
+            (db-update-table-rows!
+             "pages"
+             (lambda (row)
+               (string= (db-row-value row "slug") slug))
+             (lambda (row)
+               (db-update-row-fields
+                row
+                (list (list "deleted_at" (db-now-text))
+                      (list "deleted_by" (current-username))
+                      (list "updated_at" (db-now-text))))))
+            (write-audit-log
+             db
+             "page.delete"
+             "page"
+             slug
+             (make-audit-meta-2
+              "title" title
+              "deleted_by" (current-username)))
+            (render-see-other (app-base)))))))
 
 (defun restore-page (db slug)
-  (let ((raw-body (read-form-body-or-render t)))
-    (if (null raw-body)
-        nil
-        (let ((page (fetch-page-any db slug)))
-          (if (or (null page) (string= (fifth page) ""))
-              (render-not-found)
-              (let ((title (second page)))
-                (db-update-table-rows!
-                 "pages"
-                 (lambda (row)
-                   (string= (db-row-value row "slug") slug))
-                 (lambda (row)
-                   (db-update-row-fields
-                    row
-                    (list (list "deleted_at" 'NULL)
-                          (list "deleted_by" 'NULL)
-                          (list "updated_at" (db-now-text))))))
-                (write-audit-log
-                 db
-                 "page.restore"
-                 "page"
-                 slug
-                 (make-audit-meta-2
-                  "title" title
-                  "restored_by" (current-username)))
-                (render-see-other (string-append (app-base) "/admin/deleted-pages"))))))))
+  (with-valid-form-body raw-body t
+    (let ((page (fetch-page-any db slug)))
+      (if (or (null page) (string= (fifth page) ""))
+          (render-not-found)
+          (let ((title (second page)))
+            (db-update-table-rows!
+             "pages"
+             (lambda (row)
+               (string= (db-row-value row "slug") slug))
+             (lambda (row)
+               (db-update-row-fields
+                row
+                (list (list "deleted_at" 'NULL)
+                      (list "deleted_by" 'NULL)
+                      (list "updated_at" (db-now-text))))))
+            (write-audit-log
+             db
+             "page.restore"
+             "page"
+             slug
+             (make-audit-meta-2
+              "title" title
+              "restored_by" (current-username)))
+            (render-see-other (string-append (app-base) "/admin/deleted-pages")))))))
 
 (defun restore-media (db media-id)
-  (let ((raw-body (read-form-body-or-render t)))
-    (if (null raw-body)
-        nil
-        (let ((mid (parse-int-safe media-id))
-              (media (fetch-media-by-id-any db media-id)))
-          (if (or (null mid) (null media) (string= (eighth media) ""))
-              (render-not-found)
-              (let ((stored-filename (fourth media)))
-                (db-update-table-rows!
-                 "media_assets"
-                 (lambda (row)
-                   (= (db-row-nullable row "id") mid))
-                 (lambda (row)
-                   (db-update-row-fields
-                    row
-                    (list (list "deleted_at" 'NULL)
-                          (list "deleted_by" 'NULL)))))
-                (write-audit-log
-                 db
-                 "media.restore"
-                 "media"
-                 media-id
-                 (make-audit-meta-2
-                  "stored_filename" stored-filename
-                  "restored_by" (current-username)))
-                (render-see-other (string-append (app-base) "/admin/deleted-media"))))))))
+  (with-valid-form-body raw-body t
+    (let ((mid (parse-int-safe media-id))
+          (media (fetch-media-by-id-any db media-id)))
+      (if (or (null mid) (null media) (string= (eighth media) ""))
+          (render-not-found)
+          (let ((stored-filename (fourth media)))
+            (db-update-table-rows!
+             "media_assets"
+             (lambda (row)
+               (= (db-row-nullable row "id") mid))
+             (lambda (row)
+               (db-update-row-fields
+                row
+                (list (list "deleted_at" 'NULL)
+                      (list "deleted_by" 'NULL)))))
+            (write-audit-log
+             db
+             "media.restore"
+             "media"
+             media-id
+             (make-audit-meta-2
+              "stored_filename" stored-filename
+              "restored_by" (current-username)))
+            (render-see-other (string-append (app-base) "/admin/deleted-media")))))))
 
 (defun render-new ()
   (let ((base (app-base)))
@@ -5020,6 +5024,148 @@
               (format t "</form>~%")
               (print-layout-foot))))))
 
+(defun dispatch-route-1 (db method segments)
+  (cond
+   ((string= (first segments) "new")
+    (if (string= method "POST")
+        (create-page db)
+        (render-new)))
+   ((string= (first segments) "media")
+    (render-media-index db))
+   ((string= (first segments) "search")
+    (render-search db))
+   ((string= (first segments) "healthz")
+    (render-healthz db))
+   ((string= (first segments) "admin")
+    (render-admin-home))
+   ((string= (first segments) "login")
+    (if (string= method "POST")
+        (handle-login db)
+        (render-login-form "" "")))
+   ((string= (first segments) "logout")
+    (handle-logout db))
+   (t
+    (render-view db (first segments)))))
+
+(defun dispatch-admin-route-2 (db method segments)
+  (cond
+   ((string= (second segments) "audit")
+    (render-admin-audit db))
+   ((string= (second segments) "stats")
+    (render-admin-stats db))
+   ((string= (second segments) "settings")
+    (if (string= method "POST")
+        (save-admin-settings db)
+        (render-admin-settings db)))
+   ((string= (second segments) "users")
+    (if (string= method "POST")
+        (create-admin-user db)
+        (render-admin-users db)))
+   ((string= (second segments) "pages")
+    (render-admin-pages db))
+   ((string= (second segments) "media")
+    (render-admin-media db))
+   ((string= (second segments) "deleted-pages")
+    (render-admin-deleted-pages db))
+   ((string= (second segments) "deleted-media")
+    (render-admin-deleted-media db))
+   ((string= (second segments) "backup")
+    (if (string= method "POST")
+        (render-admin-backup-run)
+        (render-admin-backup-form db)))
+   ((string= (second segments) "restore")
+    (if (string= method "POST")
+        (render-admin-restore-run)
+        (render-admin-restore-form)))
+   (t
+    (render-not-found))))
+
+(defun dispatch-route-2 (db method segments)
+  (cond
+   ((string= (first segments) "admin")
+    (dispatch-admin-route-2 db method segments))
+   ((string= (first segments) "media")
+    (if (string= (second segments) "new")
+        (if (string= method "POST")
+            (create-media db)
+            (render-media-new db))
+        (render-not-found)))
+   ((string= (first segments) "files")
+    (render-media-file db (second segments)))
+   ((string= (second segments) "history")
+    (render-history db (first segments)))
+   ((string= (second segments) "delete")
+    (if (string= method "POST")
+        (delete-page db (first segments))
+        (render-not-found)))
+   ((string= (second segments) "edit")
+    (if (string= method "POST")
+        (save-page db (first segments))
+        (render-edit db (first segments))))
+   (t
+    (render-not-found))))
+
+(defun dispatch-route-3 (db method segments)
+  (cond
+   ((and (string= (first segments) "admin")
+         (string= (second segments) "users"))
+    (if (string= method "POST")
+        (update-admin-user db (third segments))
+        (render-not-found)))
+   ((and (string= (first segments) "media")
+         (string= (third segments) "delete"))
+    (if (string= method "POST")
+        (delete-media db (second segments))
+        (render-not-found)))
+   ((and (string= (second segments) "revisions")
+         (not (blank-text-p (third segments))))
+    (render-revision-view db (first segments) (third segments)))
+   (t
+    (render-not-found))))
+
+(defun dispatch-route-4 (db method segments)
+  (cond
+   ((and (string= (first segments) "admin")
+         (string= (second segments) "deleted-pages")
+         (string= (fourth segments) "restore"))
+    (if (string= method "POST")
+        (restore-page db (third segments))
+        (render-not-found)))
+   ((and (string= (first segments) "admin")
+         (string= (second segments) "deleted-media")
+         (string= (fourth segments) "restore"))
+    (if (string= method "POST")
+        (restore-media db (third segments))
+        (render-not-found)))
+   ((and (string= (second segments) "compare")
+         (not (blank-text-p (third segments)))
+         (not (blank-text-p (fourth segments))))
+    (render-compare-view db (first segments) (third segments) (fourth segments)))
+   ((and (string= (second segments) "revisions")
+         (string= (fourth segments) "rollback")
+         (not (blank-text-p (third segments))))
+    (if (string= method "POST")
+        (rollback-page-to-revision db (first segments) (third segments))
+        (render-not-found)))
+   (t
+    (render-not-found))))
+
+(defun dispatch-route (db method segments)
+  (let ((n (length segments)))
+    (cond
+     ((= n 0)
+      (render-root-home db))
+     ((= n 1)
+      (dispatch-route-1 db method segments))
+     ((= n 2)
+      (dispatch-route-2 db method segments))
+     ((= n 3)
+      (dispatch-route-3 db method segments))
+     ((= n 4)
+      (dispatch-route-4 db method segments))
+     (t
+      (render-not-found)))))
+
 (defun render-app ()
   (let* ((method (request-method))
          (raw-path (env-or-empty "PATH_INFO"))
@@ -5041,130 +5187,7 @@
           (if (and (string= method "GET") (needs-canonical-redirect-p raw-path))
               (render-redirect (string-append (app-base) (canonical-path-info raw-path)))
               (if (ensure-authorized method segments)
-                   (cond
-                   ((= n 0)
-                    (render-root-home db))
-                   ((= n 1)
-                    (cond
-                     ((string= (first segments) "new")
-                      (if (string= method "POST")
-                          (create-page db)
-                          (render-new)))
-                     ((string= (first segments) "media")
-                      (render-media-index db))
-                     ((string= (first segments) "search")
-                      (render-search db))
-                     ((string= (first segments) "healthz")
-                      (render-healthz db))
-                     ((string= (first segments) "admin")
-                      (render-admin-home))
-                     ((string= (first segments) "login")
-                      (if (string= method "POST")
-                          (handle-login db)
-                          (render-login-form "" "")))
-                     ((string= (first segments) "logout")
-                      (handle-logout db))
-                     (t
-                      (render-view db (first segments)))))
-                   ((= n 2)
-                    (cond
-                     ((string= (first segments) "admin")
-                     (cond
-                       ((string= (second segments) "audit")
-                        (render-admin-audit db))
-                       ((string= (second segments) "stats")
-                        (render-admin-stats db))
-                       ((string= (second segments) "settings")
-                        (if (string= method "POST")
-                            (save-admin-settings db)
-                            (render-admin-settings db)))
-                       ((string= (second segments) "users")
-                        (if (string= method "POST")
-                            (create-admin-user db)
-                            (render-admin-users db)))
-                       ((string= (second segments) "pages")
-                        (render-admin-pages db))
-                       ((string= (second segments) "media")
-                        (render-admin-media db))
-                       ((string= (second segments) "deleted-pages")
-                        (render-admin-deleted-pages db))
-                       ((string= (second segments) "deleted-media")
-                        (render-admin-deleted-media db))
-                       ((string= (second segments) "backup")
-                        (if (string= method "POST")
-                            (render-admin-backup-run)
-                            (render-admin-backup-form db)))
-                       ((string= (second segments) "restore")
-                        (if (string= method "POST")
-                            (render-admin-restore-run)
-                            (render-admin-restore-form)))
-                       (t
-                        (render-not-found))))
-                     ((string= (first segments) "media")
-                      (if (string= (second segments) "new")
-                          (if (string= method "POST")
-                              (create-media db)
-                              (render-media-new db))
-                          (render-not-found)))
-                     ((string= (first segments) "files")
-                      (render-media-file db (second segments)))
-                     ((string= (second segments) "history")
-                      (render-history db (first segments)))
-                     ((string= (second segments) "delete")
-                      (if (string= method "POST")
-                          (delete-page db (first segments))
-                          (render-not-found)))
-                     ((string= (second segments) "edit")
-                      (if (string= method "POST")
-                          (save-page db (first segments))
-                          (render-edit db (first segments))))
-                     (t
-                      (render-not-found))))
-                   ((= n 3)
-                   (cond
-                    ((and (string= (first segments) "admin")
-                          (string= (second segments) "users"))
-                     (if (string= method "POST")
-                         (update-admin-user db (third segments))
-                         (render-not-found)))
-                     ((and (string= (first segments) "media")
-                           (string= (third segments) "delete"))
-                      (if (string= method "POST")
-                          (delete-media db (second segments))
-                          (render-not-found)))
-                     ((and (string= (second segments) "revisions")
-                           (not (blank-text-p (third segments))))
-                      (render-revision-view db (first segments) (third segments)))
-                     (t
-                      (render-not-found))))
-                   ((= n 4)
-                    (cond
-                     ((and (string= (first segments) "admin")
-                           (string= (second segments) "deleted-pages")
-                           (string= (fourth segments) "restore"))
-                      (if (string= method "POST")
-                          (restore-page db (third segments))
-                          (render-not-found)))
-                     ((and (string= (first segments) "admin")
-                           (string= (second segments) "deleted-media")
-                           (string= (fourth segments) "restore"))
-                      (if (string= method "POST")
-                          (restore-media db (third segments))
-                          (render-not-found)))
-                     ((and (string= (second segments) "compare")
-                           (not (blank-text-p (third segments)))
-                           (not (blank-text-p (fourth segments))))
-                      (render-compare-view db (first segments) (third segments) (fourth segments)))
-                     ((and (string= (second segments) "revisions")
-                           (string= (fourth segments) "rollback")
-                           (not (blank-text-p (third segments))))
-                      (if (string= method "POST")
-                          (rollback-page-to-revision db (first segments) (third segments))
-                          (render-not-found)))
-                     (t
-                      (render-not-found))))
-                   (t
-                    (render-not-found)))
+                  (dispatch-route db method segments)
                   nil))
           nil))))
 
