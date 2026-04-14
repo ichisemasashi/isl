@@ -2160,6 +2160,32 @@
       ;; Keep exceptions from tail calls within handler-case dynamic extent.
       (force-value (eval-islisp* protected env tail?)))))
 
+(define (parse-let-binding binding who)
+  (unless (and (list? binding) (= (length binding) 2))
+    (error who binding))
+  (let ((name (resolve-binding-symbol (car binding))))
+    (list name (cadr binding))))
+
+(define (eval-let-bindings bindings env sequential?)
+  (unless (list? bindings)
+    (error (if sequential?
+               "let* bindings must be a list"
+               "let bindings must be a list")
+           bindings))
+  (let ((let-env (make-frame env)))
+    (for-each
+     (lambda (binding)
+       (let* ((parsed (parse-let-binding binding
+                                         (if sequential?
+                                             "invalid let* binding"
+                                             "invalid let binding")))
+              (name (car parsed))
+              (init-form (cadr parsed))
+              (value (eval-islisp* init-form (if sequential? let-env env) #f)))
+         (frame-define! let-env name value)))
+     bindings)
+    let-env))
+
 (define (eval-defpackage args)
   (unless (>= (length args) 1)
     (error "defpackage needs package name" args))
@@ -2723,31 +2749,17 @@
        (if (>= (length args) 2)
            (let ((bindings (car args))
                  (body (cdr args)))
-             (unless (list? bindings)
-               (error "let bindings must be a list" bindings))
-             (let ((let-env (make-frame env)))
-               (for-each
-               (lambda (b)
-                  (unless (and (list? b) (= (length b) 2) (symbol? (car b)))
-                    (error "invalid let binding" b))
-                  (frame-define! let-env (car b) (eval-islisp* (cadr b) env #f)))
-               bindings)
-               (eval-sequence* body let-env tail?)))
+             (eval-sequence* body
+                             (eval-let-bindings bindings env #f)
+                             tail?))
            (error "let needs bindings and body" form)))
       ((let*)
        (if (>= (length args) 2)
            (let ((bindings (car args))
                  (body (cdr args)))
-             (unless (list? bindings)
-               (error "let* bindings must be a list" bindings))
-             (let ((let-env (make-frame env)))
-               (for-each
-                (lambda (b)
-                  (unless (and (list? b) (= (length b) 2) (symbol? (car b)))
-                    (error "invalid let* binding" b))
-                  (frame-define! let-env (car b) (eval-islisp* (cadr b) let-env #f)))
-                bindings)
-               (eval-sequence* body let-env tail?)))
+             (eval-sequence* body
+                             (eval-let-bindings bindings env #t)
+                             tail?))
            (error "let* needs bindings and body" form)))
       (else
        (error "Unknown special form" op)))))

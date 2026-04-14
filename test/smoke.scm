@@ -49,6 +49,8 @@
   (sys-unlink sqlite-file))
 
 (check 3 '(+ 1 2))
+(check-error '(let ((:bad 1)) :bad))
+(check-error '(let* ((:bad 1)) :bad))
 (check #(1 2 3) '(make-array 3 :initial-contents '(1 2 3)))
 (check #(1 2 3) '(make-vector 3 :initial-contents '(1 2 3)))
 (check #\x '(vector-ref (make-vector 3 :initial-element #\x) 2))

@@ -53,4 +53,16 @@
  'arity
  "arity-mismatch")
 
+(assert-runtime-error
+ (lambda ()
+   (run-forms '((let ((:bad 1)) :bad))))
+ 'invalid-ir
+ "let-keyword-binding")
+
+(assert-runtime-error
+ (lambda ()
+   (run-forms '((let* ((:bad 1)) :bad))))
+ 'invalid-ir
+ "let*-keyword-binding")
+
 (display "runtime M2 smoke passed\n")
