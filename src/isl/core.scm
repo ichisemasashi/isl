@@ -2409,6 +2409,32 @@
       (bind-params! call-env param-spec raw-args)
       (force-value (eval-sequence* body call-env #t)))))
 
+(define (call-with-block-entry name thunk)
+  (if name
+      (call/cc
+       (lambda (escape)
+         (dynamic-wind
+           (lambda ()
+             (set! *block-stack* (cons (cons name escape) *block-stack*)))
+           thunk
+           (lambda ()
+             (set! *block-stack* (cdr *block-stack*))))))
+      (thunk)))
+
+(define (make-closure-call-env closure args)
+  (let* ((param-spec (parse-params (closure-params closure)))
+         (call-env (make-frame (closure-env closure))))
+    (bind-params! call-env param-spec args)
+    call-env))
+
+(define (eval-closure-call closure args)
+  (call-with-block-entry
+   (closure-name closure)
+   (lambda ()
+     (eval-sequence* (closure-body closure)
+                     (make-closure-call-env closure args)
+                     #t))))
+
 (define (macroexpand-1-with-flag form env)
   (if (and (pair? form) (symbol? (car form)))
       (let ((op (car form))
@@ -2446,28 +2472,10 @@
      ((primitive? current-fn)
       (apply (primitive-proc current-fn) current-args))
      ((closure? current-fn)
-      (let ((params (closure-params current-fn))
-            (body (closure-body current-fn))
-            (fenv (closure-env current-fn))
-            (fname (closure-name current-fn)))
-        (let ((param-spec (parse-params params)))
-        (let ((call-env (make-frame fenv)))
-          (bind-params! call-env param-spec current-args)
-          (let ((result
-                 (if fname
-                     (call/cc
-                      (lambda (escape)
-                        (dynamic-wind
-                          (lambda ()
-                            (set! *block-stack* (cons (cons fname escape) *block-stack*)))
-                          (lambda ()
-                            (eval-sequence* body call-env #t))
-                          (lambda ()
-                            (set! *block-stack* (cdr *block-stack*))))))
-                     (eval-sequence* body call-env #t))))
-            (if (tail-call? result)
-                (loop (tail-call-fn result) (tail-call-args result))
-                result))))))
+      (let ((result (eval-closure-call current-fn current-args)))
+        (if (tail-call? result)
+            (loop (tail-call-fn result) (tail-call-args result))
+            result)))
      (else
       (error "Attempt to call non-function" current-fn)))))
 

@@ -611,6 +611,11 @@
 (check-error '(setf (cdr 1) 9))
 (check-error '(incf (car 1) 3))
 (check-error '(incf (cdr 1) 3))
+(check 42 '(progn
+             (defun named-return ()
+               (return-from named-return 42)
+               0)
+             (named-return)))
 (check 10 '(progn
              (defglobal wi 0)
              (defglobal wsum 0)
