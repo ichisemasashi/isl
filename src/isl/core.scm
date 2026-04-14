@@ -84,17 +84,16 @@
               pair
               (loop (frame-parent f)))))))
 
+(define (frame-find-local-pair frame sym)
+  (assoc sym (frame-bindings frame)))
+
 (define (frame-define! frame sym val)
-  (let ((bindings (frame-bindings frame)))
-    (let loop ((xs bindings) (acc '()))
-      (cond
-       ((null? xs)
-        (set-frame-bindings! frame (append (reverse acc) (list (cons sym val)))))
-       ((eq? (caar xs) sym)
+  (let ((pair (frame-find-local-pair frame sym)))
+    (if pair
+        (set-cdr! pair val)
         (set-frame-bindings! frame
-                             (append (reverse acc) (cons (cons sym val) (cdr xs)))))
-       (else
-        (loop (cdr xs) (cons (car xs) acc)))))))
+                             (cons (cons sym val)
+                                   (frame-bindings frame))))))
 
 (define (frame-unbind! frame sym)
   (let ((bindings (frame-bindings frame)))

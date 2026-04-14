@@ -14,6 +14,10 @@
     (let ((actual (eval-islisp form env)))
       (error "assertion failed (expected error)" form actual))))
 
+(define (check-host label thunk)
+  (unless (thunk)
+    (error "host assertion failed" label)))
+
 (define smoke-file "test/tmp-smoke-input.lsp")
 (call-with-output-file
  smoke-file
@@ -49,6 +53,17 @@
   (sys-unlink sqlite-file))
 
 (check 3 '(+ 1 2))
+(check-host
+ "frame-define-updates-in-place"
+ (lambda ()
+   (with-module isl.core
+     (let ((frame (make-frame #f)))
+       (frame-define! frame 'a 1)
+       (frame-define! frame 'b 2)
+       (frame-define! frame 'a 3)
+       (and (= (length (frame-bindings frame)) 2)
+            (= (cdr (frame-find-local-pair frame 'a)) 3)
+            (= (cdr (frame-find-local-pair frame 'b)) 2))))))
 (check-error '(let ((:bad 1)) :bad))
 (check-error '(let* ((:bad 1)) :bad))
 (check #(1 2 3) '(make-array 3 :initial-contents '(1 2 3)))
