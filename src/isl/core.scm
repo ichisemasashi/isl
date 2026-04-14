@@ -2346,6 +2346,9 @@
     (error "lambda needs params and body" form))
   (make-callable-definition (car args) (cdr args) env #f #f))
 
+(define (eval-progn args env tail?)
+  (eval-sequence* args env tail?))
+
 (define (eval-global-function-definition args env form macro?)
   (unless (>= (length args) 3)
     (error (if macro?
@@ -2364,6 +2367,18 @@
                    name
                    (make-callable-definition params body env name macro?))
     name))
+
+(define (eval-let-form args env tail? sequential? form)
+  (if (>= (length args) 2)
+      (let ((bindings (car args))
+            (body (cdr args)))
+        (eval-sequence* body
+                        (eval-let-bindings bindings env sequential?)
+                        tail?))
+      (error (if sequential?
+                 "let* needs bindings and body"
+                 "let needs bindings and body")
+             form)))
 
 (define (eval-setq args env form)
   (unless (and (>= (length args) 2) (even? (length args)))
@@ -2850,25 +2865,13 @@
       ((in-package)
        (eval-in-package args))
       ((progn)
-       (eval-sequence* args env tail?))
+       (eval-progn args env tail?))
       ((block)
        (eval-block args env tail?))
       ((let)
-       (if (>= (length args) 2)
-           (let ((bindings (car args))
-                 (body (cdr args)))
-             (eval-sequence* body
-                             (eval-let-bindings bindings env #f)
-                             tail?))
-           (error "let needs bindings and body" form)))
+       (eval-let-form args env tail? #f form))
       ((let*)
-       (if (>= (length args) 2)
-           (let ((bindings (car args))
-                 (body (cdr args)))
-             (eval-sequence* body
-                             (eval-let-bindings bindings env #t)
-                             tail?))
-           (error "let* needs bindings and body" form)))
+       (eval-let-form args env tail? #t form))
       (else
        (error "Unknown special form" op)))))
 
