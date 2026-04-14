@@ -48,6 +48,41 @@
    "keep-alive opt-in for 1.0"
    (ws-connection-keep-alive-p "HTTP/1.0" '(("connection" "keep-alive"))))
 
+  (assert-true
+   "request body length defaults to zero"
+   (= (ws-request-body-length '()) 0))
+  (assert-true
+   "request body length parses content-length"
+   (= (ws-request-body-length '(("content-length" "5"))) 5))
+  (assert-error
+   "invalid content-length must fail"
+   (lambda ()
+     (ws-request-body-length '(("content-length" "abc")))))
+  (assert-error
+   "unsupported transfer-encoding must fail"
+   (lambda ()
+     (ws-request-body-length '(("transfer-encoding" "chunked")))))
+
+  (setenv "REQUEST_METHOD" "ORIGINAL")
+  (setenv "QUERY_STRING" "keep=1")
+  (assert-true
+   "ws-with-env-vars applies bindings inside thunk"
+   (string=
+    (ws-with-env-vars
+     '(("REQUEST_METHOD" "POST")
+       ("QUERY_STRING" "x=1"))
+     (lambda ()
+       (string-append (ws-env-or-empty "REQUEST_METHOD")
+                      " "
+                      (ws-env-or-empty "QUERY_STRING"))))
+    "POST x=1"))
+  (assert-true
+   "ws-with-env-vars restores request method"
+   (string= (ws-env-or-empty "REQUEST_METHOD") "ORIGINAL"))
+  (assert-true
+   "ws-with-env-vars restores query string"
+   (string= (ws-env-or-empty "QUERY_STRING") "keep=1"))
+
   (format t "t2-http-unit: ok~%"))
 
 (run-tests)
