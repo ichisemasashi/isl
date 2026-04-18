@@ -380,6 +380,17 @@
       (setq fast (cdr (cdr fast))))
     (list (echospace-reverse left) slow)))
 
+(defun echospace-key-before-p (left-key right-key desc)
+  (if (and (stringp left-key) (stringp right-key))
+      (if desc
+          (or (string> left-key right-key)
+              (string= left-key right-key))
+          (or (string< left-key right-key)
+              (string= left-key right-key)))
+      (if desc
+          (>= left-key right-key)
+          (<= left-key right-key))))
+
 (defun echospace-sort-merge (left right key-fn desc)
   (cond
    ((null left) right)
@@ -387,7 +398,7 @@
    (t
     (let ((lk (funcall key-fn (car left)))
           (rk (funcall key-fn (car right))))
-      (if (if desc (> lk rk) (<= lk rk))
+      (if (echospace-key-before-p lk rk desc)
           (cons (car left) (echospace-sort-merge (cdr left) right key-fn desc))
           (cons (car right) (echospace-sort-merge left (cdr right) key-fn desc)))))))
 

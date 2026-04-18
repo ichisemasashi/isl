@@ -46,6 +46,15 @@
   (assert-true "password hash rejects wrong secret"
                (let ((hash (echospace-password-hash "secret")))
                  (not (echospace-password-valid-p hash "nope"))))
+  (assert-equal "string sort ascending"
+                '("Administrator" "Demo User")
+                (mapcar (lambda (row) (first row))
+                        (echospace-sort-by '(("Demo User") ("Administrator"))
+                                           (lambda (row) (first row))
+                                           nil)))
+  (assert-equal "number sort descending"
+                '(3 2 1)
+                (echospace-sort-by '(3 1 2) (lambda (n) n) t))
   (format t "t1-echospace-unit: ok~%"))
 
 (run-tests)
