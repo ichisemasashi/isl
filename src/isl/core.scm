@@ -1684,6 +1684,9 @@
           (+ (list-ref ts 0) (list-ref ts 1))
           0))))
 
+(define (eval-loop-body body env)
+  (eval-sequence body env))
+
 (define (eval-while args env who)
   (if (>= (length args) 1)
       (let ((test-form (car args))
@@ -1691,7 +1694,7 @@
         (let loop ()
           (if (truthy? (eval-islisp test-form env))
               (begin
-                (eval-sequence body env)
+                (eval-loop-body body env)
                 (loop))
               '())))
       (error who "needs test expression and optional body" args)))
@@ -1759,14 +1762,14 @@
                     (if (and until-form (truthy? (eval-islisp until-form loop-env)))
                         '()
                         (begin
-                          (eval-sequence body loop-env)
+                          (eval-loop-body body loop-env)
                           (frame-set! loop-env for-var (+ i 1))
                           (loop-iter)))))))
           (let loop-iter ()
             (if (and until-form (truthy? (eval-islisp until-form loop-env)))
                 '()
                 (begin
-                  (eval-sequence body loop-env)
+                  (eval-loop-body body loop-env)
                   (loop-iter))))))))
 
 (define (tagbody-label? item)
@@ -1902,7 +1905,7 @@
             (if (truthy? (eval-islisp test-form do-env))
                 (eval-optional-result-forms result-forms do-env tail?)
                 (begin
-                  (eval-sequence body do-env)
+                  (eval-loop-body body do-env)
                   (step-do-bindings! bindings do-env)
                   (loop))))))
       (error "do needs bindings, end clause and optional body" args)))
@@ -1924,7 +1927,7 @@
           (for-each
            (lambda (v)
              (frame-set! loop-env var v)
-             (eval-sequence body loop-env))
+             (eval-loop-body body loop-env))
            values)
           (frame-set! loop-env var '())
           (eval-optional-result-form result-form loop-env tail?)))
@@ -1947,7 +1950,7 @@
             (if (< i count)
                 (begin
                   (frame-set! loop-env var i)
-                  (eval-sequence body loop-env)
+                  (eval-loop-body body loop-env)
                   (loop (+ i 1)))
                 (begin
                   (frame-set! loop-env var count)
