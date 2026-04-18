@@ -55,6 +55,9 @@
   (assert-equal "number sort descending"
                 '(3 2 1)
                 (echospace-sort-by '(3 1 2) (lambda (n) n) t))
+  (assert-equal "int min works"
+                2
+                (echospace-int-min 2 5))
   (format t "t1-echospace-unit: ok~%"))
 
 (run-tests)

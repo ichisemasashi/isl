@@ -370,6 +370,9 @@
         xs
         (nthcdr (- len n) xs))))
 
+(defun echospace-int-min (a b)
+  (if (< a b) a b))
+
 (defun echospace-sort-split-halves (rows)
   (let ((slow rows)
         (fast rows)
@@ -1311,7 +1314,7 @@
               (if (string= slug active-workspace-slug) " active" "")
               (echospace-html-escape dest)
               (echospace-html-escape name)
-              (echospace-html-escape (substring name 0 (min 2 (length name)))))))
+              (echospace-html-escape (substring name 0 (echospace-int-min 2 (length name)))))))
   (format t "</aside>~%"))
 
 (defun echospace-render-channel-sidebar (workspace-name workspace-slug channels active-channel-slug)
