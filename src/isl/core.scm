@@ -2617,41 +2617,54 @@
     (set! *current-package* pkg)
     (string->symbol (package-name pkg))))
 
+(define (bind-required-params! frame required args)
+  (let bind ((params required) (rest args))
+    (if (null? params)
+        rest
+        (begin
+          (frame-define! frame (car params) (car rest))
+          (bind (cdr params) (cdr rest))))))
+
+(define (bind-optional-params! frame optional args)
+  (let bind ((params optional) (rest args))
+    (if (null? params)
+        rest
+        (let* ((entry (car params))
+               (sym (car entry))
+               (has-init (cadr entry))
+               (init-form (caddr entry)))
+          (if (null? rest)
+              (begin
+                (frame-define! frame
+                               sym
+                               (if has-init
+                                   (force-value (eval-islisp* init-form frame #f))
+                                   '()))
+                (bind (cdr params) rest))
+              (begin
+                (frame-define! frame sym (car rest))
+                (bind (cdr params) (cdr rest))))))))
+
+(define (bind-rest-param! frame rest-sym args)
+  (if rest-sym
+      (begin
+        (frame-define! frame rest-sym args)
+        frame)
+      (if (null? args)
+          frame
+          (error "Too many arguments" args))))
+
 (define (bind-params! frame param-spec args)
   (let ((required (car param-spec))
         (optional (cadr param-spec))
         (rest-sym (caddr param-spec)))
     (when (< (length args) (length required))
       (error "Too few arguments" args))
-    (let bind-required ((rs required) (as args))
-      (if (null? rs)
-          (let bind-optional ((os optional) (rest as))
-            (if (null? os)
-                (if rest-sym
-                    (begin
-                      (frame-define! frame rest-sym rest)
-                      frame)
-                    (if (null? rest)
-                        frame
-                        (error "Too many arguments" rest)))
-                (let* ((entry (car os))
-                       (sym (car entry))
-                       (has-init (cadr entry))
-                       (init-form (caddr entry)))
-                  (if (null? rest)
-                      (begin
-                        (frame-define! frame
-                                       sym
-                                       (if has-init
-                                           (force-value (eval-islisp* init-form frame #f))
-                                           '()))
-                        (bind-optional (cdr os) rest))
-                      (begin
-                        (frame-define! frame sym (car rest))
-                        (bind-optional (cdr os) (cdr rest)))))))
-          (begin
-            (frame-define! frame (car rs) (car as))
-            (bind-required (cdr rs) (cdr as)))))))
+    (bind-rest-param! frame
+                      rest-sym
+                      (bind-optional-params! frame
+                                             optional
+                                             (bind-required-params! frame required args)))))
 
 (define (quasiquote-eval expr env level)
   (define (qq-list xs)
