@@ -2533,6 +2533,46 @@
      (package-export! pkg x))
    vals))
 
+(define (eval-defpackage-nicknames-option pkg vals)
+  (for-each
+   (lambda (x)
+     (unless (or (symbol? x) (string? x))
+       (error "defpackage :nicknames expects symbol/string designators" x))
+     (register-package-name! x pkg))
+   vals))
+
+(define (eval-defpackage-use-option pkg vals)
+  (for-each
+   (lambda (x)
+     (package-use! pkg (ensure-package! x)))
+   vals))
+
+(define (eval-defpackage-intern-option pkg vals)
+  (require-symbol-list vals "defpackage :intern")
+  (for-each
+   (lambda (x)
+     (package-intern! pkg (symbol-base-name x)))
+   vals))
+
+(define (eval-defpackage-shadow-option pkg vals)
+  (require-symbol-list vals "defpackage :shadow")
+  (for-each
+   (lambda (x)
+     (package-shadow-symbol! pkg x))
+   vals))
+
+(define (eval-defpackage-size-option vals opt)
+  (unless (= (length vals) 1)
+    (error "defpackage :size expects one integer value" opt))
+  (unless (and (integer? (car vals)) (>= (car vals) 0))
+    (error "defpackage :size expects non-negative integer" (car vals))))
+
+(define (eval-defpackage-documentation-option vals opt)
+  (unless (= (length vals) 1)
+    (error "defpackage :documentation expects one string value" opt))
+  (unless (string? (car vals))
+    (error "defpackage :documentation expects string" (car vals))))
+
 (define (eval-defpackage args)
   (unless (>= (length args) 1)
     (error "defpackage needs package name" args))
@@ -2546,29 +2586,13 @@
              (vals (cdr opt)))
          (cond
           ((eq? tag ':nicknames)
-           (for-each
-            (lambda (x)
-              (unless (or (symbol? x) (string? x))
-                (error "defpackage :nicknames expects symbol/string designators" x))
-              (register-package-name! x pkg))
-            vals))
+           (eval-defpackage-nicknames-option pkg vals))
           ((eq? tag ':use)
-           (for-each
-            (lambda (x)
-              (package-use! pkg (ensure-package! x)))
-            vals))
+           (eval-defpackage-use-option pkg vals))
           ((eq? tag ':intern)
-           (require-symbol-list vals "defpackage :intern")
-           (for-each
-            (lambda (x)
-              (package-intern! pkg (symbol-base-name x)))
-            vals))
+           (eval-defpackage-intern-option pkg vals))
           ((eq? tag ':shadow)
-           (require-symbol-list vals "defpackage :shadow")
-           (for-each
-            (lambda (x)
-              (package-shadow-symbol! pkg x))
-            vals))
+           (eval-defpackage-shadow-option pkg vals))
           ((eq? tag ':import-from)
            (eval-defpackage-import-option pkg vals opt #f))
           ((eq? tag ':shadowing-import-from)
@@ -2576,15 +2600,9 @@
           ((eq? tag ':export)
            (eval-defpackage-export-option pkg vals))
           ((eq? tag ':size)
-           (unless (= (length vals) 1)
-             (error "defpackage :size expects one integer value" opt))
-           (unless (and (integer? (car vals)) (>= (car vals) 0))
-             (error "defpackage :size expects non-negative integer" (car vals))))
+           (eval-defpackage-size-option vals opt))
           ((eq? tag ':documentation)
-           (unless (= (length vals) 1)
-             (error "defpackage :documentation expects one string value" opt))
-           (unless (string? (car vals))
-             (error "defpackage :documentation expects string" (car vals))))
+           (eval-defpackage-documentation-option vals opt))
           (else
            (error "unsupported defpackage option" tag)))))
      (cdr args))
