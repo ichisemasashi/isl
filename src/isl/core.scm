@@ -972,6 +972,14 @@
 (define *trace-macro-set* '())
 (define *trace-depth* 0)
 (define *debug-mode* #f)
+
+(define (call-with-stack-entry get-stack set-stack entry thunk)
+  (dynamic-wind
+    (lambda ()
+      (set-stack (cons entry (get-stack))))
+    thunk
+    (lambda ()
+      (set-stack (cdr (get-stack))))))
 (define *break-level* 0)
 (define *gensym-counter* 0)
 
@@ -1820,13 +1828,12 @@
           (error "block name must be a symbol" name))
         (call/cc
          (lambda (escape)
-           (dynamic-wind
-             (lambda ()
-               (set! *block-stack* (cons (cons name escape) *block-stack*)))
-             (lambda ()
-               (eval-sequence* body env tail?))
-             (lambda ()
-               (set! *block-stack* (cdr *block-stack*)))))))
+           (call-with-stack-entry
+            (lambda () *block-stack*)
+            (lambda (v) (set! *block-stack* v))
+            (cons name escape)
+            (lambda ()
+              (eval-sequence* body env tail?))))))
       (error "block needs name and optional body" args)))
 
 (define (eval-catch args env tail?)
@@ -1835,14 +1842,13 @@
             (body (cdr args)))
         (call/cc
          (lambda (escape)
-           (dynamic-wind
-             (lambda ()
-               (set! *catch-stack* (cons (cons tag escape) *catch-stack*)))
-             (lambda ()
-               ;; Keep non-local exits inside catch dynamic extent even for tail calls.
-               (force-value (eval-sequence* body env tail?)))
-             (lambda ()
-               (set! *catch-stack* (cdr *catch-stack*)))))))
+           (call-with-stack-entry
+            (lambda () *catch-stack*)
+            (lambda (v) (set! *catch-stack* v))
+            (cons tag escape)
+            (lambda ()
+              ;; Keep non-local exits inside catch dynamic extent even for tail calls.
+              (force-value (eval-sequence* body env tail?)))))))
       (error "catch needs tag and optional body" args)))
 
 (define (throw-to-catch tag value)
@@ -2682,12 +2688,11 @@
   (if name
       (call/cc
        (lambda (escape)
-         (dynamic-wind
-           (lambda ()
-             (set! *block-stack* (cons (cons name escape) *block-stack*)))
-           thunk
-           (lambda ()
-             (set! *block-stack* (cdr *block-stack*))))))
+         (call-with-stack-entry
+          (lambda () *block-stack*)
+          (lambda (v) (set! *block-stack* v))
+          (cons name escape)
+          thunk)))
       (thunk)))
 
 (define (make-closure-call-env closure args)
