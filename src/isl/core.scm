@@ -1769,36 +1769,45 @@
                   (eval-sequence body loop-env)
                   (loop-iter))))))))
 
+(define (tagbody-label? item)
+  (or (symbol? item) (integer? item)))
+
+(define (collect-tagbody-labels items)
+  (let collect ((rest items) (idx 0) (acc '()))
+    (if (null? rest)
+        (reverse acc)
+        (let ((item (car rest)))
+          (if (tagbody-label? item)
+              (if (assoc item acc)
+                  (error "duplicate tagbody label" item)
+                  (collect (cdr rest) (+ idx 1) (cons (cons item idx) acc)))
+              (collect (cdr rest) (+ idx 1) acc))))))
+
+(define (eval-tagbody-step item labels env next-index)
+  (if (tagbody-label? item)
+      next-index
+      (guard (e
+              ((go-signal? e)
+               (let ((entry (assoc (go-signal-tag e) labels)))
+                 (if entry
+                     (cdr entry)
+                     (raise e))))
+              (else
+               (raise e)))
+        (force-value (eval-islisp* item env #f))
+        next-index)))
+
 (define (eval-tagbody args env)
-  (let ((items args))
-    (let make-labels ((xs items) (idx 0) (acc '()))
-      (if (null? xs)
-          (let ((labels (reverse acc))
-                (len (length items)))
-            (let loop ((i 0))
-              (if (>= i len)
-                  '()
-                  (let ((item (list-ref items i)))
-                    (if (or (symbol? item) (integer? item))
-                        (loop (+ i 1))
-                        (let ((next-i
-                               (guard (e
-                                       ((go-signal? e)
-                                        (let ((p (assoc (go-signal-tag e) labels)))
-                                          (if p
-                                              (cdr p)
-                                              (raise e))))
-                                       (else
-                                        (raise e)))
-                                 (force-value (eval-islisp* item env #f))
-                                 (+ i 1))))
-                          (loop next-i)))))))
-          (let ((x (car xs)))
-            (if (or (symbol? x) (integer? x))
-                (if (assoc x acc)
-                    (error "duplicate tagbody label" x)
-                    (make-labels (cdr xs) (+ idx 1) (cons (cons x idx) acc)))
-                (make-labels (cdr xs) (+ idx 1) acc)))))))
+  (let ((items args)
+        (labels (collect-tagbody-labels args))
+        (len (length args)))
+    (let loop ((i 0))
+      (if (>= i len)
+          '()
+          (loop (eval-tagbody-step (list-ref items i)
+                                   labels
+                                   env
+                                   (+ i 1)))))))
 
 (define (eval-block args env tail?)
   (if (>= (length args) 1)
