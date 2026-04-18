@@ -1851,6 +1851,13 @@
           bindings)))
     (for-each (lambda (p) (frame-set! do-env (car p) (cdr p))) nexts)))
 
+(define (eval-optional-result-form result-form env tail?)
+  (if result-form
+      (if tail?
+          (eval-islisp* result-form env #t)
+          (eval-islisp result-form env))
+      '()))
+
 (define (eval-do args env tail?)
   (if (>= (length args) 2)
       (let ((bindings (car args))
@@ -1897,11 +1904,7 @@
              (eval-sequence body loop-env))
            values)
           (frame-set! loop-env var '())
-          (if result-form
-              (if tail?
-                  (eval-islisp* result-form loop-env #t)
-                  (eval-islisp result-form loop-env))
-              '())))
+          (eval-optional-result-form result-form loop-env tail?)))
       (error "dolist needs (var list [result]) and optional body" args)))
 
 (define (eval-dotimes args env tail?)
@@ -1925,11 +1928,7 @@
                   (loop (+ i 1)))
                 (begin
                   (frame-set! loop-env var count)
-                  (if result-form
-                      (if tail?
-                          (eval-islisp* result-form loop-env #t)
-                          (eval-islisp result-form loop-env))
-                      '()))))))
+                  (eval-optional-result-form result-form loop-env tail?))))))
       (error "dotimes needs (var count [result]) and optional body" args)))
 
 (define (eval-defclass args env)
