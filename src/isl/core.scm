@@ -2492,17 +2492,52 @@
           (frame-set! env sym val)
           (loop (cddr rest) val)))))
 
+(define (require-symbol-list vals who)
+  (for-each
+   (lambda (x)
+     (unless (symbol? x)
+       (error who "expects symbols" x)))
+   vals))
+
+(define (eval-defpackage-import-option pkg vals opt shadowing?)
+  (unless (>= (length vals) 2)
+    (error (if shadowing?
+               "defpackage :shadowing-import-from expects package and at least one symbol"
+               "defpackage :import-from expects package and at least one symbol")
+           opt))
+  (let ((from (ensure-package! (car vals)))
+        (syms (cdr vals)))
+    (require-symbol-list syms
+                         (if shadowing?
+                             "defpackage :shadowing-import-from"
+                             "defpackage :import-from"))
+    (for-each
+     (lambda (x)
+       (let ((s (package-find-external-symbol-by-name from x)))
+         (unless s
+           (error (if shadowing?
+                      "defpackage :shadowing-import-from symbol is not exported"
+                      "defpackage :import-from symbol is not exported")
+                  (car vals)
+                  x))
+         ((if shadowing? package-shadowing-import-symbol! package-import-symbol!)
+          pkg
+          s)))
+     syms)))
+
+(define (eval-defpackage-export-option pkg vals)
+  (for-each
+   (lambda (x)
+     (unless (symbol? x)
+       (error "defpackage :export expects symbols" x))
+     (package-export! pkg x))
+   vals))
+
 (define (eval-defpackage args)
   (unless (>= (length args) 1)
     (error "defpackage needs package name" args))
   (let* ((name (car args))
          (pkg (ensure-package! name)))
-    (define (require-symbol-list vals who)
-      (for-each
-       (lambda (x)
-         (unless (symbol? x)
-           (error who "expects symbols" x)))
-       vals))
     (for-each
      (lambda (opt)
        (unless (and (list? opt) (not (null? opt)))
@@ -2535,42 +2570,11 @@
               (package-shadow-symbol! pkg x))
             vals))
           ((eq? tag ':import-from)
-           (unless (>= (length vals) 2)
-             (error "defpackage :import-from expects package and at least one symbol" opt))
-           (let ((from (ensure-package! (car vals)))
-                 (syms (cdr vals)))
-             (require-symbol-list syms "defpackage :import-from")
-             (for-each
-              (lambda (x)
-                (let ((s (package-find-external-symbol-by-name from x)))
-                  (unless s
-                    (error "defpackage :import-from symbol is not exported"
-                           (car vals)
-                           x))
-                  (package-import-symbol! pkg s)))
-              syms)))
+           (eval-defpackage-import-option pkg vals opt #f))
           ((eq? tag ':shadowing-import-from)
-           (unless (>= (length vals) 2)
-             (error "defpackage :shadowing-import-from expects package and at least one symbol" opt))
-           (let ((from (ensure-package! (car vals)))
-                 (syms (cdr vals)))
-             (require-symbol-list syms "defpackage :shadowing-import-from")
-             (for-each
-              (lambda (x)
-                (let ((s (package-find-external-symbol-by-name from x)))
-                  (unless s
-                    (error "defpackage :shadowing-import-from symbol is not exported"
-                           (car vals)
-                           x))
-                  (package-shadowing-import-symbol! pkg s)))
-              syms)))
+           (eval-defpackage-import-option pkg vals opt #t))
           ((eq? tag ':export)
-           (for-each
-            (lambda (x)
-              (unless (symbol? x)
-                (error "defpackage :export expects symbols" x))
-              (package-export! pkg x))
-            vals))
+           (eval-defpackage-export-option pkg vals))
           ((eq? tag ':size)
            (unless (= (length vals) 1)
              (error "defpackage :size expects one integer value" opt))
