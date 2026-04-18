@@ -1858,6 +1858,13 @@
           (eval-islisp result-form env))
       '()))
 
+(define (eval-optional-result-forms result-forms env tail?)
+  (if (null? result-forms)
+      '()
+      (if tail?
+          (eval-sequence* result-forms env #t)
+          (eval-sequence result-forms env))))
+
 (define (eval-do args env tail?)
   (if (>= (length args) 2)
       (let ((bindings (car args))
@@ -1873,11 +1880,7 @@
           (init-do-bindings bindings env do-env)
           (let loop ()
             (if (truthy? (eval-islisp test-form do-env))
-                (if (null? result-forms)
-                    '()
-                    (if tail?
-                        (eval-sequence* result-forms do-env #t)
-                        (eval-sequence result-forms do-env)))
+                (eval-optional-result-forms result-forms do-env tail?)
                 (begin
                   (eval-sequence body do-env)
                   (step-do-bindings! bindings do-env)
