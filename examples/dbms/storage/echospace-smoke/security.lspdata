@@ -1,0 +1,1 @@
+(dbms-security-meta 1 "PBKDF2-HMAC-SHA256-100000" ((dbms-credential "admin" "admin-27130ca2-f95b-4d79-a80d-833bb8e06af2" 100000 "3c44ede8381fa069d3e1775558c8ab019c522aedbae66bb6224ad1d66279fdba")) "DISABLED" "" "" "" "2b89ae82-7ec9-4591-a2f7-72bedc75842a")

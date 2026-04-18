@@ -1,0 +1,1 @@
+(dbms-btree-index "workspaces" "__pk__workspaces__id" ("id") 1 2 ((1 (dbms-btree-page (dbms-btree-page-header 1 0 0 64 4096 (root)) leaf () () ()))))

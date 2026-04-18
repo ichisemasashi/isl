@@ -1,0 +1,1 @@
+(dbms-table-state "messages" ((dbms-row 1 (("workspace_id" 1) ("channel_id" 1) ("author_user_id" 1) ("body" "Welcome to echospace. This is the first channel.") ("created_at" "3985522649") ("id" 1)))) 2)

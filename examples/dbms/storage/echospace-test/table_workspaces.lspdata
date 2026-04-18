@@ -1,0 +1,1 @@
+(dbms-table-state "workspaces" ((dbms-row 1 (("slug" "welcome") ("name" "Welcome Space") ("created_at" "3985522649") ("id" 1)))) 2)
