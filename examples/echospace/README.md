@@ -18,6 +18,7 @@
 - `cgi-bin/echospace.cgi`: CGI エントリ
 - `tests/t1-echospace-unit.lsp`: 単体テスト
 - `REQUIREMENTS.md`: 要件整理
+- `VOICE_VIDEO_REQUIREMENTS.md`: 音声・動画チャット要件
 
 `examples/webserver/runtime/cgi-bin/echospace.cgi` からも同じ本体を呼び出せます。
 
