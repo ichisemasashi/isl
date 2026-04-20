@@ -30,6 +30,9 @@
   (assert-equal "admin route requires admin"
                 "admin"
                 (echospace-route-required-role "GET" '("admin")))
+  (assert-equal "voice route requires member"
+                "member"
+                (echospace-route-required-role "GET" '("workspaces" "welcome" "voice" "lounge")))
   (assert-equal "redirect target rejects external"
                 (echospace-app-base)
                 (echospace-safe-redirect-target "https://example.com/x"))
@@ -58,6 +61,13 @@
   (assert-equal "int min works"
                 2
                 (echospace-int-min 2 5))
+  (assert-equal "voice url helper"
+                "/echospace/workspaces/welcome/voice/lounge"
+                (let ((saved (getenv "SCRIPT_NAME")))
+                  (setenv "SCRIPT_NAME" "/echospace")
+                  (let ((result (echospace-voice-channel-url "welcome" "lounge")))
+                    (setenv "SCRIPT_NAME" (if (null saved) "" saved))
+                    result)))
   (format t "t1-echospace-unit: ok~%"))
 
 (run-tests)

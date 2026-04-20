@@ -699,8 +699,10 @@
             "CREATE TABLE IF NOT EXISTS workspaces (id BIGSERIAL PRIMARY KEY, slug TEXT NOT NULL, name TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL);"
             "CREATE TABLE IF NOT EXISTS workspace_members (id BIGSERIAL PRIMARY KEY, workspace_id BIGINT NOT NULL, user_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL);"
             "CREATE TABLE IF NOT EXISTS channels (id BIGSERIAL PRIMARY KEY, workspace_id BIGINT NOT NULL, slug TEXT NOT NULL, name TEXT NOT NULL, topic TEXT, display_order INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS voice_channels (id BIGSERIAL PRIMARY KEY, workspace_id BIGINT NOT NULL, slug TEXT NOT NULL, name TEXT NOT NULL, topic TEXT, display_order INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL);"
             "CREATE TABLE IF NOT EXISTS messages (id BIGSERIAL PRIMARY KEY, workspace_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, author_user_id BIGINT NOT NULL, body TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL);"
-            "CREATE TABLE IF NOT EXISTS user_sessions (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, session_token TEXT NOT NULL, csrf_token TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ);"))
+            "CREATE TABLE IF NOT EXISTS user_sessions (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, session_token TEXT NOT NULL, csrf_token TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ);"
+            "CREATE TABLE IF NOT EXISTS voice_sessions (id BIGSERIAL PRIMARY KEY, workspace_id BIGINT NOT NULL, voice_channel_id BIGINT NOT NULL, user_id BIGINT NOT NULL, session_token TEXT NOT NULL, joined_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL, left_at TIMESTAMPTZ, muted BOOL NOT NULL, video_enabled BOOL NOT NULL, updated_at TIMESTAMPTZ NOT NULL);"))
     (echospace-db-exec! catalog sql)))
 
 (defun echospace-password-rounds ()
@@ -767,8 +769,19 @@
      (and (= (echospace-db-row-nullable row "workspace_id") workspace-id)
           (string= (echospace-db-row-value row "slug") channel-slug)))))
 
+(defun echospace-find-voice-channel-row-by-workspace-id (workspace-id channel-slug)
+  (echospace-find-first-row
+   (echospace-db-table-rows "voice_channels")
+   (lambda (row)
+     (and (= (echospace-db-row-nullable row "workspace_id") workspace-id)
+          (string= (echospace-db-row-value row "slug") channel-slug)))))
+
 (defun echospace-channel-id-by-workspace-id (workspace-id channel-slug)
   (let ((row (echospace-find-channel-row-by-workspace-id workspace-id channel-slug)))
+    (if (null row) '() (echospace-db-row-nullable row "id"))))
+
+(defun echospace-voice-channel-id-by-workspace-id (workspace-id channel-slug)
+  (let ((row (echospace-find-voice-channel-row-by-workspace-id workspace-id channel-slug)))
     (if (null row) '() (echospace-db-row-nullable row "id"))))
 
 (defun echospace-membership-exists-p (workspace-id user-id)
@@ -817,6 +830,20 @@
           nil))
     (echospace-sort-by (echospace-reverse rows) (lambda (row) (fourth row)) nil)))
 
+(defun echospace-fetch-voice-channels-for-workspace-id (workspace-id)
+  (let ((rows '()))
+    (dolist (channel (echospace-db-table-rows "voice_channels"))
+      (if (= (echospace-db-row-nullable channel "workspace_id") workspace-id)
+          (setq rows
+                (cons (list (echospace-db-row-value channel "slug")
+                            (echospace-db-row-value channel "name")
+                            (echospace-db-row-value channel "topic")
+                            (echospace-db-row-nullable channel "display_order")
+                            (echospace-db-row-nullable channel "id"))
+                      rows))
+          nil))
+    (echospace-sort-by (echospace-reverse rows) (lambda (row) (fourth row)) nil)))
+
 (defun echospace-find-user-row-by-id (user-id)
   (echospace-find-first-row
    (echospace-db-table-rows "users")
@@ -834,6 +861,65 @@
                                   (echospace-db-row-value user-row "display_name")
                                   (echospace-db-row-value user-row "role_name")
                                   "online")
+                            rows))))
+          nil))
+    (echospace-sort-by (echospace-reverse rows) (lambda (row) (second row)) nil)))
+
+(defun echospace-voice-session-active-p (row)
+  (and (not (null row))
+       (string= (echospace-db-row-value row "left_at") "")))
+
+(defun echospace-find-active-voice-session-by-user-id (workspace-id user-id)
+  (echospace-find-first-row
+   (echospace-db-table-rows "voice_sessions")
+   (lambda (row)
+     (and (= (echospace-db-row-nullable row "workspace_id") workspace-id)
+          (= (echospace-db-row-nullable row "user_id") user-id)
+          (echospace-voice-session-active-p row)))))
+
+(defun echospace-find-active-voice-session-by-channel-id-and-user-id (workspace-id voice-channel-id user-id)
+  (echospace-find-first-row
+   (echospace-db-table-rows "voice_sessions")
+   (lambda (row)
+     (and (= (echospace-db-row-nullable row "workspace_id") workspace-id)
+          (= (echospace-db-row-nullable row "voice_channel_id") voice-channel-id)
+          (= (echospace-db-row-nullable row "user_id") user-id)
+          (echospace-voice-session-active-p row)))))
+
+(defun echospace-current-voice-session-for-user (workspace-id username)
+  (let ((user-id (echospace-user-id-by-username username)))
+    (if (null user-id)
+        '()
+        (echospace-find-active-voice-session-by-user-id workspace-id user-id))))
+
+(defun echospace-current-voice-channel-slug-for-user (workspace-id username)
+  (let ((session-row (echospace-current-voice-session-for-user workspace-id username)))
+    (if (null session-row)
+        ""
+        (let ((voice-row
+               (echospace-find-first-row
+                (echospace-db-table-rows "voice_channels")
+                (lambda (row)
+                  (= (echospace-db-row-nullable row "id")
+                     (echospace-db-row-nullable session-row "voice_channel_id"))))))
+          (if (null voice-row) "" (echospace-db-row-value voice-row "slug"))))))
+
+(defun echospace-fetch-voice-participants-for-channel-id (workspace-id voice-channel-id)
+  (let ((rows '()))
+    (dolist (session-row (echospace-db-table-rows "voice_sessions"))
+      (if (and (= (echospace-db-row-nullable session-row "workspace_id") workspace-id)
+               (= (echospace-db-row-nullable session-row "voice_channel_id") voice-channel-id)
+               (echospace-voice-session-active-p session-row))
+          (let ((user-row (echospace-find-user-row-by-id (echospace-db-row-nullable session-row "user_id"))))
+            (if (null user-row)
+                nil
+                (setq rows
+                      (cons (list (echospace-db-row-value user-row "username")
+                                  (echospace-db-row-value user-row "display_name")
+                                  (echospace-db-row-value user-row "role_name")
+                                  (if (eq (echospace-db-row-nullable session-row "muted") t) "true" "false")
+                                  (if (eq (echospace-db-row-nullable session-row "video_enabled") t) "true" "false")
+                                  (echospace-db-row-value session-row "last_seen_at"))
                             rows))))
           nil))
     (echospace-sort-by (echospace-reverse rows) (lambda (row) (second row)) nil)))
@@ -953,6 +1039,16 @@
            (string-append
             "INSERT INTO channels (workspace_id, slug, name, topic, display_order, created_at) VALUES ("
             (format nil "~A" workspace-id) ", 'random', 'random', 'Loose conversation', 20, "
+            (echospace-db-text-sql now) ");"))
+          nil)
+      (echospace-clear-db-table-cache)
+      (if (and (not (null workspace-id))
+               (null (echospace-find-voice-channel-row-by-workspace-id workspace-id "lounge")))
+          (echospace-db-exec!
+           catalog
+           (string-append
+            "INSERT INTO voice_channels (workspace_id, slug, name, topic, display_order, created_at) VALUES ("
+            (format nil "~A" workspace-id) ", 'lounge', 'Lounge', 'Drop in voice room', 10, "
             (echospace-db-text-sql now) ");"))
           nil)
       (echospace-clear-db-table-cache)
@@ -1242,6 +1338,7 @@
   (format t "<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">~%")
   (format t "<title>~A</title>~%" (echospace-html-escape title))
   (format t "<style>:root{--bg:#1f232b;--bg2:#171a21;--bg3:#2a2f3a;--bg4:#11151c;--panel:#222733;--text:#eef3ff;--muted:#9aa7bf;--accent:#57c7ff;--accent2:#83f2c2;--danger:#ff7a7a;--border:#394155;--chip:#31384a}*{box-sizing:border-box}body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;background:radial-gradient(circle at top left,#283140 0,#1b1f28 45%,#12151c 100%);color:var(--text)}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.topbar{display:flex;justify-content:space-between;align-items:center;padding:.85rem 1rem;background:rgba(17,21,28,.75);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}.brand{font-weight:800;letter-spacing:.04em}.shell{display:grid;grid-template-columns:84px 240px minmax(0,1fr) 240px;min-height:calc(100vh - 56px)}.workspace-nav{background:var(--bg4);padding:1rem .75rem;border-right:1px solid var(--border)}.workspace-pill{display:flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:18px;margin:0 auto .8rem;background:var(--chip);color:var(--text);font-weight:700;transition:.18s}.workspace-pill.active,.workspace-pill:hover{background:linear-gradient(135deg,var(--accent),#7be2ff);color:#071018;border-radius:14px;text-decoration:none}.sidebar{background:var(--bg2);border-right:1px solid var(--border);padding:1rem}.sidebar h2,.member-panel h2{margin:0 0 .8rem;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}.channel-link{display:block;padding:.55rem .75rem;border-radius:10px;color:var(--text);margin-bottom:.35rem}.channel-link small{display:block;color:var(--muted);margin-top:.2rem}.channel-link.active,.channel-link:hover{background:var(--chip);text-decoration:none}.main{display:grid;grid-template-rows:auto minmax(0,1fr) auto;background:rgba(34,39,51,.7)}.channel-header{padding:1rem 1.2rem;border-bottom:1px solid var(--border);background:rgba(34,39,51,.85)}.channel-header h1{margin:0;font-size:1.05rem}.channel-header p{margin:.35rem 0 0;color:var(--muted)}.timeline{padding:1rem 1.2rem;overflow:auto}.message{padding:.8rem .9rem;border:1px solid rgba(87,199,255,.08);background:rgba(18,21,28,.42);border-radius:14px;margin-bottom:.8rem}.message-head{display:flex;gap:.65rem;align-items:baseline}.message-author{font-weight:700}.message-meta{font-size:.8rem;color:var(--muted)}.message-body{margin-top:.45rem;white-space:pre-wrap;line-height:1.5}.composer{padding:1rem 1.2rem;border-top:1px solid var(--border);background:rgba(17,21,28,.7)}.composer textarea,.login-card input,.admin-panel input,.admin-panel select{width:100%;border:1px solid var(--border);background:#0e1218;color:var(--text);border-radius:12px;padding:.8rem .9rem}.composer textarea{min-height:88px;resize:vertical}.btn{border:none;border-radius:999px;padding:.75rem 1rem;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#04131a;font-weight:800;cursor:pointer}.btn.secondary{background:var(--chip);color:var(--text)}.member-panel{background:var(--bg2);border-left:1px solid var(--border);padding:1rem}.member{display:flex;justify-content:space-between;gap:.75rem;padding:.55rem .7rem;background:rgba(255,255,255,.03);border-radius:10px;margin-bottom:.45rem}.member span:last-child{color:var(--accent2);font-size:.8rem}.flash{margin:1rem 1.2rem 0;padding:.8rem .95rem;border-radius:12px}.flash.notice{background:rgba(131,242,194,.12);border:1px solid rgba(131,242,194,.28)}.flash.error{background:rgba(255,122,122,.12);border:1px solid rgba(255,122,122,.28)}.empty{color:var(--muted);padding:1.2rem;border:1px dashed var(--border);border-radius:14px}.login-wrap{min-height:100vh;display:grid;place-items:center;padding:2rem}.login-card{width:min(460px,100%);background:rgba(22,26,33,.92);border:1px solid var(--border);border-radius:24px;padding:1.4rem;box-shadow:0 18px 56px rgba(0,0,0,.35)}.login-card h1{margin-top:0}.admin-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem}.admin-panel{background:rgba(22,26,33,.92);border:1px solid var(--border);border-radius:18px;padding:1rem}.admin-panel h2{margin-top:0}.stack>*+*{margin-top:.7rem}.table{width:100%;border-collapse:collapse}.table th,.table td{padding:.55rem .4rem;border-bottom:1px solid rgba(255,255,255,.08);text-align:left;font-size:.92rem}.muted{color:var(--muted)}@media (max-width: 980px){.shell{grid-template-columns:72px 220px minmax(0,1fr)}.member-panel{display:none}}@media (max-width: 720px){.shell{grid-template-columns:1fr}.workspace-nav,.sidebar,.member-panel{display:none}.topbar{flex-wrap:wrap;gap:.75rem}}</style>~%")
+  (format t "<style>.section-label{margin:.95rem 0 .5rem;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}.channel-link.voice strong::before{content:'\\1F50A  ';}.channel-link.voice.connected{outline:1px solid rgba(131,242,194,.45)}.channel-link .state-chip{display:inline-block;margin-left:.45rem;padding:.06rem .42rem;border-radius:999px;background:rgba(131,242,194,.16);color:var(--accent2);font-size:.72rem}.voice-stage{padding:1.2rem}.voice-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-top:1rem}.voice-tile{background:rgba(18,21,28,.45);border:1px solid rgba(87,199,255,.14);border-radius:18px;min-height:180px;padding:1rem;display:flex;flex-direction:column;justify-content:space-between}.voice-avatar{height:96px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#2d384a,#161c25);font-size:1.8rem;font-weight:800}.voice-controls{display:flex;gap:.7rem;flex-wrap:wrap}.voice-status{display:flex;gap:.5rem;flex-wrap:wrap}.badge{display:inline-block;padding:.18rem .5rem;border-radius:999px;background:var(--chip);font-size:.76rem;color:var(--muted)}.badge.live{background:rgba(131,242,194,.16);color:var(--accent2)}.voice-note{background:rgba(87,199,255,.08);border:1px solid rgba(87,199,255,.14);padding:.9rem 1rem;border-radius:14px;color:var(--muted)}</style>~%")
   (format t "</head><body>~%"))
 
 (defun echospace-render-layout-end ()
@@ -1317,14 +1414,29 @@
               (echospace-html-escape (substring name 0 (echospace-int-min 2 (length name)))))))
   (format t "</aside>~%"))
 
-(defun echospace-render-channel-sidebar (workspace-name workspace-slug channels active-channel-slug)
+(defun echospace-voice-channel-url (workspace-slug channel-slug)
+  (string-append (echospace-app-base) "/workspaces/" workspace-slug "/voice/" channel-slug))
+
+(defun echospace-render-channel-sidebar (workspace-name workspace-slug channels voice-channels active-mode active-channel-slug current-voice-slug)
   (format t "<aside class=\"sidebar\"><h2>~A</h2>~%" (echospace-html-escape workspace-name))
+  (format t "<div class=\"section-label\">Text Channels</div>~%")
   (dolist (channel channels)
     (format t "<a class=\"channel-link~A\" href=\"~A\"><strong># ~A</strong><small>~A</small></a>~%"
-            (if (string= (first channel) active-channel-slug) " active" "")
+            (if (and (string= active-mode "text") (string= (first channel) active-channel-slug)) " active" "")
             (echospace-html-escape (echospace-channel-url workspace-slug (first channel)))
             (echospace-html-escape (second channel))
             (echospace-html-escape (third channel))))
+  (format t "<div class=\"section-label\">Voice Channels</div>~%")
+  (if (null voice-channels)
+      (format t "<div class=\"empty\">No voice channels yet.</div>~%")
+      (dolist (channel voice-channels)
+        (format t "<a class=\"channel-link voice~A~A\" href=\"~A\"><strong>~A~A</strong><small>~A</small></a>~%"
+                (if (and (string= active-mode "voice") (string= (first channel) active-channel-slug)) " active" "")
+                (if (string= (first channel) current-voice-slug) " connected" "")
+                (echospace-html-escape (echospace-voice-channel-url workspace-slug (first channel)))
+                (echospace-html-escape (second channel))
+                (if (string= (first channel) current-voice-slug) "<span class=\"state-chip\">joined</span>" "")
+                (echospace-html-escape (third channel)))))
   (format t "</aside>~%"))
 
 (defun echospace-render-members-panel (members)
@@ -1347,6 +1459,18 @@
   (format t "<div class=\"message-body\">~A</div></article>~%"
           (echospace-html-escape (fourth message-row))))
 
+(defun echospace-render-voice-participant-tile (participant)
+  (let ((display-name (second participant))
+        (username (first participant))
+        (muted (fourth participant))
+        (video-enabled (fifth participant)))
+    (format t "<article class=\"voice-tile\"><div><div class=\"voice-avatar\">~A</div><h3 style=\"margin:.85rem 0 .2rem\">~A</h3><div class=\"muted\">@~A</div></div><div class=\"voice-status\"><span class=\"badge live\">connected</span><span class=\"badge\">mic ~A</span><span class=\"badge\">camera ~A</span></div></article>~%"
+            (echospace-html-escape (substring display-name 0 (echospace-int-min 2 (length display-name))))
+            (echospace-html-escape display-name)
+            (echospace-html-escape username)
+            (if (string= muted "true") "muted" "open")
+            (if (string= video-enabled "true") "on" "off"))))
+
 (defun echospace-render-channel-page (workspace-slug channel-slug)
   (let* ((workspace-row (echospace-find-workspace-row workspace-slug))
          (workspace-id (if (null workspace-row) '() (echospace-db-row-nullable workspace-row "id")))
@@ -1358,7 +1482,9 @@
         (echospace-render-not-found)
         (let* ((workspaces (echospace-fetch-workspaces-for-user (echospace-current-username)))
                (channels (echospace-fetch-channels-for-workspace-id workspace-id))
+               (voice-channels (echospace-fetch-voice-channels-for-workspace-id workspace-id))
                (members (echospace-fetch-members-for-workspace-id workspace-id))
+               (current-voice-slug (echospace-current-voice-channel-slug-for-user workspace-id (echospace-current-username)))
                (messages (echospace-fetch-recent-messages-for-channel-id workspace-id (echospace-db-row-nullable channel-row "id") 50))
                (messages-api (string-append (echospace-app-base) "/api/workspaces/" workspace-slug "/channels/" channel-slug "/messages"))
                (members-api (string-append (echospace-app-base) "/api/workspaces/" workspace-slug "/members")))
@@ -1372,7 +1498,10 @@
            (echospace-db-row-value workspace-row "name")
            workspace-slug
            channels
-           channel-slug)
+           voice-channels
+           "text"
+           channel-slug
+           current-voice-slug)
           (format t "<main class=\"main\">~%")
           (format t "<header class=\"channel-header\"><h1># ~A</h1><p>~A</p></header>~%"
                   (echospace-html-escape (echospace-db-row-value channel-row "name"))
@@ -1397,6 +1526,104 @@
           (format t "</div>~%")
           (format t "<script>(function(){const timeline=document.getElementById('timeline');if(!timeline)return;const messagesApi=timeline.dataset.api;const membersApi=timeline.dataset.membersApi;const pollMs=(parseInt(\"~A\",10)||5)*1000;const escapeHtml=(s)=>String(s).replace(/[&<>\\\"]/g,(c)=>({\"&\":\"&amp;\",\"<\":\"&lt;\",\">\":\"&gt;\",\"\\\"\":\"&quot;\"}[c]));const renderMessage=(m)=>`<article class=\\\"message\\\" data-message-id=\\\"${m.id}\\\"><div class=\\\"message-head\\\"><span class=\\\"message-author\\\">${escapeHtml(m.display_name)}</span><span class=\\\"message-meta\\\">@${escapeHtml(m.username)} · ${escapeHtml(m.created_at)}</span></div><div class=\\\"message-body\\\">${escapeHtml(m.body)}</div></article>`;const syncMembers=(items)=>{const panel=document.getElementById('members-panel');if(!panel)return;panel.innerHTML=items.map((m)=>`<div class=\\\"member\\\"><div><strong>${escapeHtml(m.display_name)}</strong><div class=\\\"muted\\\">@${escapeHtml(m.username)} · ${escapeHtml(m.role)}</div></div><span>${escapeHtml(m.status)}</span></div>`).join('');};const latestId=()=>{const nodes=timeline.querySelectorAll('[data-message-id]');if(!nodes.length)return 0;return parseInt(nodes[nodes.length-1].getAttribute('data-message-id'),10)||0;};const poll=()=>{fetch(messagesApi+'?after_id='+latestId(),{credentials:'same-origin'}).then((r)=>r.ok?r.json():null).then((data)=>{if(!data||!data.messages)return;data.messages.forEach((m)=>{timeline.insertAdjacentHTML('beforeend',renderMessage(m));});if(data.messages.length){timeline.scrollTop=timeline.scrollHeight;}}).catch(()=>{});fetch(membersApi,{credentials:'same-origin'}).then((r)=>r.ok?r.json():null).then((data)=>{if(data&&data.members)syncMembers(data.members);}).catch(()=>{});};setInterval(poll,pollMs);})();</script>~%"
                   (echospace-html-escape (let ((v (getenv "ISL_ECHOSPACE_POLL_INTERVAL_SEC"))) (if (or (null v) (= (length v) 0)) "5" v))))
+          (echospace-render-layout-end)))))
+
+(defun echospace-render-json-voice-participants (participants)
+  (echospace-render-headers "200 OK" "application/json; charset=UTF-8")
+  (format t "{\"participants\":[")
+  (let ((first-item t))
+    (dolist (participant participants)
+      (if first-item
+          (setq first-item nil)
+          (format t ","))
+      (format t "{\"username\":\"~A\",\"display_name\":\"~A\",\"role\":\"~A\",\"muted\":\"~A\",\"video_enabled\":\"~A\",\"last_seen_at\":\"~A\"}"
+              (echospace-json-escape (first participant))
+              (echospace-json-escape (second participant))
+              (echospace-json-escape (third participant))
+              (echospace-json-escape (fourth participant))
+              (echospace-json-escape (fifth participant))
+              (echospace-json-escape (sixth participant)))))
+  (format t "],\"request_id\":\"~A\"}" (echospace-json-escape (echospace-request-id))))
+
+(defun echospace-render-voice-page (workspace-slug channel-slug)
+  (let* ((workspace-row (echospace-find-workspace-row workspace-slug))
+         (workspace-id (if (null workspace-row) '() (echospace-db-row-nullable workspace-row "id")))
+         (voice-row (if (null workspace-row) '()
+                        (echospace-find-voice-channel-row-by-workspace-id workspace-id channel-slug))))
+    (if (or (null workspace-row)
+            (null voice-row)
+            (not (echospace-user-can-access-workspace-p (echospace-current-username) workspace-slug)))
+        (echospace-render-not-found)
+        (let* ((workspaces (echospace-fetch-workspaces-for-user (echospace-current-username)))
+               (channels (echospace-fetch-channels-for-workspace-id workspace-id))
+               (voice-channels (echospace-fetch-voice-channels-for-workspace-id workspace-id))
+               (current-voice-slug (echospace-current-voice-channel-slug-for-user workspace-id (echospace-current-username)))
+               (participants (echospace-fetch-voice-participants-for-channel-id workspace-id (echospace-db-row-nullable voice-row "id")))
+               (joined-p (string= current-voice-slug channel-slug))
+               (participants-api (string-append (echospace-app-base) "/api/workspaces/" workspace-slug "/voice/" channel-slug "/participants")))
+          (if joined-p
+              (echospace-db-update-table-rows!
+               "voice_sessions"
+               (lambda (row)
+                 (and (= (echospace-db-row-nullable row "workspace_id") workspace-id)
+                      (= (echospace-db-row-nullable row "voice_channel_id") (echospace-db-row-nullable voice-row "id"))
+                      (= (echospace-db-row-nullable row "user_id") (echospace-user-id-by-username (echospace-current-username)))
+                      (echospace-voice-session-active-p row)))
+               (lambda (row)
+                 (echospace-db-update-row-fields
+                  row
+                  (list (list "last_seen_at" (echospace-db-now-text))
+                        (list "updated_at" (echospace-db-now-text))))))
+              nil)
+          (echospace-render-layout-start
+           (string-append (echospace-db-row-value workspace-row "name") " · Voice · " (echospace-db-row-value voice-row "name")))
+          (echospace-render-topbar)
+          (echospace-render-flash)
+          (format t "<div class=\"shell\">~%")
+          (echospace-render-workspace-nav workspaces workspace-slug)
+          (echospace-render-channel-sidebar
+           (echospace-db-row-value workspace-row "name")
+           workspace-slug
+           channels
+           voice-channels
+           "voice"
+           channel-slug
+           current-voice-slug)
+          (format t "<main class=\"main\">~%")
+          (format t "<header class=\"channel-header\"><h1>Voice: ~A</h1><p>~A</p></header>~%"
+                  (echospace-html-escape (echospace-db-row-value voice-row "name"))
+                  (echospace-html-escape (echospace-db-row-value voice-row "topic")))
+          (format t "<section class=\"voice-stage\">~%")
+          (format t "<div class=\"voice-note\">Phase 1 implements room presence, join / leave, participant state, and the UI shell for future WebRTC media. Live media transport will be added in the next phase.</div>~%")
+          (format t "<div style=\"margin-top:1rem;display:flex;justify-content:space-between;gap:1rem;align-items:center;flex-wrap:wrap\">~%")
+          (format t "<div><strong>Participants:</strong> ~A <span class=\"muted\"> · API: <code>~A</code></span></div>~%"
+                  (length participants)
+                  (echospace-html-escape participants-api))
+          (format t "<div class=\"voice-controls\">~%")
+          (if joined-p
+              (progn
+                (format t "<form method=\"post\" action=\"~A/leave\" style=\"margin:0\">~%"
+                        (echospace-html-escape (echospace-voice-channel-url workspace-slug channel-slug)))
+                (echospace-render-csrf-hidden-input)
+                (format t "<button class=\"btn secondary\" type=\"submit\">Leave Voice</button></form>~%"))
+              (progn
+                (format t "<form method=\"post\" action=\"~A/join\" style=\"margin:0\">~%"
+                        (echospace-html-escape (echospace-voice-channel-url workspace-slug channel-slug)))
+                (echospace-render-csrf-hidden-input)
+                (format t "<button class=\"btn\" type=\"submit\">Join Voice</button></form>~%")))
+          (format t "<button class=\"btn secondary\" type=\"button\" id=\"mic-toggle\">Toggle Mic</button>~%")
+          (format t "<button class=\"btn secondary\" type=\"button\" id=\"camera-toggle\">Toggle Camera</button>~%")
+          (format t "</div></div>~%")
+          (format t "<div id=\"voice-local-state\" class=\"voice-status\" style=\"margin-top:1rem\"><span class=\"badge\">mic pending</span><span class=\"badge\">camera pending</span></div>~%")
+          (format t "<div class=\"voice-grid\" id=\"voice-grid\">~%")
+          (if (null participants)
+              (format t "<div class=\"empty\">Nobody is in the room yet.</div>~%")
+              (dolist (participant participants)
+                (echospace-render-voice-participant-tile participant)))
+          (format t "</div></section></main>~%")
+          (echospace-render-members-panel (echospace-fetch-members-for-workspace-id workspace-id))
+          (format t "</div>~%")
+          (format t "<script>(function(){const state=document.getElementById('voice-local-state');let mic=false;let cam=false;const render=()=>{state.innerHTML=`<span class=\\\"badge\\\">mic ${mic?'on':'off'}</span><span class=\\\"badge\\\">camera ${cam?'on':'off'}</span>`;};render();document.getElementById('mic-toggle').addEventListener('click',async()=>{mic=!mic;render();});document.getElementById('camera-toggle').addEventListener('click',async()=>{cam=!cam;render();});})();</script>~%")
           (echospace-render-layout-end)))))
 
 (defun echospace-render-admin-page ()
@@ -1442,6 +1669,15 @@
     (format t "<input type=\"text\" name=\"topic\" placeholder=\"Topic\">~%")
     (format t "<input type=\"text\" name=\"display_order\" placeholder=\"10\">~%")
     (format t "<button class=\"btn\" type=\"submit\">Create Channel</button></form></article>~%")
+    (format t "<article class=\"admin-panel stack\"><h2>Create Voice Channel</h2><form method=\"post\" action=\"~A/admin/voice-channels\" class=\"stack\">~%"
+            (echospace-html-escape (echospace-app-base)))
+    (echospace-render-csrf-hidden-input)
+    (format t "<input type=\"text\" name=\"workspace_slug\" placeholder=\"workspace-slug\">~%")
+    (format t "<input type=\"text\" name=\"slug\" placeholder=\"voice-slug\">~%")
+    (format t "<input type=\"text\" name=\"name\" placeholder=\"Voice room name\">~%")
+    (format t "<input type=\"text\" name=\"topic\" placeholder=\"Topic\">~%")
+    (format t "<input type=\"text\" name=\"display_order\" placeholder=\"10\">~%")
+    (format t "<button class=\"btn\" type=\"submit\">Create Voice Channel</button></form></article>~%")
     (format t "<article class=\"admin-panel stack\"><h2>Add Membership</h2><form method=\"post\" action=\"~A/admin/memberships\" class=\"stack\">~%"
             (echospace-html-escape (echospace-app-base)))
     (echospace-render-csrf-hidden-input)
@@ -1467,7 +1703,7 @@
 (defun echospace-handle-root ()
   (if (not (echospace-logged-in-p))
       (echospace-render-redirect (echospace-login-target-url))
-      (let ((dest (echospace-default-channel-path-for-user (echospace-current-username))))
+        (let ((dest (echospace-default-channel-path-for-user (echospace-current-username))))
         (if (echospace-blank-text-p dest)
             (progn
               (echospace-render-layout-start "Echospace")
@@ -1475,6 +1711,81 @@
               (format t "<main style=\"padding:2rem\"><div class=\"empty\">You do not belong to any workspace yet.</div></main>")
               (echospace-render-layout-end))
             (echospace-render-redirect dest)))))
+
+(defun echospace-handle-voice-join-post (workspace-slug channel-slug)
+  (let ((raw-body (echospace-read-form-body-or-render t)))
+    (if (not (stringp raw-body))
+        nil
+        (let* ((workspace-id (echospace-workspace-id-by-slug workspace-slug))
+               (voice-row (if (null workspace-id) '()
+                              (echospace-find-voice-channel-row-by-workspace-id workspace-id channel-slug)))
+               (voice-channel-id (if (null voice-row) '() (echospace-db-row-nullable voice-row "id")))
+               (user-id (echospace-user-id-by-username (echospace-current-username)))
+               (now (echospace-db-now-text))
+               (active-session (if (or (null workspace-id) (null user-id)) '()
+                                   (echospace-find-active-voice-session-by-user-id workspace-id user-id))))
+          (if (or (null workspace-id)
+                  (null voice-channel-id)
+                  (null user-id)
+                  (not (echospace-user-can-access-workspace-p (echospace-current-username) workspace-slug)))
+              (echospace-render-redirect
+               (string-append (echospace-app-base) "/workspaces/" workspace-slug "/voice/" channel-slug
+                              "?error=" (echospace-url-encode-lite "Unable to join voice channel")))
+              (progn
+                (if (not (null active-session))
+                    (echospace-db-update-table-rows!
+                     "voice_sessions"
+                     (lambda (row)
+                       (= (echospace-db-row-nullable row "id")
+                          (echospace-db-row-nullable active-session "id")))
+                     (lambda (row)
+                       (echospace-db-update-row-fields
+                        row
+                        (list (list "left_at" now)
+                              (list "updated_at" now)))))
+                    nil)
+                (echospace-db-exec!
+                 nil
+                 (string-append
+                  "INSERT INTO voice_sessions (workspace_id, voice_channel_id, user_id, session_token, joined_at, last_seen_at, left_at, muted, video_enabled, updated_at) VALUES ("
+                  (format nil "~A" workspace-id) ", "
+                  (format nil "~A" voice-channel-id) ", "
+                  (format nil "~A" user-id) ", "
+                  (echospace-db-text-sql (echospace-current-session-token)) ", "
+                  (echospace-db-text-sql now) ", "
+                  (echospace-db-text-sql now) ", "
+                  "NULL, FALSE, FALSE, "
+                  (echospace-db-text-sql now) ");"))
+                (echospace-render-redirect
+                 (string-append (echospace-app-base) "/workspaces/" workspace-slug "/voice/" channel-slug
+                                "?notice=" (echospace-url-encode-lite "Joined voice channel")))))))))
+
+(defun echospace-handle-voice-leave-post (workspace-slug channel-slug)
+  (let ((raw-body (echospace-read-form-body-or-render t)))
+    (if (not (stringp raw-body))
+        nil
+        (let* ((workspace-id (echospace-workspace-id-by-slug workspace-slug))
+               (user-id (echospace-user-id-by-username (echospace-current-username)))
+               (now (echospace-db-now-text)))
+          (if (or (null workspace-id) (null user-id))
+              (echospace-render-redirect
+               (string-append (echospace-app-base) "/workspaces/" workspace-slug "/voice/" channel-slug
+                              "?error=" (echospace-url-encode-lite "Unable to leave voice channel")))
+              (progn
+                (echospace-db-update-table-rows!
+                 "voice_sessions"
+                 (lambda (row)
+                   (and (= (echospace-db-row-nullable row "workspace_id") workspace-id)
+                        (= (echospace-db-row-nullable row "user_id") user-id)
+                        (echospace-voice-session-active-p row)))
+                 (lambda (row)
+                   (echospace-db-update-row-fields
+                    row
+                    (list (list "left_at" now)
+                          (list "updated_at" now)))))
+                (echospace-render-redirect
+                 (string-append (echospace-app-base) "/workspaces/" workspace-slug "/voice/" channel-slug
+                                "?notice=" (echospace-url-encode-lite "Left voice channel")))))))))
 
 (defun echospace-handle-login-post ()
   (let* ((raw-body (echospace-read-request-body))
@@ -1560,6 +1871,17 @@
             (not (echospace-user-can-access-workspace-p (echospace-current-username) workspace-slug)))
         (echospace-render-forbidden "workspace access denied")
         (echospace-render-json-members (echospace-fetch-members-for-workspace-id workspace-id)))))
+
+(defun echospace-handle-api-voice-participants (workspace-slug channel-slug)
+  (let ((workspace-id (echospace-workspace-id-by-slug workspace-slug)))
+    (if (or (null workspace-id)
+            (not (echospace-user-can-access-workspace-p (echospace-current-username) workspace-slug)))
+        (echospace-render-forbidden "workspace access denied")
+        (let ((voice-channel-id (echospace-voice-channel-id-by-workspace-id workspace-id channel-slug)))
+          (if (null voice-channel-id)
+              (echospace-render-not-found)
+              (echospace-render-json-voice-participants
+               (echospace-fetch-voice-participants-for-channel-id workspace-id voice-channel-id)))))))
 
 (defun echospace-handle-admin-create-user ()
   (let ((raw-body (echospace-read-form-body-or-render t)))
@@ -1651,6 +1973,40 @@
                                 (echospace-url-encode-lite "Channel created"))))))
         nil)))
 
+(defun echospace-handle-admin-create-voice-channel ()
+  (let ((raw-body (echospace-read-form-body-or-render t)))
+    (if (stringp raw-body)
+        (let* ((workspace-slug (echospace-trim-ws (echospace-parse-form-field raw-body "workspace_slug")))
+               (slug (echospace-trim-ws (echospace-parse-form-field raw-body "slug")))
+               (name (echospace-trim-ws (echospace-parse-form-field raw-body "name")))
+               (topic (echospace-trim-ws (echospace-parse-form-field raw-body "topic")))
+               (display-order-raw (echospace-parse-form-field raw-body "display_order"))
+               (display-order (echospace-parse-int-safe display-order-raw))
+               (workspace-id (echospace-workspace-id-by-slug workspace-slug)))
+          (if (or (null workspace-id)
+                  (echospace-blank-text-p slug)
+                  (echospace-blank-text-p name)
+                  (null display-order)
+                  (not (null (echospace-find-voice-channel-row-by-workspace-id workspace-id slug))))
+              (echospace-render-redirect
+               (string-append (echospace-app-base) "/admin?error="
+                              (echospace-url-encode-lite "Invalid or duplicate voice channel")))
+              (progn
+                (echospace-db-exec!
+                 nil
+                 (string-append
+                  "INSERT INTO voice_channels (workspace_id, slug, name, topic, display_order, created_at) VALUES ("
+                  (format nil "~A" workspace-id) ", "
+                  (echospace-db-text-sql slug) ", "
+                  (echospace-db-text-sql name) ", "
+                  (echospace-db-text-sql topic) ", "
+                  (format nil "~A" display-order) ", "
+                  (echospace-db-text-sql (echospace-db-now-text)) ");"))
+                (echospace-render-redirect
+                 (string-append (echospace-app-base) "/admin?notice="
+                                (echospace-url-encode-lite "Voice channel created"))))))
+        nil)))
+
 (defun echospace-handle-admin-create-membership ()
   (let ((raw-body (echospace-read-form-body-or-render t)))
     (if (stringp raw-body)
@@ -1697,6 +2053,8 @@
     (echospace-handle-admin-create-workspace))
    ((and (= (length segments) 2) (string= (first segments) "admin") (string= (second segments) "channels") (string= method "POST"))
     (echospace-handle-admin-create-channel))
+   ((and (= (length segments) 2) (string= (first segments) "admin") (string= (second segments) "voice-channels") (string= method "POST"))
+    (echospace-handle-admin-create-voice-channel))
    ((and (= (length segments) 2) (string= (first segments) "admin") (string= (second segments) "memberships") (string= method "POST"))
     (echospace-handle-admin-create-membership))
    ((and (= (length segments) 4)
@@ -1712,17 +2070,41 @@
          (string= (sixth segments) "messages")
          (string= method "GET"))
     (echospace-handle-api-messages (third segments) (fifth segments)))
+   ((and (= (length segments) 6)
+         (string= (first segments) "api")
+         (string= (second segments) "workspaces")
+         (string= (fourth segments) "voice")
+         (string= (sixth segments) "participants")
+         (string= method "GET"))
+    (echospace-handle-api-voice-participants (third segments) (fifth segments)))
    ((and (= (length segments) 4)
          (string= (first segments) "workspaces")
          (string= (third segments) "channels")
          (string= method "GET"))
     (echospace-render-channel-page (second segments) (fourth segments)))
+   ((and (= (length segments) 4)
+         (string= (first segments) "workspaces")
+         (string= (third segments) "voice")
+         (string= method "GET"))
+    (echospace-render-voice-page (second segments) (fourth segments)))
    ((and (= (length segments) 5)
          (string= (first segments) "workspaces")
          (string= (third segments) "channels")
          (string= (fifth segments) "messages")
          (string= method "POST"))
     (echospace-handle-message-post (second segments) (fourth segments)))
+   ((and (= (length segments) 5)
+         (string= (first segments) "workspaces")
+         (string= (third segments) "voice")
+         (string= (fifth segments) "join")
+         (string= method "POST"))
+    (echospace-handle-voice-join-post (second segments) (fourth segments)))
+   ((and (= (length segments) 5)
+         (string= (first segments) "workspaces")
+         (string= (third segments) "voice")
+         (string= (fifth segments) "leave")
+         (string= method "POST"))
+    (echospace-handle-voice-leave-post (second segments) (fourth segments)))
    (t
     (echospace-render-not-found))))
 
