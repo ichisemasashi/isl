@@ -12,7 +12,12 @@
   (use rfc.tls)
   (use rfc.http)
   (use srfi.19)
-  (export make-initial-env eval-islisp apply-islisp repl read-all))
+  (export make-initial-env eval-islisp apply-islisp repl read-all
+          ;; Phase 5: condition infrastructure (used by compiler runtime)
+          make-isl-condition isl-condition?
+          isl-condition-class isl-condition-message
+          isl-condition-continuable? isl-condition-irritants
+          *isl-handler-stack* isl-signal-condition isl-subclassp?))
 
 (select-module isl.core)
 
@@ -2147,11 +2152,11 @@
 (define (parse-handler-case-clause clause)
   (unless (and (list? clause) (>= (length clause) 2))
     (error "invalid handler-case clause" clause))
-  (let ((tag (car clause))
+  (let ((raw-tag (car clause))
         (rest (cdr clause))
         (var #f))
-    (unless (symbol? tag)
-      (error "handler-case clause tag must be symbol" tag))
+    (unless (symbol? raw-tag)
+      (error "handler-case clause tag must be symbol" raw-tag))
     (when (and (pair? rest) (list? (car rest)))
       (let ((vs (car rest)))
         (unless (or (null? vs)
@@ -2159,14 +2164,25 @@
           (error "handler-case variable list must be () or (var)" vs))
         (set! var (and (pair? vs) (car vs)))
         (set! rest (cdr rest))))
-    (list tag var rest)))
+    ;; Resolve tag to a fully-qualified symbol so class hierarchy lookup works.
+    (let ((tag (resolve-binding-symbol raw-tag)))
+      (list tag var rest))))
 
-(define (handler-case-tag-match? tag)
-  (or (eq? tag 'error)
-      (eq? tag 'condition)
-      (eq? tag 'serious-condition)
-      (eq? tag 't)
-      (eq? tag 'otherwise)))
+;; ---- 5-F: handler-case tag matching with class hierarchy ----
+;; tag-sym is a fully-resolved symbol (or raw bare name for legacy catches).
+(define (handler-case-tag-match? tag-sym cond-obj)
+  (cond
+   ;; Catch-all forms
+   ((or (eq? tag-sym 't) (eq? tag-sym 'otherwise)) #t)
+   ;; isl-condition: check class hierarchy using isl-subclassp?
+   ((isl-condition? cond-obj)
+    (isl-subclassp? (isl-condition-class cond-obj) tag-sym))
+   ;; Legacy Gauche native conditions (backward compat)
+   (else
+    (let ((bare (symbol-base-name tag-sym)))
+      (or (string=? bare "error")
+          (string=? bare "condition")
+          (string=? bare "serious-condition"))))))
 
 (define (eval-handler-case args env tail?)
   (unless (>= (length args) 1)
@@ -2174,6 +2190,8 @@
   (let ((protected (car args))
         (clauses (map parse-handler-case-clause (cdr args))))
     (guard (e
+            ;; Re-raise go-signals (used by tagbody/go).
+            ((go-signal? e) (raise e))
             (else
              (let loop ((cs clauses))
                (if (null? cs)
@@ -2182,7 +2200,7 @@
                           (tag (car c))
                           (var (cadr c))
                           (body (caddr c)))
-                     (if (handler-case-tag-match? tag)
+                     (if (handler-case-tag-match? tag e)
                          (let ((henv (make-frame env)))
                            (when var
                              (frame-define! henv var e))
@@ -2190,6 +2208,20 @@
                          (loop (cdr cs))))))))
       ;; Keep exceptions from tail calls within handler-case dynamic extent.
       (force-value (eval-islisp* protected env tail?)))))
+
+;; ---- 5-E: with-handler special form ----
+(define (eval-with-handler args env tail?)
+  (unless (= (length args) 2)
+    (error "with-handler needs handler-form and protected-form" args))
+  (let* ((handler-form   (car args))
+         (protected-form (cadr args))
+         (handler-fn     (eval-islisp* handler-form env #f)))
+    (parameterize ((*isl-handler-stack*
+                    (cons (lambda (c) (apply-islisp handler-fn (list c)))
+                          (*isl-handler-stack*))))
+      ;; force-value keeps execution inside the parameterize scope so that
+      ;; any isl-signal-condition calls during tail evaluation stay within the handler.
+      (force-value (eval-islisp* protected-form env tail?)))))
 
 (define (parse-let-binding binding who)
   (unless (and (list? binding) (= (length binding) 2))
@@ -2970,7 +3002,7 @@
       (error "if takes 2 or 3 arguments" form)))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case and or loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass flet labels the unwind-protect defconstant function)))
+  (memq sym '(quote quasiquote if cond case and or loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass flet labels the unwind-protect defconstant function with-handler)))
 
 (define (extended-special-form? sym)
   (memq sym '(trace untrace)))
@@ -3070,6 +3102,8 @@
        (eval-defconstant args env form))
       ((function)
        (eval-function-form args env))
+      ((with-handler)
+       (eval-with-handler args env tail?))
       (else
        (error "Unknown special form" op)))))
 
@@ -3112,12 +3146,54 @@
 (define (eval-islisp form env)
   (force-value (eval-islisp* form env #t)))
 
+;; ============================================================
+;; Phase 5: ISLISP condition system
+;; ============================================================
+
+;; ---- 5-A: isl-condition representation ----
+(define (make-isl-condition class-sym message continuable? irritants)
+  (vector 'isl-condition class-sym message continuable? irritants))
+(define (isl-condition? x)
+  (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'isl-condition)))
+(define (isl-condition-class       x) (vector-ref x 1))
+(define (isl-condition-message     x) (vector-ref x 2))
+(define (isl-condition-continuable? x) (vector-ref x 3))
+(define (isl-condition-irritants   x) (vector-ref x 4))
+
+;; ---- 5-A: class hierarchy predicate ----
+;; Returns #t if sub-sym equals or is a registered subclass of super-sym.
+(define (isl-subclassp? sub-sym super-sym)
+  (or (eq? sub-sym super-sym)
+      (let ((obj (class-table-ref sub-sym)))
+        (and obj
+             (let loop ((supers (class-supers obj)))
+               (and (pair? supers)
+                    (or (isl-subclassp? (class-name (car supers)) super-sym)
+                        (loop (cdr supers)))))))))
+
+;; ---- 5-B: handler stack and signalling ----
+(define *isl-handler-stack* (make-parameter '()))
+
+(define (isl-signal-condition cond-obj)
+  (let loop ((stack (*isl-handler-stack*)))
+    (if (null? stack)
+        (raise cond-obj)                      ; uncaught → Gauche exception
+        (let ((handler (car stack)))
+          (parameterize ((*isl-handler-stack* (cdr stack)))
+            (handler cond-obj))))))           ; handler return = signal return
+
 (define (install-primitives! env)
   (define (def name proc)
     (let ((sym (resolve-binding-symbol name)))
       (frame-define! env sym (make-primitive name proc))
       (when *current-package*
         (package-export! *current-package* name))))
+  ;; ---- 5-A: EOF-stream helper (must be define, before any expressions) ----
+  (define (eof-stream-error who)
+    (isl-signal-condition
+     (make-isl-condition
+      (resolve-binding-symbol '<end-of-stream>)
+      (string-append "end-of-stream in " who) #f '())))
   (define (list-element-at obj index who)
     (let loop ((rest obj) (i index))
       (unless (pair? rest)
@@ -3954,14 +4030,14 @@
         (unless (output-port? port) (error "terpri arg must be an output stream" port))
         (newline port)
         '())))
-  ;; ---- 4-A: read-char, write-char, peek-char ----
+  ;; ---- 4-A / 5-A: read-char, write-char, peek-char (EOF → <end-of-stream>) ----
   (def 'read-char
     (lambda args
       (let ((port (if (pair? args) (car args) (current-input-port))))
         (unless (input-port? port) (error "read-char needs an input stream" port))
         (let ((ch (read-char port)))
           (if (eof-object? ch)
-              (error "end-of-stream in read-char")   ; Phase 5: replace with <end-of-stream>
+              (eof-stream-error "read-char")
               ch)))))
   (def 'write-char
     (lambda args
@@ -3978,7 +4054,7 @@
         (unless (input-port? port) (error "peek-char needs an input stream" port))
         (let ((ch (peek-char port)))
           (if (eof-object? ch)
-              '()        ; Phase 5: replace with <end-of-stream>
+              '()     ; EOF → nil (ISLISP: may also signal <end-of-stream>)
               ch)))))
   ;; ---- write-line (with optional stream) ----
   (def 'write-line
@@ -3995,7 +4071,7 @@
                 (newline stream)
                 s)
               (error "write-line takes string and optional stream" maybe-stream)))))
-  ;; ---- 4-F: read (0 or 1 arg), read-line (0, 1, or 2 args) ----
+  ;; ---- 4-F / 5-A: read (0 or 1 arg), read-line (0, 1, or 2 args) ----
   (def 'read
     (lambda args
       (cond
@@ -4011,19 +4087,19 @@
        ((null? args)
         (let ((line (read-line)))
           (if (eof-object? line)
-              (error "read-line reached EOF")
+              (eof-stream-error "read-line")
               line)))
        ((= (length args) 1)
         (let ((line (read-line (car args))))
           (if (eof-object? line)
-              (error "read-line reached EOF")
+              (eof-stream-error "read-line")
               line)))
        ((= (length args) 2)
         (let ((line (read-line (car args)))
               (eof-error-p (cadr args)))
           (if (eof-object? line)
               (if (truthy? eof-error-p)
-                  (error "read-line reached EOF")
+                  (eof-stream-error "read-line")
                   '())
               line)))
        (else
@@ -4057,6 +4133,57 @@
   (def 'output-stream-p
     (lambda (obj)
       (if (output-port? obj) #t '())))
+  ;; ---- 5-B: signal-condition, condition-message, condition-continuable ----
+  (def 'signal-condition
+    (lambda (cond-obj . rest)
+      ;; ISLISP: (signal-condition condition continuable)
+      ;; continuable arg is accepted but we use isl-condition-continuable? instead
+      (unless (isl-condition? cond-obj)
+        (error "signal-condition needs an isl condition object" cond-obj))
+      (isl-signal-condition cond-obj)))
+  (def 'condition-message
+    (lambda (cond-obj)
+      (cond
+       ((isl-condition? cond-obj)
+        (isl-condition-message cond-obj))
+       ((condition? cond-obj)
+        (condition/report-string cond-obj))
+       (else
+        (write-to-string cond-obj)))))
+  (def 'condition-continuable
+    (lambda (cond-obj)
+      (unless (isl-condition? cond-obj)
+        (error "condition-continuable needs an isl condition object" cond-obj))
+      (if (isl-condition-continuable? cond-obj) #t '())))
+  ;; ---- 5-C: continue-condition ----
+  (def 'continue-condition
+    (lambda args
+      (unless (and (pair? args) (isl-condition? (car args)))
+        (error "continue-condition needs an isl condition object" args))
+      (let ((cond-obj (car args))
+            (value    (if (pair? (cdr args)) (cadr args) '())))
+        (unless (isl-condition-continuable? cond-obj)
+          (error "condition is not continuable" cond-obj))
+        value)))
+  ;; ---- 5-D: cerror ----
+  (def 'cerror
+    (lambda (continue-string error-string . irritants)
+      (unless (string? continue-string)
+        (error "cerror continue-string must be string" continue-string))
+      (unless (string? error-string)
+        (error "cerror error-string must be string" error-string))
+      (isl-signal-condition
+       (make-isl-condition
+        (resolve-binding-symbol '<simple-error>)
+        error-string #t (cons continue-string irritants)))))
+  ;; ---- 5-B: error function (signals <simple-error>) ----
+  (def 'error
+    (lambda (msg . irritants)
+      (unless (string? msg) (error "error first arg must be string" msg))
+      (isl-signal-condition
+       (make-isl-condition
+        (resolve-binding-symbol '<simple-error>)
+        msg #f irritants))))
   (def 'debug
     (lambda args
       (cond
@@ -5209,6 +5336,46 @@
         (package-export! *current-package* '*standard-input*)
         (package-export! *current-package* '*standard-output*)
         (package-export! *current-package* '*error-output*))
+      ;; ---- Phase 5-A: ISLISP condition class hierarchy ----
+      (for-each (lambda (form) (eval-islisp form env))
+        '((defclass <condition>                   ()                       ())
+          (defclass <serious-condition>           (<condition>)            ())
+          (defclass <error>                       (<serious-condition>)    ())
+          (defclass <arithmetic-error>            (<error>)                ())
+          (defclass <division-by-zero>            (<arithmetic-error>)     ())
+          (defclass <floating-point-overflow>     (<arithmetic-error>)     ())
+          (defclass <floating-point-underflow>    (<arithmetic-error>)     ())
+          (defclass <control-error>               (<error>)                ())
+          (defclass <parse-error>                 (<error>)                ())
+          (defclass <program-error>               (<error>)                ())
+          (defclass <domain-error>                (<program-error>)        ())
+          (defclass <undefined-entity>            (<program-error>)        ())
+          (defclass <unbound-variable>            (<undefined-entity>)     ())
+          (defclass <undefined-function>          (<undefined-entity>)     ())
+          (defclass <arity-error>                 (<program-error>)        ())
+          (defclass <index-out-of-range>          (<program-error>)        ())
+          (defclass <type-error>                  (<program-error>)        ())
+          (defclass <simple-error>                (<error>)                ())
+          (defclass <stream-error>                (<error>)                ())
+          (defclass <end-of-stream>               (<stream-error>)         ())))
+      ;; Export condition classes from ISLISP package so ISLISP-USER inherits them.
+      (for-each (lambda (name) (package-export! islisp name))
+        '(<condition> <serious-condition> <error>
+          <arithmetic-error> <division-by-zero>
+          <floating-point-overflow> <floating-point-underflow>
+          <control-error> <parse-error> <program-error>
+          <domain-error> <undefined-entity>
+          <unbound-variable> <undefined-function>
+          <arity-error> <index-out-of-range> <type-error>
+          <simple-error> <stream-error> <end-of-stream>))
+      ;; ---- Phase 5-G: ignore-errors macro ----
+      (eval-islisp
+       '(defmacro ignore-errors (&rest forms)
+          (list 'handler-case
+                (cons 'progn forms)
+                (list '<serious-condition> '() nil)))
+       env)
+      (package-export! *current-package* 'ignore-errors)
       ;; ---- Phase 3-D: with-open-input-file / with-open-output-file macros ----
       (eval-islisp
        '(defmacro with-open-input-file (spec &rest body)

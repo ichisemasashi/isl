@@ -9,6 +9,8 @@
 (define (assert-runtime-error thunk label)
   (guard (e
           ((runtime-error? e) #t)
+          ;; Phase 5: isl-conditions (e.g. <end-of-stream>) are also runtime errors
+          ((with-module isl.core (isl-condition? e)) #t)
           (else (error "expected runtime-error" label e)))
     (thunk)
     (error "expected runtime-error but got value" label)))

@@ -716,6 +716,13 @@
     (let ((v (runtime-value->host rv)))
       (unless (char? v) (runtime-raise 'type-error (string-append who " expects character") rv))
       v))
+  ;; ---- 5: EOF-stream helper ----
+  (define (rt-eof-stream-error who)
+    (with-module isl.core
+      (isl-signal-condition
+       (make-isl-condition
+        (resolve-binding-symbol '<end-of-stream>)
+        (string-append "end-of-stream in " who) #f '()))))
   (def '+
     (lambda (args state)
       (runtime-arith "+" + 0 args)))
@@ -1115,7 +1122,7 @@
           (runtime-raise 'type-error "read-char needs an input stream" port))
         (let ((ch (read-char port)))
           (if (eof-object? ch)
-              (runtime-raise 'end-of-stream "end-of-stream in read-char" '())
+              (rt-eof-stream-error "read-char")
               (host->runtime-value ch))))))
   (def 'write-char
     (lambda (args state)
@@ -1189,7 +1196,7 @@
         (let ((line (read-line port)))
           (if (eof-object? line)
               (if eof-error-p
-                  (runtime-raise 'end-of-stream "read-line reached EOF" '())
+                  (rt-eof-stream-error "read-line")
                   (host->runtime-value '()))
               (host->runtime-value line))))))
   ;; ---- 4-C: open-input-stream, open-output-stream, open-io-stream, close ----
@@ -1235,6 +1242,74 @@
       (unless (= (length args) 1)
         (runtime-raise 'arity "output-stream-p expects 1 argument" args))
       (host->runtime-value (if (output-port? (runtime-value->host (car args))) #t '()))))
+  ;; ---- Phase 5: condition system ----
+  ;; Helpers from isl.core (already imported via (use isl.core))
+  (def 'signal-condition
+    (lambda (args state)
+      (unless (>= (length args) 1)
+        (runtime-raise 'arity "signal-condition expects 1 or 2 arguments" args))
+      (let ((cond-obj (runtime-value->host (car args))))
+        (with-module isl.core
+          (unless (isl-condition? cond-obj)
+            (error "signal-condition needs an isl condition object" cond-obj))
+          (isl-signal-condition cond-obj)))))
+  (def 'condition-message
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "condition-message expects 1 argument" args))
+      (let ((cond-obj (runtime-value->host (car args))))
+        (host->runtime-value
+         (with-module isl.core
+           (cond
+            ((isl-condition? cond-obj) (isl-condition-message cond-obj))
+            ((condition? cond-obj) (condition/report-string cond-obj))
+            (else (write-to-string cond-obj))))))))
+  (def 'condition-continuable
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "condition-continuable expects 1 argument" args))
+      (let ((cond-obj (runtime-value->host (car args))))
+        (with-module isl.core
+          (unless (isl-condition? cond-obj)
+            (error "condition-continuable needs an isl condition object" cond-obj)))
+        (host->runtime-value
+         (with-module isl.core
+           (if (isl-condition-continuable? cond-obj) #t '()))))))
+  (def 'continue-condition
+    (lambda (args state)
+      (unless (>= (length args) 1)
+        (runtime-raise 'arity "continue-condition expects 1 or 2 arguments" args))
+      (let ((cond-obj (runtime-value->host (car args)))
+            (value    (if (>= (length args) 2) (cadr args) (host->runtime-value '()))))
+        (with-module isl.core
+          (unless (isl-condition? cond-obj)
+            (error "continue-condition needs an isl condition object" cond-obj))
+          (unless (isl-condition-continuable? cond-obj)
+            (error "condition is not continuable" cond-obj)))
+        value)))
+  (def 'cerror
+    (lambda (args state)
+      (unless (>= (length args) 2)
+        (runtime-raise 'arity "cerror expects continue-string and error-string" args))
+      (let ((cont-str  (runtime-string (car args)  "cerror"))
+            (error-str (runtime-string (cadr args) "cerror"))
+            (irritants (map runtime-value->host (cddr args))))
+        (with-module isl.core
+          (isl-signal-condition
+           (make-isl-condition
+            (resolve-binding-symbol '<simple-error>)
+            error-str #t (cons cont-str irritants)))))))
+  (def 'error
+    (lambda (args state)
+      (unless (>= (length args) 1)
+        (runtime-raise 'arity "error expects a message string" args))
+      (let ((msg      (runtime-string (car args) "error"))
+            (irritants (map runtime-value->host (cdr args))))
+        (with-module isl.core
+          (isl-signal-condition
+           (make-isl-condition
+            (resolve-binding-symbol '<simple-error>)
+            msg #f irritants))))))
   (def 'load
     (lambda (args state)
       (unless (= (length args) 1)
@@ -2346,12 +2421,29 @@
   )
 
 (define (runtime-eval-special op payload env state)
-  (define (handler-case-tag-match? tag)
-    (or (eq? tag 'error)
-        (eq? tag 'condition)
-        (eq? tag 'serious-condition)
-        (eq? tag 't)
-        (eq? tag 'otherwise)))
+  ;; ---- 5-F: tag matching with isl-condition class hierarchy ----
+  (define (handler-case-tag-match? tag cond-obj)
+    (cond
+     ((or (eq? tag 't) (eq? tag 'otherwise)) #t)
+     (else
+      (with-module isl.core
+        (let ((bare (symbol-base-name tag)))
+          (if (isl-condition? cond-obj)
+              ;; Try direct class hierarchy match, then legacy bare-name fallback.
+              (or (isl-subclassp? (isl-condition-class cond-obj) tag)
+                  (and (string=? bare "error")
+                       (isl-subclassp? (isl-condition-class cond-obj)
+                                       (resolve-binding-symbol '<error>)))
+                  (and (string=? bare "serious-condition")
+                       (isl-subclassp? (isl-condition-class cond-obj)
+                                       (resolve-binding-symbol '<serious-condition>)))
+                  (and (string=? bare "condition")
+                       (isl-subclassp? (isl-condition-class cond-obj)
+                                       (resolve-binding-symbol '<condition>))))
+              ;; Legacy Gauche native conditions
+              (or (string=? bare "error")
+                  (string=? bare "condition")
+                  (string=? bare "serious-condition"))))))))
   (case op
     ((setq)
      (unless (list? payload)
@@ -2637,10 +2729,13 @@
                       (let ((c (car cs)))
                         (unless (and (list? c) (= (length c) 3) (symbol? (car c)))
                           (runtime-raise 'invalid-ir "invalid handler-case clause shape" c))
-                        (let ((tag (car c))
-                              (var (cadr c))
-                              (body (caddr c)))
-                          (if (handler-case-tag-match? tag)
+                        (let* ((raw-tag (car c))
+                               ;; Resolve tag for class hierarchy lookup
+                               (tag (with-module isl.core
+                                      (resolve-binding-symbol raw-tag)))
+                               (var  (cadr c))
+                               (body (caddr c)))
+                          (if (handler-case-tag-match? tag e)
                               (let ((henv (make-env env)))
                                 (when var
                                   (unless (symbol? var)
@@ -2649,6 +2744,21 @@
                                 (runtime-eval-expr body henv state))
                               (loop (cdr cs)))))))))
          (runtime-eval-expr protected env state))))
+    ((with-handler)
+     ;; payload = (handler-ir protected-ir)
+     (unless (and (list? payload) (= (length payload) 2))
+       (runtime-raise 'invalid-ir "with-handler payload must be (handler protected)" payload))
+     (let* ((handler-ir   (car payload))
+            (protected-ir (cadr payload))
+            (handler-fn   (runtime-eval-expr handler-ir env state)))
+       ;; *isl-handler-stack* is exported from isl.core and imported via (use isl.core).
+       (parameterize ((*isl-handler-stack*
+                       (cons (lambda (c)
+                               (runtime-apply handler-fn
+                                              (list (host->runtime-value c))
+                                              state))
+                             (*isl-handler-stack*))))
+         (runtime-eval-expr protected-ir env state))))
     ((defpackage)
      (unless (list? payload)
        (runtime-raise 'invalid-ir "defpackage payload must be list" payload))
@@ -2841,6 +2951,34 @@
     (env-define! global-env '*standard-input*  (host->runtime-value (current-input-port)))
     (env-define! global-env '*standard-output* (host->runtime-value (current-output-port)))
     (env-define! global-env '*error-output*    (host->runtime-value (current-error-port)))
+    ;; ---- Phase 5-A: ISLISP condition class hierarchy ----
+    ;; Compile defclass forms through the frontend to get proper IR, then run them.
+    ;; ignore-errors is already defined via the shared frontend-env (make-initial-env).
+    (let ((boot-state (vector 'runtime-state profile global-env (host->runtime-value '()) frontend-env)))
+      (runtime-load-units!
+       boot-state
+       (frontend-compile-forms
+        '((defclass <condition>                   ()                       ())
+          (defclass <serious-condition>           (<condition>)            ())
+          (defclass <error>                       (<serious-condition>)    ())
+          (defclass <arithmetic-error>            (<error>)                ())
+          (defclass <division-by-zero>            (<arithmetic-error>)     ())
+          (defclass <floating-point-overflow>     (<arithmetic-error>)     ())
+          (defclass <floating-point-underflow>    (<arithmetic-error>)     ())
+          (defclass <control-error>               (<error>)                ())
+          (defclass <parse-error>                 (<error>)                ())
+          (defclass <program-error>               (<error>)                ())
+          (defclass <domain-error>                (<program-error>)        ())
+          (defclass <undefined-entity>            (<program-error>)        ())
+          (defclass <unbound-variable>            (<undefined-entity>)     ())
+          (defclass <undefined-function>          (<undefined-entity>)     ())
+          (defclass <arity-error>                 (<program-error>)        ())
+          (defclass <index-out-of-range>          (<program-error>)        ())
+          (defclass <type-error>                  (<program-error>)        ())
+          (defclass <simple-error>                (<error>)                ())
+          (defclass <stream-error>                (<error>)                ())
+          (defclass <end-of-stream>               (<stream-error>)         ()))
+        frontend-env)))
     (vector 'runtime-state profile global-env (host->runtime-value '()) frontend-env)))
 
 (define (state-profile state) (vector-ref state 1))

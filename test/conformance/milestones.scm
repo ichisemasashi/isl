@@ -601,6 +601,110 @@
               (read-line s nil)))
          '())))
 
+(define phase5-error-cases
+  (list
+   ;; 5-B: error + condition-message
+   (list 'value
+         '(handler-case
+             (error "test error")
+             (<error> (c) (condition-message c)))
+         "test error")
+   ;; 5-B: error with irritants still gives message
+   (list 'value
+         '(handler-case
+             (error "msg" 1 2 3)
+             (<error> (c) (condition-message c)))
+         "msg")
+   ;; 5-B: unhandled error raises condition
+   (list 'error '(error "boom") 'error)
+   ;; 5-C: cerror is continuable
+   (list 'value
+         '(handler-case
+             (cerror "continue" "recoverable")
+             (<simple-error> (c) (condition-continuable c)))
+         #t)
+   ;; 5-C: error is not continuable
+   (list 'value
+         '(handler-case
+             (error "non-recoverable")
+             (<error> (c) (if (condition-continuable c) #t #f)))
+         #f)
+   ;; 5-D: cerror message accessible
+   (list 'value
+         '(handler-case
+             (cerror "continue-msg" "cerror-error")
+             (<simple-error> (c) (condition-message c)))
+         "cerror-error")))
+
+(define phase5-handler-cases
+  (list
+   ;; 5-E: with-handler catches error
+   (list 'value
+         '(with-handler
+             (lambda (c) (string-append "got: " (condition-message c)))
+             (error "oops"))
+         "got: oops")
+   ;; 5-E: with-handler returns protected value when no error
+   (list 'value
+         '(with-handler
+             (lambda (c) "error")
+             42)
+         42)
+   ;; 5-E: nested with-handler – inner fires first
+   (list 'value
+         '(with-handler
+             (lambda (c) "outer")
+             (with-handler
+               (lambda (c) "inner")
+               (error "test")))
+         "inner")))
+
+(define phase5-hierarchy-cases
+  (list
+   ;; 5-F: <simple-error> caught by <error>
+   (list 'value
+         '(handler-case
+             (error "test")
+             (<error> (c) "caught"))
+         "caught")
+   ;; 5-F: <error> caught by <serious-condition>
+   (list 'value
+         '(handler-case
+             (error "test")
+             (<serious-condition> (c) "caught"))
+         "caught")
+   ;; 5-F: first matching clause wins
+   (list 'value
+         '(handler-case
+             (error "test")
+             (<simple-error> (c) "simple")
+             (<error>        (c) "error"))
+         "simple")
+   ;; 5-F: <end-of-stream> caught by <stream-error>
+   (list 'value
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p5-ms-eos.txt") nil)
+            (handler-case
+              (with-open-input-file (s "/tmp/isl-p5-ms-eos.txt")
+                (read-char s))
+              (<stream-error> (c) "stream-error")))
+         "stream-error")))
+
+(define phase5-ignore-cases
+  (list
+   ;; 5-G: ignore-errors suppresses error → nil
+   (list 'value
+         '(ignore-errors (error "ignored"))
+         '())
+   ;; 5-G: ignore-errors returns value on success
+   (list 'value
+         '(ignore-errors 42)
+         42)
+   ;; 5-G: ignore-errors returns last form on success
+   (list 'value
+         '(ignore-errors (+ 1 2) 99)
+         99)))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -629,7 +733,11 @@
    (list "Phase4-CharIO"     phase4-char-io-cases)
    (list "Phase4-Write"      phase4-write-cases)
    (list "Phase4-Stream"     phase4-stream-cases)
-   (list "Phase4-ReadLine"   phase4-readline-cases)))
+   (list "Phase4-ReadLine"   phase4-readline-cases)
+   (list "Phase5-Error"      phase5-error-cases)
+   (list "Phase5-Handler"    phase5-handler-cases)
+   (list "Phase5-Hierarchy"  phase5-hierarchy-cases)
+   (list "Phase5-Ignore"     phase5-ignore-cases)))
 
 (define strict-milestones
   (list
@@ -659,6 +767,10 @@
    (list "Phase4-CharIO"     phase4-char-io-cases)
    (list "Phase4-Write"      phase4-write-cases)
    (list "Phase4-Stream"     phase4-stream-cases)
-   (list "Phase4-ReadLine"   phase4-readline-cases)))
+   (list "Phase4-ReadLine"   phase4-readline-cases)
+   (list "Phase5-Error"      phase5-error-cases)
+   (list "Phase5-Handler"    phase5-handler-cases)
+   (list "Phase5-Hierarchy"  phase5-hierarchy-cases)
+   (list "Phase5-Ignore"     phase5-ignore-cases)))
 
 (define extended-milestones all-milestones)

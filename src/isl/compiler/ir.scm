@@ -431,6 +431,14 @@
              (normalize-special 'lambda (cdr name)))
             (else (list 'invalid-special op args))))
          (list 'invalid-special op args)))
+    ;; ---- Phase 5 ----
+    ((with-handler)
+     ;; (with-handler handler-form protected-form)
+     (if (= (length args) 2)
+         (list 'special 'with-handler
+               (list (normalize-expr (car args))
+                     (normalize-expr (cadr args))))
+         (list 'invalid-special op args)))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -453,7 +461,8 @@
             ((quote if cond and or progn lambda setq let let* setf block return-from catch throw go tagbody with-open-file dolist while handler-case
                     defpackage in-package
                     defclass defgeneric defmethod
-                    flet labels the unwind-protect function)
+                    flet labels the unwind-protect function
+                    with-handler)
              (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))
