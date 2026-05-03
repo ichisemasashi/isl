@@ -326,6 +326,96 @@
    (list 'error '(number->string "x") 'error)
    (list 'error '(string->number 42)  'error)))
 
+;; ----------------------------------------------------------------
+;; Phase 2: リスト・文字列・文字・ベクター・配列
+;; ----------------------------------------------------------------
+(define phase2-list-cases
+  (list
+   ;; reverse / nreverse
+   (list 'value '(reverse '(1 2 3))           '(3 2 1))
+   (list 'value '(reverse '())                '())
+   (list 'value '(nreverse (list 1 2 3))      '(3 2 1))
+   ;; map / for-each
+   (list 'value '(map (lambda (x) (* x 2)) '(1 2 3))         '(2 4 6))
+   (list 'value '(map (lambda (x y) (+ x y)) '(1 2) '(10 20)) '(11 22))
+   (list 'value '(progn (defglobal p2-log '())
+                        (for-each (lambda (x) (setq p2-log (cons x p2-log))) '(1 2 3))
+                        p2-log)
+         '(3 2 1))
+   ;; mapc
+   (list 'value '(progn (defglobal p2-acc '())
+                        (mapc (lambda (x) (setq p2-acc (cons x p2-acc))) '(a b c))
+                        p2-acc)
+         '(c b a))
+   ;; mapcan
+   (list 'value '(mapcan (lambda (x) (list x x)) '(1 2 3))  '(1 1 2 2 3 3))
+   ;; maplist
+   (list 'value '(maplist (lambda (x) (car x)) '(1 2 3))    '(1 2 3))
+   ;; member / assoc / remove
+   (list 'value '(member 2 '(1 2 3))          '(2 3))
+   (list 'value '(member 9 '(1 2 3))          '())
+   (list 'value '(assoc 'b '((a 1)(b 2)(c 3))) '(b 2))
+   (list 'value '(assoc 'z '((a 1)))           '())
+   (list 'value '(remove 2 '(1 2 3 2))        '(1 3))
+   (list 'value '(remove 9 '(1 2 3))          '(1 2 3))
+   ;; last-pair / nconc
+   (list 'value '(last-pair '(1 2 3))         '(3))
+   (list 'value '(nconc (list 1 2) (list 3 4)) '(1 2 3 4))
+   (list 'value '(nconc '() '(1 2))           '(1 2))
+   ;; list-ref / list-tail
+   (list 'value '(list-ref '(a b c) 1)        'b)
+   (list 'value '(list-tail '(a b c) 2)       '(c))
+   ;; create-list / list-copy / nthcdr
+   (list 'value '(create-list 3 0)            '(0 0 0))
+   (list 'value '(create-list 0)              '())
+   (list 'value '(list-copy '(1 2 3))         '(1 2 3))
+   (list 'value '(nthcdr 2 '(a b c d))        '(c d))
+   ;; sort
+   (list 'value '(sort '(3 1 4 1 5 2) (lambda (a b) (< a b)))  '(1 1 2 3 4 5))
+   ;; エラーケース
+   (list 'error '(reverse 42)                 'error)
+   (list 'error '(map (lambda (x) x))         'error)
+   (list 'error '(list-ref '(a b) 5)          'error)
+   (list 'error '(last-pair '())              'error)))
+
+(define phase2-string-cases
+  (list
+   (list 'value '(string-length "hello")      5)
+   (list 'value '(string-length "")           0)
+   (list 'value '(string-ref "hello" 1)       #\e)
+   (list 'value '(string-copy "abc")          "abc")
+   (list 'value '(string-upcase "hello")      "HELLO")
+   (list 'value '(string-downcase "HELLO")    "hello")
+   (list 'error '(string-length 42)           'error)
+   (list 'error '(string-ref "abc" 5)         'error)))
+
+(define phase2-char-cases
+  (list
+   (list 'value '(char= #\a #\a)              #t)
+   (list 'value '(char= #\a #\b)              #f)
+   (list 'value '(char/= #\a #\b)             #t)
+   (list 'value '(char/= #\a #\a)             #f)
+   (list 'value '(char< #\a #\b)              #t)
+   (list 'value '(char< #\b #\a)              #f)
+   (list 'value '(char> #\b #\a)              #t)
+   (list 'value '(char<= #\a #\a)             #t)
+   (list 'value '(char>= #\b #\a)             #t)
+   (list 'value '(char-upcase #\a)            #\A)
+   (list 'value '(char-downcase #\A)          #\a)
+   (list 'error '(char= #\a "a")              'error)))
+
+(define phase2-vector-cases
+  (list
+   ;; create-vector / general-vector-ref
+   (list 'value '(general-vector-ref (vector 10 20 30) 1)          20)
+   (list 'value '(general-vector-ref (create-vector 3 99) 0)       99)
+   (list 'value '(length (create-vector 5))                         5)
+   ;; create-array / array-dimensions
+   (list 'value '(array-dimensions (vector 1 2 3))                 '(3))
+   (list 'value '(array-dimensions (create-array 4 0))             '(4))
+   (list 'error '(general-vector-ref (vector 1) 5)                 'error)
+   (list 'error '(array-dimensions '(1 2))                         'error)))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -340,7 +430,11 @@
    (list "M9" m9-cases)
    (list "M10" m10-cases)
    (list "M11" m11-cases)
-   (list "Phase1-Arith" phase1-arith-cases)))
+   (list "Phase1-Arith" phase1-arith-cases)
+   (list "Phase2-List"   phase2-list-cases)
+   (list "Phase2-String" phase2-string-cases)
+   (list "Phase2-Char"   phase2-char-cases)
+   (list "Phase2-Vector" phase2-vector-cases)))
 
 (define strict-milestones
   (list
@@ -356,6 +450,10 @@
    (list "M9" m9-cases)
    (list "M10" m10-cases)
    (list "M11" m11-cases)
-   (list "Phase1-Arith" phase1-arith-cases)))
+   (list "Phase1-Arith" phase1-arith-cases)
+   (list "Phase2-List"   phase2-list-cases)
+   (list "Phase2-String" phase2-string-cases)
+   (list "Phase2-Char"   phase2-char-cases)
+   (list "Phase2-Vector" phase2-vector-cases)))
 
 (define extended-milestones all-milestones)

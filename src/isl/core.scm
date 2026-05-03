@@ -3264,6 +3264,27 @@
       (vector-set! v i x)
       x))
   (def 'vectorp vector?)
+
+  ;; --- Phase 2-D: ベクター ISLISP 標準名 ---
+  (def 'create-vector
+    (lambda args
+      (build-vector-from-args args "create-vector")))
+  (def 'general-vector-ref
+    (lambda (v i)
+      (unless (vector? v) (error "general-vector-ref target must be vector" v))
+      (unless (and (integer? i) (>= i 0) (< i (vector-length v)))
+        (error "general-vector-ref index out of range" i))
+      (vector-ref v i)))
+
+  ;; --- Phase 2-E: 配列関数 ---
+  (def 'create-array
+    (lambda args
+      (build-vector-from-args args "create-array")))
+  (def 'array-dimensions
+    (lambda (arr)
+      (unless (vector? arr) (error "array-dimensions needs an array" arr))
+      (list (vector-length arr))))
+
   (def 'make-hash-table
     (lambda args
       (let ((test #f)
@@ -3352,6 +3373,151 @@
   (def 'tenth   (lambda (x) (list-element-at x 9 'tenth)))
   (def 'list list)
   (def 'append append)
+
+  ;; --- Phase 2-A: リスト関数 ---
+  (def 'reverse
+    (lambda (xs)
+      (unless (list? xs) (error "reverse needs a list" xs))
+      (reverse xs)))
+  (def 'nreverse
+    (lambda (xs)
+      (unless (list? xs) (error "nreverse needs a list" xs))
+      (reverse! xs)))
+  (def 'map
+    (lambda (f . lists)
+      (when (null? lists) (error "map needs at least one list"))
+      (for-each (lambda (l) (unless (list? l) (error "map needs lists" l))) lists)
+      (apply map (lambda xs (apply-islisp f xs)) lists)))
+  (def 'for-each
+    (lambda (f . lists)
+      (when (null? lists) (error "for-each needs at least one list"))
+      (for-each (lambda (l) (unless (list? l) (error "for-each needs lists" l))) lists)
+      (apply for-each (lambda xs (apply-islisp f xs)) lists)
+      '()))
+  (def 'mapc
+    (lambda (f . lists)
+      (when (null? lists) (error "mapc needs at least one list"))
+      (for-each (lambda (l) (unless (list? l) (error "mapc needs lists" l))) lists)
+      (apply for-each (lambda xs (apply-islisp f xs)) lists)
+      (car lists)))
+  (def 'mapcan
+    (lambda (f . lists)
+      (when (null? lists) (error "mapcan needs at least one list"))
+      (for-each (lambda (l) (unless (list? l) (error "mapcan needs lists" l))) lists)
+      (apply append (apply map (lambda xs (apply-islisp f xs)) lists))))
+  (def 'maplist
+    (lambda (f . lists)
+      (when (null? lists) (error "maplist needs at least one list"))
+      (for-each (lambda (l) (unless (list? l) (error "maplist needs lists" l))) lists)
+      (let loop ((tails lists) (acc '()))
+        (if (any null? tails)
+            (reverse acc)
+            (loop (map cdr tails)
+                  (cons (apply-islisp f tails) acc))))))
+  (def 'member
+    (lambda (obj lst . opts)
+      (let ((test (if (and (pair? opts) (eq? (car opts) ':test))
+                      (cadr opts) #f)))
+        (unless (list? lst) (error "member needs a list" lst))
+        (let loop ((rest lst))
+          (cond
+           ((null? rest) '())
+           (test
+            (if (truthy? (apply-islisp test (list obj (car rest))))
+                rest (loop (cdr rest))))
+           (else
+            (if (eqv? obj (car rest))
+                rest (loop (cdr rest)))))))))
+  (def 'assoc
+    (lambda (key alist . opts)
+      (let ((test (if (and (pair? opts) (eq? (car opts) ':test))
+                      (cadr opts) #f)))
+        (unless (list? alist) (error "assoc needs an alist" alist))
+        (let loop ((rest alist))
+          (cond
+           ((null? rest) '())
+           ((not (pair? (car rest))) (loop (cdr rest)))
+           (test
+            (if (truthy? (apply-islisp test (list key (caar rest))))
+                (car rest) (loop (cdr rest))))
+           (else
+            (if (eqv? key (caar rest))
+                (car rest) (loop (cdr rest)))))))))
+  (def 'remove
+    (lambda (obj lst . opts)
+      (let ((test (if (and (pair? opts) (eq? (car opts) ':test))
+                      (cadr opts) #f)))
+        (unless (list? lst) (error "remove needs a list" lst))
+        (let loop ((rest lst) (acc '()))
+          (cond
+           ((null? rest) (reverse acc))
+           ((if test
+                (truthy? (apply-islisp test (list obj (car rest))))
+                (eqv? obj (car rest)))
+            (loop (cdr rest) acc))
+           (else
+            (loop (cdr rest) (cons (car rest) acc))))))))
+  (def 'last-pair
+    (lambda (lst)
+      (unless (pair? lst) (error "last-pair needs a non-empty list" lst))
+      (let loop ((rest lst))
+        (if (null? (cdr rest)) rest (loop (cdr rest))))))
+  (def 'nconc
+    (lambda lists
+      (let loop ((ls lists))
+        (cond
+         ((null? ls) '())
+         ((null? (cdr ls)) (car ls))
+         ((null? (car ls)) (loop (cdr ls)))
+         (else
+          (let ((tail (loop (cdr ls))))
+            (set-cdr! (let find-last ((x (car ls)))
+                        (if (null? (cdr x)) x (find-last (cdr x))))
+                      tail)
+            (car ls)))))))
+  (def 'list-ref
+    (lambda (lst i)
+      (unless (list? lst) (error "list-ref needs a list" lst))
+      (unless (and (integer? i) (>= i 0)) (error "list-ref index must be non-negative integer" i))
+      (let loop ((rest lst) (n i))
+        (cond
+         ((null? rest) (error "list-ref index out of range" i))
+         ((= n 0) (car rest))
+         (else (loop (cdr rest) (- n 1)))))))
+  (def 'list-tail
+    (lambda (lst i)
+      (unless (list? lst) (error "list-tail needs a list" lst))
+      (unless (and (integer? i) (>= i 0)) (error "list-tail index must be non-negative integer" i))
+      (let loop ((rest lst) (n i))
+        (cond
+         ((= n 0) rest)
+         ((null? rest) (error "list-tail index out of range" i))
+         (else (loop (cdr rest) (- n 1)))))))
+  (def 'create-list
+    (lambda args
+      (unless (and (pair? args) (integer? (car args)) (>= (car args) 0))
+        (error "create-list needs a non-negative integer" args))
+      (let ((n    (car args))
+            (init (if (pair? (cdr args)) (cadr args) '())))
+        (let loop ((i n) (acc '()))
+          (if (= i 0) acc (loop (- i 1) (cons init acc)))))))
+  (def 'list-copy
+    (lambda (lst)
+      (unless (list? lst) (error "list-copy needs a list" lst))
+      (map (lambda (x) x) lst)))
+  (def 'nthcdr
+    (lambda (n lst)
+      (unless (and (integer? n) (>= n 0)) (error "nthcdr n must be non-negative integer" n))
+      (let loop ((rest lst) (i n))
+        (if (= i 0) rest
+            (begin
+              (unless (pair? rest) (error "nthcdr list too short" n))
+              (loop (cdr rest) (- i 1)))))))
+  (def 'sort
+    (lambda (lst pred)
+      (unless (list? lst) (error "sort needs a list" lst))
+      (sort lst (lambda (a b) (truthy? (apply-islisp pred (list a b)))))))
+
   (def 'mapcar
     (lambda (f xs)
       (unless (list? xs)
@@ -3574,6 +3740,66 @@
             (haystack (cadr args))
             (start (if (= (length args) 3) (caddr args) 0)))
         (string-index* haystack needle start "string-index"))))
+
+  ;; --- Phase 2-B: 文字列関数 ---
+  (def 'string-length
+    (lambda (s)
+      (ensure-string s "string-length")
+      (string-length s)))
+  (def 'string-ref
+    (lambda (s i)
+      (ensure-string s "string-ref")
+      (ensure-nonnegative-integer i "string-ref")
+      (let ((n (string-length s)))
+        (unless (< i n) (error "string-ref index out of range" i n))
+        (string-ref s i))))
+  (def 'string-copy
+    (lambda (s)
+      (ensure-string s "string-copy")
+      (string-copy s)))
+  (def 'string-upcase
+    (lambda (s)
+      (ensure-string s "string-upcase")
+      (string-map char-upcase s)))
+  (def 'string-downcase
+    (lambda (s)
+      (ensure-string s "string-downcase")
+      (string-map char-downcase s)))
+
+  ;; --- Phase 2-C: 文字比較関数 ---
+  (def 'char=
+    (lambda (a b)
+      (ensure-char a "char=") (ensure-char b "char=")
+      (if (char=? a b) #t #f)))
+  (def 'char/=
+    (lambda (a b)
+      (ensure-char a "char/=") (ensure-char b "char/=")
+      (if (char=? a b) #f #t)))
+  (def 'char<
+    (lambda (a b)
+      (ensure-char a "char<") (ensure-char b "char<")
+      (if (char<? a b) #t #f)))
+  (def 'char>
+    (lambda (a b)
+      (ensure-char a "char>") (ensure-char b "char>")
+      (if (char>? a b) #t #f)))
+  (def 'char<=
+    (lambda (a b)
+      (ensure-char a "char<=") (ensure-char b "char<=")
+      (if (char<=? a b) #t #f)))
+  (def 'char>=
+    (lambda (a b)
+      (ensure-char a "char>=") (ensure-char b "char>=")
+      (if (char>=? a b) #t #f)))
+  (def 'char-upcase
+    (lambda (c)
+      (ensure-char c "char-upcase")
+      (char-upcase c)))
+  (def 'char-downcase
+    (lambda (c)
+      (ensure-char c "char-downcase")
+      (char-downcase c)))
+
   (def 'char->integer
     (lambda (ch)
       (cond
