@@ -392,6 +392,45 @@
        (if p
            (list 'special 'defmethod p)
            (list 'invalid-special op args))))
+    ;; ---- Phase 3 ----
+    ((flet labels)
+     ;; (flet/labels ((name params body...) ...) body...)
+     (if (and (>= (length args) 2) (list? (car args)))
+         (let* ((recursive? (eq? op 'labels))
+                (raw-bindings (car args))
+                (body (cdr args))
+                (norm-bindings
+                 (map (lambda (b)
+                        (if (and (list? b) (>= (length b) 3) (symbol? (car b)) (list? (cadr b)))
+                            (list (car b) (cadr b) (normalize-body (cddr b)))
+                            #f))
+                      raw-bindings)))
+           (if (any not norm-bindings)
+               (list 'invalid-special op args)
+               (list 'special op (list norm-bindings (normalize-body body)))))
+         (list 'invalid-special op args)))
+    ((the)
+     ;; (the class-name form)
+     (if (= (length args) 2)
+         (list 'special 'the (list (car args) (normalize-expr (cadr args))))
+         (list 'invalid-special op args)))
+    ((unwind-protect)
+     ;; (unwind-protect protected cleanup...)
+     (if (>= (length args) 1)
+         (list 'special 'unwind-protect
+               (list (normalize-expr (car args))
+                     (map normalize-expr (cdr args))))
+         (list 'invalid-special op args)))
+    ((function)
+     ;; (function name) or (function (lambda ...))
+     (if (= (length args) 1)
+         (let ((name (car args)))
+           (cond
+            ((symbol? name) (list 'var name))
+            ((and (pair? name) (eq? (car name) 'lambda))
+             (normalize-special 'lambda (cdr name)))
+            (else (list 'invalid-special op args))))
+         (list 'invalid-special op args)))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -413,7 +452,8 @@
           (case op
             ((quote if cond and or progn lambda setq let let* setf block return-from catch throw go tagbody with-open-file dolist while handler-case
                     defpackage in-package
-                    defclass defgeneric defmethod)
+                    defclass defgeneric defmethod
+                    flet labels the unwind-protect function)
              (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))
@@ -429,7 +469,7 @@
            (if (>= (length args) 3)
                (list 'define-fun (car args) (cadr args) (normalize-body (cddr args)))
                (list 'invalid-top form)))
-          ((defglobal)
+          ((defglobal defconstant)
            (if (= (length args) 2)
                (list 'define-global (car args) (normalize-expr (cadr args)))
                (list 'invalid-top form)))

@@ -416,6 +416,74 @@
    (list 'error '(general-vector-ref (vector 1) 5)                 'error)
    (list 'error '(array-dimensions '(1 2))                         'error)))
 
+;; ---- Phase 3 test cases ----
+(define phase3-flet-cases
+  (list
+   ;; 3-A: flet
+   (list 'value '(flet ((f (x) (+ x 1))) (f 9))                          10)
+   (list 'value '(flet ((sq (x) (* x x))) (sq 7))                        49)
+   (list 'value '(flet ((greet (name) name)) (greet 'hello))             'hello)
+   ;; flet is not recursive
+   (list 'value '(let ((x 10)) (flet ((f (y) (+ x y))) (f 5)))           15)
+   ;; 3-A: labels (mutual recursion)
+   (list 'value '(labels ((fact (n) (if (= n 0) 1 (* n (fact (- n 1))))))
+                   (fact 5))
+         120)
+   (list 'value '(labels ((even? (n) (if (= n 0) t (odd? (- n 1))))
+                           (odd?  (n) (if (= n 0) nil (even? (- n 1)))))
+                   (even? 4))
+         #t)
+   (list 'value '(labels ((even? (n) (if (= n 0) t (odd? (- n 1))))
+                           (odd?  (n) (if (= n 0) nil (even? (- n 1)))))
+                   (odd? 3))
+         #t)))
+
+(define phase3-the-cases
+  (list
+   ;; 3-B: the
+   (list 'value '(the <integer> 42)               42)
+   (list 'value '(the <string>  "hello")          "hello")
+   (list 'value '(the <number>  3.14)             3.14)
+   (list 'error '(the <integer> "not-int")        'error)
+   (list 'error '(the <string>  99)               'error)))
+
+(define phase3-unwind-cases
+  (list
+   ;; 3-C: unwind-protect
+   (list 'value '(unwind-protect 42 nil)          42)
+   (list 'value '(unwind-protect (+ 1 2) nil)     3)
+   ;; cleanup runs but return value comes from protected form
+   (list 'value '(let ((x 0))
+                   (unwind-protect
+                     (progn (setq x 1) x)
+                     (setq x 99)))
+         1)))
+
+(define phase3-function-cases
+  (list
+   ;; 3-F: function special form
+   (list 'value '(functionp (function +))         #t)
+   (list 'value '(functionp (function car))       #t)
+   (list 'value '(functionp (function (lambda (x) x))) #t)))
+
+(define phase3-defconstant-cases
+  (list
+   ;; 3-E: defconstant
+   (list 'value '(progn (defconstant +pi+ 3) +pi+)   3)
+   (list 'value '(progn (defconstant +answer+ 42) +answer+) 42)))
+
+(define phase3-io-macro-cases
+  (list
+   ;; 3-D: with-open-input-file / with-open-output-file
+   ;; Write a string and read it back using line-based I/O
+   (list 'value
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p3-test.txt")
+              (write-line "hello-phase3" s))
+            (with-open-input-file (s "/tmp/isl-p3-test.txt")
+              (read-line s)))
+         "hello-phase3")))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -434,7 +502,13 @@
    (list "Phase2-List"   phase2-list-cases)
    (list "Phase2-String" phase2-string-cases)
    (list "Phase2-Char"   phase2-char-cases)
-   (list "Phase2-Vector" phase2-vector-cases)))
+   (list "Phase2-Vector" phase2-vector-cases)
+   (list "Phase3-Flet"       phase3-flet-cases)
+   (list "Phase3-The"        phase3-the-cases)
+   (list "Phase3-Unwind"     phase3-unwind-cases)
+   (list "Phase3-Function"   phase3-function-cases)
+   (list "Phase3-Defconstant" phase3-defconstant-cases)
+   (list "Phase3-IO-Macro"   phase3-io-macro-cases)))
 
 (define strict-milestones
   (list
@@ -454,6 +528,12 @@
    (list "Phase2-List"   phase2-list-cases)
    (list "Phase2-String" phase2-string-cases)
    (list "Phase2-Char"   phase2-char-cases)
-   (list "Phase2-Vector" phase2-vector-cases)))
+   (list "Phase2-Vector" phase2-vector-cases)
+   (list "Phase3-Flet"       phase3-flet-cases)
+   (list "Phase3-The"        phase3-the-cases)
+   (list "Phase3-Unwind"     phase3-unwind-cases)
+   (list "Phase3-Function"   phase3-function-cases)
+   (list "Phase3-Defconstant" phase3-defconstant-cases)
+   (list "Phase3-IO-Macro"   phase3-io-macro-cases)))
 
 (define extended-milestones all-milestones)

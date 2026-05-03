@@ -2416,6 +2416,105 @@
       (error "go tag must be a symbol or integer" tag))
     (raise (make-go-signal tag))))
 
+;; ---- Phase 3: eval helpers ----
+
+;; 3-A: flet / labels
+(define (eval-flet-like args env tail? recursive?)
+  (unless (and (list? args) (>= (length args) 2) (list? (car args)))
+    (error (if recursive? "labels" "flet") "needs bindings and body" args))
+  (let* ((bindings (car args))
+         (body     (cdr args))
+         (fenv     (make-frame env)))
+    (for-each
+     (lambda (binding)
+       (unless (and (list? binding) (>= (length binding) 3) (symbol? (car binding)))
+         (error (if recursive? "labels" "flet") "invalid binding" binding))
+       (let* ((fname  (resolve-binding-symbol (car binding)))
+              (params (cadr binding))
+              (fbody  (cddr binding))
+              (scope  (if recursive? fenv env))
+              (fn     (make-callable-definition params fbody scope fname #f)))
+         (frame-define! fenv fname fn)))
+     bindings)
+    (eval-sequence* body fenv tail?)))
+
+;; 3-B: the — type declaration
+(define (isl-instance-of? val class-name)
+  ;; Check built-in types by ISLISP class name, then user-defined ISL instances.
+  (let* ((s (symbol->string (if (symbol? class-name) class-name 'unknown)))
+         (bare (cond
+                ((and (> (string-length s) 0) (char=? (string-ref s 0) #\<)
+                      (char=? (string-ref s (- (string-length s) 1)) #\>))
+                 (substring s 1 (- (string-length s) 1)))
+                (else s))))
+    (cond
+     ((string=? bare "object")    #t)
+     ((string=? bare "t")         #t)
+     ((string=? bare "integer")   (and (integer? val) (exact? val)))
+     ((string=? bare "float")     (and (number? val) (inexact? val)))
+     ((string=? bare "number")    (number? val))
+     ((string=? bare "string")    (string? val))
+     ((string=? bare "symbol")    (symbol? val))
+     ((string=? bare "character") (char? val))
+     ((string=? bare "list")      (or (null? val) (pair? val)))
+     ((string=? bare "cons")      (pair? val))
+     ((string=? bare "null")      (null? val))
+     ((string=? bare "vector")    (vector? val))
+     ((string=? bare "general-vector") (vector? val))
+     ((string=? bare "function")  (or (closure? val) (primitive? val)))
+     (else
+      ;; Try user-defined class
+      (and (instance? val)
+           (let ((class-obj (class-table-ref class-name)))
+             (and class-obj
+                  (let ((d (class-distance (instance-class val) class-obj)))
+                    (if d #t #f)))))))))
+
+(define (eval-the args env tail?)
+  (unless (= (length args) 2)
+    (error "the needs class-name and form" args))
+  (let* ((class-name (car args))
+         (form       (cadr args))
+         (val        (eval-islisp* form env tail?)))
+    (unless (isl-instance-of? val class-name)
+      (error "the: value is not of expected class" val class-name))
+    val))
+
+;; 3-C: unwind-protect
+(define (eval-unwind-protect args env tail?)
+  (unless (>= (length args) 1)
+    (error "unwind-protect needs at least a protected form" args))
+  (let ((protected (car args))
+        (cleanups  (cdr args)))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda () (eval-islisp* protected env #f))
+      (lambda ()
+        (for-each (lambda (f) (eval-islisp* f env #f)) cleanups)))))
+
+;; 3-E: defconstant
+(define (eval-defconstant args env form)
+  (eval-defglobal args env form))
+
+;; 3-F: function special form
+(define (eval-function-form args env)
+  (unless (= (length args) 1)
+    (error "function needs exactly one argument" args))
+  (let ((name (car args)))
+    (cond
+     ((and (pair? name) (eq? (car name) 'lambda))
+      (eval-islisp* name env #f))
+     ((symbol? name)
+      (let* ((sym (if (frame-bound? env name)
+                      name
+                      (resolve-symbol-in-package name)))
+             (val (frame-ref env sym)))
+        (unless (or (closure? val) (primitive? val))
+          (error "function: not a function" name))
+        val))
+     (else
+      (error "function needs symbol or lambda form" name)))))
+
 (define (make-callable-definition params body env name macro?)
   (validate-params params)
   (if macro?
@@ -2870,7 +2969,7 @@
       (error "if takes 2 or 3 arguments" form)))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case and or loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass)))
+  (memq sym '(quote quasiquote if cond case and or loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass flet labels the unwind-protect defconstant function)))
 
 (define (extended-special-form? sym)
   (memq sym '(trace untrace)))
@@ -2957,6 +3056,19 @@
        (eval-let-form args env tail? #f form))
       ((let*)
        (eval-let-form args env tail? #t form))
+      ;; ---- Phase 3 ----
+      ((flet)
+       (eval-flet-like args env tail? #f))
+      ((labels)
+       (eval-flet-like args env tail? #t))
+      ((the)
+       (eval-the args env tail?))
+      ((unwind-protect)
+       (eval-unwind-protect args env tail?))
+      ((defconstant)
+       (eval-defconstant args env form))
+      ((function)
+       (eval-function-form args env))
       (else
        (error "Unknown special form" op)))))
 
@@ -5005,6 +5117,25 @@
       (frame-define! env (resolve-binding-symbol 't) #t)
       (package-export! *current-package* 't)
       (install-primitives! env)
+      ;; ---- Phase 3-D: with-open-input-file / with-open-output-file macros ----
+      (eval-islisp
+       '(defmacro with-open-input-file (spec &rest body)
+          (let ((var      (car spec))
+                (filename (car (cdr spec))))
+            (cons 'with-open-file
+                  (cons (list var filename :direction :input)
+                        body))))
+       env)
+      (package-export! *current-package* 'with-open-input-file)
+      (eval-islisp
+       '(defmacro with-open-output-file (spec &rest body)
+          (let ((var      (car spec))
+                (filename (car (cdr spec))))
+            (cons 'with-open-file
+                  (cons (list var filename :direction :output)
+                        body))))
+       env)
+      (package-export! *current-package* 'with-open-output-file)
       (when (strict-profile?)
         (disable-extended-primitives! env))
       ;; Lightweight CFFI-compatible facade (extended profile only).
