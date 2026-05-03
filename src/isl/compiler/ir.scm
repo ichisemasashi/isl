@@ -439,6 +439,28 @@
                (list (normalize-expr (car args))
                      (normalize-expr (cadr args))))
          (list 'invalid-special op args)))
+    ;; ---- Phase 6-B ----
+    ((dynamic)
+     ;; (dynamic var-name) → payload = (sym)
+     (if (and (= (length args) 1) (symbol? (car args)))
+         (list 'special 'dynamic (list (car args)))
+         (list 'invalid-special op args)))
+    ((dynamic-let)
+     ;; (dynamic-let ((var val) ...) body...)
+     (if (and (>= (length args) 2) (list? (car args)))
+         (let ((bindings (car args))
+               (body     (cdr args)))
+           (let ((norm-bindings
+                  (map (lambda (b)
+                         (if (and (list? b) (= (length b) 2) (symbol? (car b)))
+                             (list (car b) (normalize-expr (cadr b)))
+                             #f))
+                       bindings)))
+             (if (any not norm-bindings)
+                 (list 'invalid-special op args)
+                 (list 'special 'dynamic-let
+                       (list norm-bindings (normalize-body body))))))
+         (list 'invalid-special op args)))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -462,7 +484,8 @@
                     defpackage in-package
                     defclass defgeneric defmethod
                     flet labels the unwind-protect function
-                    with-handler)
+                    with-handler
+                    dynamic dynamic-let)
              (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))
@@ -485,6 +508,10 @@
           ((defmacro)
            (if (>= (length args) 3)
                (list 'define-macro (car args) (cadr args) (cddr args))
+               (list 'invalid-top form)))
+          ((defvar)
+           (if (= (length args) 2)
+               (list 'define-var (car args) (normalize-expr (cadr args)))
                (list 'invalid-top form)))
           (else
            (list 'expr (normalize-expr form)))))

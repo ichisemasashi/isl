@@ -35,7 +35,11 @@
 
 (define (eval-forms forms env)
   (for-each (lambda (form)
-              (eval-islisp form env))
+              ;; Phase 6-A: in strict mode, sanitize #f→nil in source forms.
+              (eval-islisp (if (strict-profile?)
+                               (sanitize-for-strict form)
+                               form)
+                           env))
             forms))
 
 (define (run-file path env)

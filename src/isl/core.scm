@@ -17,7 +17,9 @@
           make-isl-condition isl-condition?
           isl-condition-class isl-condition-message
           isl-condition-continuable? isl-condition-irritants
-          *isl-handler-stack* isl-signal-condition isl-subclassp?))
+          *isl-handler-stack* isl-signal-condition isl-subclassp?
+          ;; Phase 6: dynamic variables + strict sanitization
+          *dynamic-var-table* resolve-binding-symbol sanitize-for-strict))
 
 (select-module isl.core)
 
@@ -68,6 +70,20 @@
 (define (truthy? v)
   (and (not (eq? v #f))
        (not (null? v))))
+
+;; ---- Phase 6-A: Strict-mode source form sanitization ----
+;; In ISLISP strict mode, #f in source code means nil (= '()).
+;; Apply this recursively to forms before evaluation.
+(define (sanitize-for-strict form)
+  (cond
+   ((eq? form #f) '())           ; #f → nil
+   ((eq? form #t) #t)            ; #t stays as #t (= t)
+   ((pair? form)
+    (cons (sanitize-for-strict (car form))
+          (sanitize-for-strict (cdr form))))
+   ((vector? form)
+    (vector-map sanitize-for-strict form))
+   (else form)))
 
 (define (make-frame parent)
   (vector 'frame '() parent))
@@ -2567,13 +2583,62 @@
                               "defglobal needs a symbol")
       (error "defglobal takes symbol and expression" form)))
 
+;; ---- Phase 6-B: dynamic / dynamic-let ----
+(define (eval-dynamic args env)
+  (unless (= (length args) 1)
+    (error "dynamic needs exactly one variable name" args))
+  (let ((name (resolve-binding-symbol (car args))))
+    (if (hash-table-exists? (*dynamic-var-table*) name)
+        (hash-table-ref (*dynamic-var-table*) name)
+        (error "dynamic variable not bound" name))))
+
+(define (eval-dynamic-let args env tail?)
+  (unless (and (list? args) (>= (length args) 2) (list? (car args)))
+    (error "dynamic-let needs bindings and body" args))
+  (let* ((bindings (car args))
+         (body     (cdr args))
+         (tbl      (*dynamic-var-table*))
+         ;; Evaluate new values first (before any mutation).
+         (new-vals (map (lambda (b)
+                          (unless (and (list? b) (= (length b) 2) (symbol? (car b)))
+                            (error "dynamic-let binding must be (var form)" b))
+                          (cons (resolve-binding-symbol (car b))
+                                (eval-islisp* (cadr b) env #f)))
+                        bindings))
+         ;; Save current values.
+         (saved    (map (lambda (pair)
+                          (let ((sym (car pair)))
+                            (cons sym
+                                  (if (hash-table-exists? tbl sym)
+                                      (cons #t (hash-table-ref tbl sym))
+                                      (cons #f #f)))))
+                        new-vals)))
+    ;; Install new values.
+    (for-each (lambda (pair) (hash-table-put! tbl (car pair) (cdr pair))) new-vals)
+    (dynamic-wind
+      (lambda () #f)
+      (lambda () (eval-sequence* body env tail?))
+      (lambda ()
+        ;; Restore old values.
+        (for-each (lambda (entry)
+                    (let ((sym (car entry))
+                          (had? (cadr entry))
+                          (old  (cddr entry)))
+                      (if had?
+                          (hash-table-put! tbl sym old)
+                          (hash-table-delete! tbl sym))))
+                  saved)))))
+
 (define (eval-defvar args env form)
   (if (= (length args) 2)
-      (define-global-binding-if-missing! env
-                                         (car args)
-                                         (lambda ()
-                                           (eval-islisp* (cadr args) env #f))
-                                         "defvar needs a symbol")
+      (let ((sym (define-global-binding-if-missing!
+                   env (car args)
+                   (lambda () (eval-islisp* (cadr args) env #f))
+                   "defvar needs a symbol")))
+        ;; Also register in dynamic variable table (only if not already there).
+        (unless (hash-table-exists? (*dynamic-var-table*) sym)
+          (hash-table-put! (*dynamic-var-table*) sym (frame-ref env sym)))
+        sym)
       (error "defvar takes symbol and expression" form)))
 
 (define (eval-progn args env tail?)
@@ -3002,7 +3067,8 @@
       (error "if takes 2 or 3 arguments" form)))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case and or loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass flet labels the unwind-protect defconstant function with-handler)))
+  (memq sym '(quote quasiquote if cond case and or loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass flet labels the unwind-protect defconstant function with-handler
+             dynamic dynamic-let)))
 
 (define (extended-special-form? sym)
   (memq sym '(trace untrace)))
@@ -3104,6 +3170,11 @@
        (eval-function-form args env))
       ((with-handler)
        (eval-with-handler args env tail?))
+      ;; ---- Phase 6-B ----
+      ((dynamic)
+       (eval-dynamic args env))
+      ((dynamic-let)
+       (eval-dynamic-let args env tail?))
       (else
        (error "Unknown special form" op)))))
 
@@ -3173,6 +3244,10 @@
 
 ;; ---- 5-B: handler stack and signalling ----
 (define *isl-handler-stack* (make-parameter '()))
+
+;; ---- Phase 6-B: Dynamic variable table ----
+;; Maps resolved symbol → current dynamic value. Thread-local via Gauche parameter.
+(define *dynamic-var-table* (make-parameter (make-hash-table 'equal?)))
 
 (define (isl-signal-condition cond-obj)
   (let loop ((stack (*isl-handler-stack*)))
@@ -5496,7 +5571,10 @@
                      (newline)
                      (when *debug-mode*
                        (break-loop env (write-to-string e)))))
-            (let ((result (eval-islisp x env)))
+            (let ((result (eval-islisp (if (strict-profile?)
+                                           (sanitize-for-strict x)
+                                           x)
+                                       env)))
               (write-result result)
               (newline)))
           (repl env)))))

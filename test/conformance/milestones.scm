@@ -705,6 +705,57 @@
          '(ignore-errors (+ 1 2) 99)
          99)))
 
+;; ---- Phase 6-B: defvar / dynamic / dynamic-let ----
+(define phase6-dynamic-cases
+  (list
+   ;; defvar introduces a dynamic variable
+   (list 'value
+         '(progn (defvar *p6-x* 10) (dynamic *p6-x*))
+         10)
+   ;; defvar is idempotent — second defvar does not rebind
+   (list 'value
+         '(progn (defvar *p6-idem* 42) (defvar *p6-idem* 99) (dynamic *p6-idem*))
+         42)
+   ;; dynamic-let provides temporary rebinding
+   (list 'value
+         '(progn
+            (defvar *p6-y* 1)
+            (dynamic-let ((*p6-y* 2))
+              (dynamic *p6-y*)))
+         2)
+   ;; After dynamic-let, original value is restored
+   (list 'value
+         '(progn
+            (defvar *p6-z* 1)
+            (dynamic-let ((*p6-z* 2))
+              (dynamic *p6-z*))
+            (dynamic *p6-z*))
+         1)
+   ;; Nested dynamic-let — inner wins
+   (list 'value
+         '(progn
+            (defvar *p6-n* 0)
+            (dynamic-let ((*p6-n* 10))
+              (dynamic-let ((*p6-n* 20))
+                (dynamic *p6-n*))))
+         20)
+   ;; dynamic-let with multiple bindings
+   (list 'value
+         '(progn
+            (defvar *p6-a* 1)
+            (defvar *p6-b* 2)
+            (dynamic-let ((*p6-a* 10) (*p6-b* 20))
+              (+ (dynamic *p6-a*) (dynamic *p6-b*))))
+         30)))
+
+;; ---- Phase 6-A: #f / nil ----
+(define phase6-sanitize-cases
+  (list
+   ;; In extended mode, nil is '()
+   (list 'value '(null '()) #t)
+   ;; t is #t
+   (list 'value '(eq t t) #t)))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -737,7 +788,9 @@
    (list "Phase5-Error"      phase5-error-cases)
    (list "Phase5-Handler"    phase5-handler-cases)
    (list "Phase5-Hierarchy"  phase5-hierarchy-cases)
-   (list "Phase5-Ignore"     phase5-ignore-cases)))
+   (list "Phase5-Ignore"     phase5-ignore-cases)
+   (list "Phase6-Dynamic"    phase6-dynamic-cases)
+   (list "Phase6-Sanitize"   phase6-sanitize-cases)))
 
 (define strict-milestones
   (list
@@ -771,6 +824,8 @@
    (list "Phase5-Error"      phase5-error-cases)
    (list "Phase5-Handler"    phase5-handler-cases)
    (list "Phase5-Hierarchy"  phase5-hierarchy-cases)
-   (list "Phase5-Ignore"     phase5-ignore-cases)))
+   (list "Phase5-Ignore"     phase5-ignore-cases)
+   (list "Phase6-Dynamic"    phase6-dynamic-cases)
+   (list "Phase6-Sanitize"   phase6-sanitize-cases)))
 
 (define extended-milestones all-milestones)
