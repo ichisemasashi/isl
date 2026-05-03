@@ -6,6 +6,7 @@
   (use gauche.process)
   (use gauche.net)
   (use gauche.threads)
+  (use gauche.fcntl)
   (use rfc.base64)
   (use rfc.uuid)
   (use rfc.tls)
@@ -3929,11 +3930,57 @@
         (error "integer->char code out of range (0..1114111)" code))
       (integer->char code)))
   (def 'length isl-length)
+  ;; ---- 4-B: print (stream-aware), write, terpri ----
   (def 'print
-    (lambda (x)
-      (write x)
-      (newline)
-      x))
+    (lambda args
+      (unless (pair? args) (error "print needs an object" args))
+      (let ((obj  (car args))
+            (port (if (pair? (cdr args)) (cadr args) (current-output-port))))
+        (unless (output-port? port) (error "print second arg must be an output stream" port))
+        (write obj port)
+        (newline port)
+        obj)))
+  (def 'write
+    (lambda args
+      (unless (pair? args) (error "write needs an object" args))
+      (let ((obj  (car args))
+            (port (if (pair? (cdr args)) (cadr args) (current-output-port))))
+        (unless (output-port? port) (error "write second arg must be an output stream" port))
+        (write obj port)
+        obj)))
+  (def 'terpri
+    (lambda args
+      (let ((port (if (pair? args) (car args) (current-output-port))))
+        (unless (output-port? port) (error "terpri arg must be an output stream" port))
+        (newline port)
+        '())))
+  ;; ---- 4-A: read-char, write-char, peek-char ----
+  (def 'read-char
+    (lambda args
+      (let ((port (if (pair? args) (car args) (current-input-port))))
+        (unless (input-port? port) (error "read-char needs an input stream" port))
+        (let ((ch (read-char port)))
+          (if (eof-object? ch)
+              (error "end-of-stream in read-char")   ; Phase 5: replace with <end-of-stream>
+              ch)))))
+  (def 'write-char
+    (lambda args
+      (unless (pair? args) (error "write-char needs a character" args))
+      (let ((ch   (car args))
+            (port (if (pair? (cdr args)) (cadr args) (current-output-port))))
+        (unless (char? ch) (error "write-char first arg must be a character" ch))
+        (unless (output-port? port) (error "write-char second arg must be an output stream" port))
+        (write-char ch port)
+        ch)))
+  (def 'peek-char
+    (lambda args
+      (let ((port (if (pair? args) (car args) (current-input-port))))
+        (unless (input-port? port) (error "peek-char needs an input stream" port))
+        (let ((ch (peek-char port)))
+          (if (eof-object? ch)
+              '()        ; Phase 5: replace with <end-of-stream>
+              ch)))))
+  ;; ---- write-line (with optional stream) ----
   (def 'write-line
     (lambda (s . maybe-stream)
       (ensure-string s "write-line")
@@ -3948,6 +3995,7 @@
                 (newline stream)
                 s)
               (error "write-line takes string and optional stream" maybe-stream)))))
+  ;; ---- 4-F: read (0 or 1 arg), read-line (0, 1, or 2 args) ----
   (def 'read
     (lambda args
       (cond
@@ -3960,6 +4008,11 @@
   (def 'read-line
     (lambda args
       (cond
+       ((null? args)
+        (let ((line (read-line)))
+          (if (eof-object? line)
+              (error "read-line reached EOF")
+              line)))
        ((= (length args) 1)
         (let ((line (read-line (car args))))
           (if (eof-object? line)
@@ -3974,7 +4027,36 @@
                   '())
               line)))
        (else
-        (error "read-line takes stream and optional eof-error-p" args)))))
+        (error "read-line takes optional stream and optional eof-error-p" args)))))
+  ;; ---- 4-C: open-input-stream, open-output-stream, open-io-stream, close ----
+  (def 'open-input-stream
+    (lambda (filename)
+      (ensure-string filename "open-input-stream")
+      (open-input-file filename)))
+  (def 'open-output-stream
+    (lambda (filename)
+      (ensure-string filename "open-output-stream")
+      (open-output-file filename :if-exists :supersede
+                                 :if-does-not-exist :create)))
+  (def 'open-io-stream
+    (lambda (filename)
+      (ensure-string filename "open-io-stream")
+      ;; open-input-output-file opens the file for reading and writing
+      (open-file filename (logior O_RDWR O_CREAT) #o666)))
+  (def 'close
+    (lambda (stream)
+      (cond
+       ((input-port? stream)  (close-input-port stream))
+       ((output-port? stream) (close-output-port stream))
+       (else (error "close needs a stream" stream)))
+      '()))
+  ;; ---- 4-D: input-stream-p, output-stream-p ----
+  (def 'input-stream-p
+    (lambda (obj)
+      (if (input-port? obj) #t '())))
+  (def 'output-stream-p
+    (lambda (obj)
+      (if (output-port? obj) #t '())))
   (def 'debug
     (lambda args
       (cond
@@ -5117,6 +5199,16 @@
       (frame-define! env (resolve-binding-symbol 't) #t)
       (package-export! *current-package* 't)
       (install-primitives! env)
+      ;; ---- Phase 4-E: standard stream variables ----
+      (let ((si (resolve-binding-symbol '*standard-input*))
+            (so (resolve-binding-symbol '*standard-output*))
+            (se (resolve-binding-symbol '*error-output*)))
+        (frame-define! env si (current-input-port))
+        (frame-define! env so (current-output-port))
+        (frame-define! env se (current-error-port))
+        (package-export! *current-package* '*standard-input*)
+        (package-export! *current-package* '*standard-output*)
+        (package-export! *current-package* '*error-output*))
       ;; ---- Phase 3-D: with-open-input-file / with-open-output-file macros ----
       (eval-islisp
        '(defmacro with-open-input-file (spec &rest body)

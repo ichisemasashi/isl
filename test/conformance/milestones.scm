@@ -484,6 +484,123 @@
               (read-line s)))
          "hello-phase3")))
 
+;; ---- Phase 4: I/O streams ----
+
+(define phase4-char-io-cases
+  (list
+   ;; 4-A: write-char / read-char round-trip
+   (list 'value
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p4-ms-chars.txt")
+              (write-char #\H s)
+              (write-char #\i s))
+            (with-open-input-file (s "/tmp/isl-p4-ms-chars.txt")
+              (list (read-char s) (read-char s))))
+         '(#\H #\i))
+   ;; peek-char does not consume
+   (list 'value
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p4-ms-peek.txt")
+              (write-char #\Z s))
+            (with-open-input-file (s "/tmp/isl-p4-ms-peek.txt")
+              (let* ((p (peek-char s))
+                     (r (read-char s)))
+                (list p r))))
+         '(#\Z #\Z))
+   ;; peek-char at EOF returns nil
+   (list 'value
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p4-ms-eof.txt") nil)
+            (with-open-input-file (s "/tmp/isl-p4-ms-eof.txt")
+              (peek-char s)))
+         '())
+   ;; write-char returns the character
+   (list 'value
+         '(with-open-output-file (s "/tmp/isl-p4-ms-wc-ret.txt")
+            (write-char #\X s))
+         #\X)
+   ;; read-char raises error at EOF
+   (list 'error
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p4-ms-eof2.txt") nil)
+            (with-open-input-file (s "/tmp/isl-p4-ms-eof2.txt")
+              (read-char s)))
+         'error)))
+
+(define phase4-write-cases
+  (list
+   ;; 4-B: write outputs readable representation
+   (list 'value
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p4-ms-write.txt")
+              (write "abc" s))
+            (with-open-input-file (s "/tmp/isl-p4-ms-write.txt")
+              (read-line s)))
+         "\"abc\"")
+   ;; terpri returns nil
+   (list 'value
+         '(with-open-output-file (s "/tmp/isl-p4-ms-terpri.txt")
+            (terpri s))
+         '())
+   ;; print returns the object
+   (list 'value
+         '(with-open-output-file (s "/tmp/isl-p4-ms-print.txt")
+            (print 77 s))
+         77)))
+
+(define phase4-stream-cases
+  (list
+   ;; 4-C: open-output-stream / open-input-stream / close
+   (list 'value
+         '(let ((s (open-output-stream "/tmp/isl-p4-ms-ois.txt")))
+            (write-char #\Q s)
+            (close s)
+            (let ((r (open-input-stream "/tmp/isl-p4-ms-ois.txt")))
+              (let ((c (read-char r)))
+                (close r)
+                c)))
+         #\Q)
+   ;; close returns nil
+   (list 'value
+         '(let ((s (open-output-stream "/tmp/isl-p4-ms-close.txt")))
+            (close s))
+         '())
+   ;; 4-D: input-stream-p / output-stream-p
+   (list 'value
+         '(input-stream-p *standard-input*)
+         #t)
+   (list 'value
+         '(output-stream-p *standard-output*)
+         #t)
+   (list 'value
+         '(output-stream-p *error-output*)
+         #t)
+   (list 'value
+         '(input-stream-p 42)
+         '())
+   (list 'value
+         '(output-stream-p "foo")
+         '())))
+
+(define phase4-readline-cases
+  (list
+   ;; 4-F: read-line with 0 args (reads from current input) – tested via stream arg
+   (list 'value
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p4-ms-rl.txt")
+              (write-char #\h s) (write-char #\e s) (write-char #\l s)
+              (write-char #\l s) (write-char #\o s))
+            (with-open-input-file (s "/tmp/isl-p4-ms-rl.txt")
+              (read-line s)))
+         "hello")
+   ;; read-line with eof-error-p = nil returns nil at EOF
+   (list 'value
+         '(progn
+            (with-open-output-file (s "/tmp/isl-p4-ms-rl-eof.txt") nil)
+            (with-open-input-file (s "/tmp/isl-p4-ms-rl-eof.txt")
+              (read-line s nil)))
+         '())))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -508,7 +625,11 @@
    (list "Phase3-Unwind"     phase3-unwind-cases)
    (list "Phase3-Function"   phase3-function-cases)
    (list "Phase3-Defconstant" phase3-defconstant-cases)
-   (list "Phase3-IO-Macro"   phase3-io-macro-cases)))
+   (list "Phase3-IO-Macro"   phase3-io-macro-cases)
+   (list "Phase4-CharIO"     phase4-char-io-cases)
+   (list "Phase4-Write"      phase4-write-cases)
+   (list "Phase4-Stream"     phase4-stream-cases)
+   (list "Phase4-ReadLine"   phase4-readline-cases)))
 
 (define strict-milestones
   (list
@@ -534,6 +655,10 @@
    (list "Phase3-Unwind"     phase3-unwind-cases)
    (list "Phase3-Function"   phase3-function-cases)
    (list "Phase3-Defconstant" phase3-defconstant-cases)
-   (list "Phase3-IO-Macro"   phase3-io-macro-cases)))
+   (list "Phase3-IO-Macro"   phase3-io-macro-cases)
+   (list "Phase4-CharIO"     phase4-char-io-cases)
+   (list "Phase4-Write"      phase4-write-cases)
+   (list "Phase4-Stream"     phase4-stream-cases)
+   (list "Phase4-ReadLine"   phase4-readline-cases)))
 
 (define extended-milestones all-milestones)
