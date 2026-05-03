@@ -765,24 +765,55 @@
         (host->runtime-value (modulo a b)))))
   (def 'floor
     (lambda (args state)
-      (unless (= (length args) 1)
-        (runtime-raise 'arity "floor expects 1 argument" args))
-      (host->runtime-value (floor (runtime-number (car args) "floor")))))
+      (cond
+       ((= (length args) 1)
+        (host->runtime-value (floor (runtime-number (car args) "floor"))))
+       ((= (length args) 2)
+        (let ((x (runtime-number (car args) "floor"))
+              (d (runtime-number (cadr args) "floor")))
+          (host->runtime-value (floor (/ x d)))))
+       (else (runtime-raise 'arity "floor expects 1 or 2 arguments" args)))))
   (def 'ceiling
     (lambda (args state)
-      (unless (= (length args) 1)
-        (runtime-raise 'arity "ceiling expects 1 argument" args))
-      (host->runtime-value (ceiling (runtime-number (car args) "ceiling")))))
+      (cond
+       ((= (length args) 1)
+        (host->runtime-value (ceiling (runtime-number (car args) "ceiling"))))
+       ((= (length args) 2)
+        (let ((x (runtime-number (car args) "ceiling"))
+              (d (runtime-number (cadr args) "ceiling")))
+          (host->runtime-value (ceiling (/ x d)))))
+       (else (runtime-raise 'arity "ceiling expects 1 or 2 arguments" args)))))
   (def 'truncate
     (lambda (args state)
-      (unless (= (length args) 1)
-        (runtime-raise 'arity "truncate expects 1 argument" args))
-      (host->runtime-value (truncate (runtime-number (car args) "truncate")))))
+      (cond
+       ((= (length args) 1)
+        (host->runtime-value (truncate (runtime-number (car args) "truncate"))))
+       ((= (length args) 2)
+        (let ((x (runtime-number (car args) "truncate"))
+              (d (runtime-number (cadr args) "truncate")))
+          (host->runtime-value (truncate (/ x d)))))
+       (else (runtime-raise 'arity "truncate expects 1 or 2 arguments" args)))))
   (def 'round
     (lambda (args state)
-      (unless (= (length args) 1)
-        (runtime-raise 'arity "round expects 1 argument" args))
-      (host->runtime-value (round (runtime-number (car args) "round")))))
+      (cond
+       ((= (length args) 1)
+        (host->runtime-value (round (runtime-number (car args) "round"))))
+       ((= (length args) 2)
+        (let ((x (runtime-number (car args) "round"))
+              (d (runtime-number (cadr args) "round")))
+          (host->runtime-value (round (/ x d)))))
+       (else (runtime-raise 'arity "round expects 1 or 2 arguments" args)))))
+  (def 'quotient
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "quotient expects 2 arguments" args))
+      (let ((n (runtime-value->host (car args)))
+            (d (runtime-value->host (cadr args))))
+        (unless (and (integer? n) (exact? n))
+          (runtime-raise 'type-error "quotient n must be exact integer" (car args)))
+        (unless (and (integer? d) (exact? d))
+          (runtime-raise 'type-error "quotient d must be exact integer" (cadr args)))
+        (host->runtime-value (quotient n d)))))
   (def 'numberp
     (lambda (args state)
       (unless (= (length args) 1)
@@ -1653,6 +1684,199 @@
           (runtime-raise 'type-error "mutex-unlock expects mutex object" (car args)))
         (gauche-mutex-unlock! m)
         (host->runtime-value #t))))
+
+  ;; ---- Phase 1-A: 算術関数 ----
+  (def 'abs
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "abs expects 1 argument" args))
+      (host->runtime-value (abs (runtime-number (car args) "abs")))))
+  (def 'max
+    (lambda (args state)
+      (when (null? args)
+        (runtime-raise 'arity "max expects at least 1 argument" args))
+      (host->runtime-value
+       (apply max (map (lambda (a) (runtime-number a "max")) args)))))
+  (def 'min
+    (lambda (args state)
+      (when (null? args)
+        (runtime-raise 'arity "min expects at least 1 argument" args))
+      (host->runtime-value
+       (apply min (map (lambda (a) (runtime-number a "min")) args)))))
+  (def 'expt
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "expt expects 2 arguments" args))
+      (let ((base (runtime-number (car args)  "expt"))
+            (exp  (runtime-number (cadr args) "expt")))
+        (host->runtime-value (expt base exp)))))
+  (def 'sqrt
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "sqrt expects 1 argument" args))
+      (let ((x (runtime-number (car args) "sqrt")))
+        (when (and (real? x) (negative? x))
+          (runtime-raise 'type-error "sqrt of negative number" (car args)))
+        (host->runtime-value (sqrt x)))))
+  (def 'rem
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "rem expects 2 arguments" args))
+      (let ((n (runtime-value->host (car args)))
+            (d (runtime-value->host (cadr args))))
+        (unless (and (integer? n) (exact? n))
+          (runtime-raise 'type-error "rem dividend must be exact integer" (car args)))
+        (unless (and (integer? d) (exact? d))
+          (runtime-raise 'type-error "rem divisor must be exact integer" (cadr args)))
+        (host->runtime-value (remainder n d)))))
+  (def 'gcd
+    (lambda (args state)
+      (host->runtime-value
+       (if (null? args)
+           0
+           (apply gcd (map (lambda (a) (runtime-integer a "gcd")) args))))))
+  (def 'lcm
+    (lambda (args state)
+      (host->runtime-value
+       (if (null? args)
+           1
+           (apply lcm (map (lambda (a) (runtime-integer a "lcm")) args))))))
+  (def 'signum
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "signum expects 1 argument" args))
+      (let ((x (runtime-number (car args) "signum")))
+        (host->runtime-value
+         (cond ((positive? x) 1) ((negative? x) -1) (else 0))))))
+  (def 'negate
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "negate expects 1 argument" args))
+      (host->runtime-value (- (runtime-number (car args) "negate")))))
+  (def 'float
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "float expects 1 argument" args))
+      (host->runtime-value (exact->inexact (runtime-number (car args) "float")))))
+  (def 'isqrt
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "isqrt expects 1 argument" args))
+      (let ((v (runtime-value->host (car args))))
+        (unless (and (integer? v) (exact? v) (>= v 0))
+          (runtime-raise 'type-error "isqrt needs a non-negative exact integer" (car args)))
+        (host->runtime-value (exact (floor (sqrt v)))))))
+
+  ;; ---- Phase 1-B: 数値変換 ----
+  (def 'number->string
+    (lambda (args state)
+      (unless (and (>= (length args) 1) (<= (length args) 2))
+        (runtime-raise 'arity "number->string expects 1 or 2 arguments" args))
+      (let ((n (runtime-number (car args) "number->string"))
+            (radix (if (= (length args) 2)
+                       (runtime-integer (cadr args) "number->string")
+                       10)))
+        (unless (memv radix '(2 8 10 16))
+          (runtime-raise 'type-error "number->string radix must be 2, 8, 10 or 16" (cadr args)))
+        (host->runtime-value (number->string n radix)))))
+  (def 'string->number
+    (lambda (args state)
+      (unless (and (>= (length args) 1) (<= (length args) 2))
+        (runtime-raise 'arity "string->number expects 1 or 2 arguments" args))
+      (let ((s (runtime-string (car args) "string->number"))
+            (radix (if (= (length args) 2)
+                       (runtime-integer (cadr args) "string->number")
+                       10)))
+        (let ((result (string->number s radix)))
+          (host->runtime-value (if result result '()))))))
+
+  ;; ---- Phase 1-C: 型述語 ----
+  (def 'consp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "consp expects 1 argument" args))
+      (host->runtime-value (if (pair? (runtime-value->host (car args))) #t #f))))
+  (def 'characterp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "characterp expects 1 argument" args))
+      (host->runtime-value (if (char? (runtime-value->host (car args))) #t #f))))
+  (def 'integerp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "integerp expects 1 argument" args))
+      (let ((v (runtime-value->host (car args))))
+        (host->runtime-value (if (and (integer? v) (exact? v)) #t #f)))))
+  (def 'floatp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "floatp expects 1 argument" args))
+      (host->runtime-value (if (inexact? (runtime-value->host (car args))) #t #f))))
+  (def 'functionp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "functionp expects 1 argument" args))
+      ;; コンパイラ runtime では関数は (rt-value 'function ...) として表現される
+      (let ((rv (car args)))
+        (host->runtime-value
+         (if (and (rt-value? rv) (eq? (rt-tag rv) 'function)) #t #f)))))
+  (def 'general-vector-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "general-vector-p expects 1 argument" args))
+      (host->runtime-value (if (vector? (runtime-value->host (car args))) #t #f))))
+  (def 'general-array*-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "general-array*-p expects 1 argument" args))
+      (host->runtime-value (if (vector? (runtime-value->host (car args))) #t #f))))
+
+  ;; ---- Phase 1-D: 三角関数・超越関数 ----
+  (def 'exp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "exp expects 1 argument" args))
+      (host->runtime-value (exp (runtime-number (car args) "exp")))))
+  (def 'log
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "log expects 1 argument" args))
+      (host->runtime-value (log (runtime-number (car args) "log")))))
+  (def 'sin
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "sin expects 1 argument" args))
+      (host->runtime-value (sin (runtime-number (car args) "sin")))))
+  (def 'cos
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "cos expects 1 argument" args))
+      (host->runtime-value (cos (runtime-number (car args) "cos")))))
+  (def 'tan
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "tan expects 1 argument" args))
+      (host->runtime-value (tan (runtime-number (car args) "tan")))))
+  (def 'asin
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "asin expects 1 argument" args))
+      (host->runtime-value (asin (runtime-number (car args) "asin")))))
+  (def 'acos
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "acos expects 1 argument" args))
+      (host->runtime-value (acos (runtime-number (car args) "acos")))))
+  (def 'atan
+    (lambda (args state)
+      (cond
+       ((= (length args) 1)
+        (host->runtime-value (atan (runtime-number (car args) "atan"))))
+       ((= (length args) 2)
+        (let ((y (runtime-number (car args)  "atan"))
+              (x (runtime-number (cadr args) "atan")))
+          (host->runtime-value (atan y x))))
+       (else (runtime-raise 'arity "atan expects 1 or 2 arguments" args)))))
   )
 
 (define (runtime-eval-special op payload env state)
