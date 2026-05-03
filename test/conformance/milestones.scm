@@ -238,6 +238,94 @@
    (list 'value '(block b (catch 'k (throw 'k (return-from b 8)))) 8)
    (list 'error '(progn (defun m11-err () (throw 'none 1)) (m11-err)) 'error)))
 
+;; ----------------------------------------------------------------
+;; Phase 1: 算術・型述語・超越関数
+;; ----------------------------------------------------------------
+(define phase1-arith-cases
+  (list
+   ;; 1-A: 算術関数
+   (list 'value '(abs -5)       5)
+   (list 'value '(abs 3)        3)
+   (list 'value '(abs 0)        0)
+   (list 'value '(max 1 2 3)    3)
+   (list 'value '(max -1 -2)    -1)
+   (list 'value '(min 1 2 3)    1)
+   (list 'value '(min -1 -2)    -2)
+   (list 'value '(expt 2 10)    1024)
+   (list 'value '(expt 3 0)     1)
+   (list 'value '(sqrt 9.0)     3.0)
+   (list 'value '(sqrt 4)       2)
+   (list 'value '(rem 7 3)      1)
+   (list 'value '(rem -7 3)     -1)
+   (list 'value '(rem 7 -3)     1)
+   (list 'value '(gcd 12 8)     4)
+   (list 'value '(gcd 0 5)      5)
+   (list 'value '(gcd)          0)
+   (list 'value '(lcm 4 6)      12)
+   (list 'value '(lcm)          1)
+   (list 'value '(signum 5)     1)
+   (list 'value '(signum -3)    -1)
+   (list 'value '(signum 0)     0)
+   (list 'value '(negate 7)     -7)
+   (list 'value '(negate -4)    4)
+   (list 'value '(float 3)      3.0)
+   (list 'value '(isqrt 9)      3)
+   (list 'value '(isqrt 10)     3)
+   (list 'value '(isqrt 0)      0)
+   ;; 1-B: 数値変換
+   (list 'value '(number->string 255 16)   "ff")
+   (list 'value '(number->string 8 2)      "1000")
+   (list 'value '(number->string 42)       "42")
+   (list 'value '(string->number "ff" 16)  255)
+   (list 'value '(string->number "1000" 2) 8)
+   (list 'value '(string->number "42")     42)
+   (list 'value '(string->number "xyz")    '())   ; 変換失敗 → nil
+   ;; 1-C: 型述語 (predicates return #t / #f at Gauche level)
+   (list 'value '(consp (cons 1 2))          #t)
+   (list 'value '(consp '())                 #f)
+   (list 'value '(consp 3)                   #f)
+   (list 'value '(characterp #\a)            #t)
+   (list 'value '(characterp "a")            #f)
+   (list 'value '(integerp 3)                #t)
+   (list 'value '(integerp 3.0)              #f)
+   (list 'value '(floatp 1.5)                #t)
+   (list 'value '(floatp 1)                  #f)
+   (list 'value '(functionp (lambda (x) x))  #t)
+   (list 'value '(functionp 42)              #f)
+   (list 'value '(general-vector-p (vector 1 2)) #t)
+   (list 'value '(general-vector-p '(1 2))       #f)
+   (list 'value '(general-array*-p (vector 1 2)) #t)
+   ;; 1-D: 三角・超越関数 (結果は inexact float)
+   (list 'value '(exp 0)    1.0)
+   (list 'value '(log 1)    0.0)
+   (list 'value '(sin 0)    0.0)
+   (list 'value '(cos 0)    1.0)
+   (list 'value '(tan 0)    0.0)
+   (list 'value '(asin 0)   0.0)
+   (list 'value '(acos 1)   0.0)
+   (list 'value '(atan 0)   0.0)
+   (list 'value '(atan 1 1) (atan 1 1))   ; Gauche で事前計算した値と一致するか確認
+   ;; 1-E: floor/ceiling/truncate/round の 2 引数版、quotient
+   (list 'value '(floor 7 2)      3)
+   (list 'value '(floor -7 2)     -4)
+   (list 'value '(ceiling 7 2)    4)
+   (list 'value '(ceiling -7 2)   -3)
+   (list 'value '(truncate 7 2)   3)
+   (list 'value '(truncate -7 2)  -3)
+   (list 'value '(round 7 2)      4)
+   (list 'value '(round 5 2)      2)   ; 銀行丸め: 偶数方向
+   (list 'value '(quotient 7 3)   2)
+   (list 'value '(quotient -7 3)  -2)
+   ;; エラーケース
+   (list 'error '(abs "x")            'error)
+   (list 'error '(max)                'error)
+   (list 'error '(expt "a" 2)         'error)
+   (list 'error '(rem 1.5 2)          'error)
+   (list 'error '(quotient 1.5 2)     'error)
+   (list 'error '(isqrt -1)           'error)
+   (list 'error '(number->string "x") 'error)
+   (list 'error '(string->number 42)  'error)))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -251,7 +339,8 @@
    (list "M8" m8-cases)
    (list "M9" m9-cases)
    (list "M10" m10-cases)
-   (list "M11" m11-cases)))
+   (list "M11" m11-cases)
+   (list "Phase1-Arith" phase1-arith-cases)))
 
 (define strict-milestones
   (list
@@ -266,6 +355,7 @@
    (list "M8" m8-cases)
    (list "M9" m9-cases)
    (list "M10" m10-cases)
-   (list "M11" m11-cases)))
+   (list "M11" m11-cases)
+   (list "Phase1-Arith" phase1-arith-cases)))
 
 (define extended-milestones all-milestones)

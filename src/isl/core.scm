@@ -3072,10 +3072,160 @@
   (def '* *)
   (def '/ /)
   (def 'mod modulo)
-  (def 'floor floor)
-  (def 'ceiling ceiling)
-  (def 'truncate truncate)
-  (def 'round round)
+  (def 'floor
+    (lambda args
+      (cond
+       ((= (length args) 1)
+        (floor (car args)))
+       ((= (length args) 2)
+        (let ((x (car args)) (d (cadr args)))
+          (unless (number? x) (error "floor x must be number" x))
+          (unless (number? d) (error "floor divisor must be number" d))
+          (floor (/ x d))))
+       (else (error "floor takes 1 or 2 arguments" args)))))
+  (def 'ceiling
+    (lambda args
+      (cond
+       ((= (length args) 1) (ceiling (car args)))
+       ((= (length args) 2)
+        (let ((x (car args)) (d (cadr args)))
+          (unless (number? x) (error "ceiling x must be number" x))
+          (unless (number? d) (error "ceiling divisor must be number" d))
+          (ceiling (/ x d))))
+       (else (error "ceiling takes 1 or 2 arguments" args)))))
+  (def 'truncate
+    (lambda args
+      (cond
+       ((= (length args) 1) (truncate (car args)))
+       ((= (length args) 2)
+        (let ((x (car args)) (d (cadr args)))
+          (unless (number? x) (error "truncate x must be number" x))
+          (unless (number? d) (error "truncate divisor must be number" d))
+          (truncate (/ x d))))
+       (else (error "truncate takes 1 or 2 arguments" args)))))
+  (def 'round
+    (lambda args
+      (cond
+       ((= (length args) 1) (round (car args)))
+       ((= (length args) 2)
+        (let ((x (car args)) (d (cadr args)))
+          (unless (number? x) (error "round x must be number" x))
+          (unless (number? d) (error "round divisor must be number" d))
+          (round (/ x d))))
+       (else (error "round takes 1 or 2 arguments" args)))))
+  (def 'quotient
+    (lambda (n d)
+      (unless (integer? n) (error "quotient n must be integer" n))
+      (unless (integer? d) (error "quotient d must be integer" d))
+      (quotient n d)))
+
+  ;; --- Phase 1-A: 算術関数 ---
+  (def 'abs
+    (lambda (x)
+      (unless (number? x) (error "abs needs a number" x))
+      (abs x)))
+  (def 'max
+    (lambda xs
+      (unless (and (pair? xs) (every number? xs))
+        (error "max needs at least one number" xs))
+      (apply max xs)))
+  (def 'min
+    (lambda xs
+      (unless (and (pair? xs) (every number? xs))
+        (error "min needs at least one number" xs))
+      (apply min xs)))
+  (def 'expt
+    (lambda (base exp)
+      (unless (number? base) (error "expt base must be number" base))
+      (unless (number? exp)  (error "expt exponent must be number" exp))
+      (expt base exp)))
+  (def 'sqrt
+    (lambda (x)
+      (unless (number? x) (error "sqrt needs a number" x))
+      (when (and (real? x) (negative? x))
+        (error "sqrt of negative number" x))
+      (sqrt x)))
+  (def 'rem
+    (lambda (n d)
+      (unless (integer? n) (error "rem dividend must be integer" n))
+      (unless (integer? d) (error "rem divisor must be integer" d))
+      (remainder n d)))
+  (def 'gcd
+    (lambda xs
+      (if (null? xs) 0 (apply gcd xs))))
+  (def 'lcm
+    (lambda xs
+      (if (null? xs) 1 (apply lcm xs))))
+  (def 'signum
+    (lambda (x)
+      (unless (number? x) (error "signum needs a number" x))
+      (cond ((positive? x) 1) ((negative? x) -1) (else 0))))
+  (def 'negate
+    (lambda (x)
+      (unless (number? x) (error "negate needs a number" x))
+      (- x)))
+  (def 'float
+    (lambda (x)
+      (unless (number? x) (error "float needs a number" x))
+      (exact->inexact x)))
+  (def 'isqrt
+    (lambda (n)
+      (unless (and (integer? n) (>= n 0))
+        (error "isqrt needs a non-negative integer" n))
+      (exact (floor (sqrt n)))))
+
+  ;; --- Phase 1-B: 数値変換 ---
+  (def 'number->string
+    (lambda args
+      (unless (and (pair? args) (number? (car args)))
+        (error "number->string needs a number" args))
+      (let ((n     (car args))
+            (radix (if (and (pair? (cdr args)) (integer? (cadr args)))
+                       (cadr args) 10)))
+        (unless (memv radix '(2 8 10 16))
+          (error "number->string radix must be 2, 8, 10 or 16" radix))
+        (number->string n radix))))
+  (def 'string->number
+    (lambda args
+      (unless (and (pair? args) (string? (car args)))
+        (error "string->number needs a string" args))
+      (let ((s     (car args))
+            (radix (if (and (pair? (cdr args)) (integer? (cadr args)))
+                       (cadr args) 10)))
+        (let ((result (string->number s radix)))
+          (if result result '())))))
+
+  ;; --- Phase 1-C: 型述語 ---
+  (def 'consp pair?)
+  (def 'characterp char?)
+  (def 'integerp (lambda (x) (and (integer? x) (exact? x))))
+  (def 'floatp inexact?)
+  (def 'functionp
+    (lambda (x)
+      (or (closure? x) (primitive? x))))
+  (def 'general-vector-p vector?)
+  (def 'general-array*-p vector?)
+
+  ;; --- Phase 1-D: 三角関数・超越関数 ---
+  (def 'exp  (lambda (x) (unless (number? x) (error "exp needs number" x))  (exp x)))
+  (def 'log  (lambda (x) (unless (number? x) (error "log needs number" x))  (log x)))
+  (def 'sin  (lambda (x) (unless (number? x) (error "sin needs number" x))  (sin x)))
+  (def 'cos  (lambda (x) (unless (number? x) (error "cos needs number" x))  (cos x)))
+  (def 'tan  (lambda (x) (unless (number? x) (error "tan needs number" x))  (tan x)))
+  (def 'asin (lambda (x) (unless (number? x) (error "asin needs number" x)) (asin x)))
+  (def 'acos (lambda (x) (unless (number? x) (error "acos needs number" x)) (acos x)))
+  (def 'atan
+    (lambda args
+      (cond
+       ((= (length args) 1)
+        (unless (number? (car args)) (error "atan needs number" (car args)))
+        (atan (car args)))
+       ((= (length args) 2)
+        (unless (number? (car args))  (error "atan y must be number" (car args)))
+        (unless (number? (cadr args)) (error "atan x must be number" (cadr args)))
+        (atan (car args) (cadr args)))
+       (else (error "atan takes 1 or 2 arguments" args)))))
+
   (def '= =)
   (def '< <)
   (def '> >)
