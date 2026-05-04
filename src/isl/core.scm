@@ -3797,11 +3797,47 @@
        (else (error "atan takes 1 or 2 arguments" args)))))
 
   (def '= (lambda (a b) (if (= a b) #t '())))
+  (def '/= (lambda (a b) (if (= a b) '() #t)))
   (def '< (lambda (a b) (if (< a b) #t '())))
   (def '> (lambda (a b) (if (> a b) #t '())))
   (def '<= (lambda (a b) (if (<= a b) #t '())))
   (def '>= (lambda (a b) (if (>= a b) #t '())))
+  ;; ISLISP §11: reciprocal returns 1/x as float
+  (def 'reciprocal
+    (lambda (x)
+      (unless (number? x) (error "reciprocal: argument must be a number" x))
+      (when (= x 0) (error "reciprocal: division by zero" x))
+      (exact->inexact (/ 1 x))))
   (def 'cons cons)
+  ;; ISLISP §15.2: c[ad]+r composite accessors
+  (def 'caar (lambda (x) (car (car x))))
+  (def 'cadr (lambda (x) (car (cdr x))))
+  (def 'cdar (lambda (x) (cdr (car x))))
+  (def 'cddr (lambda (x) (cdr (cdr x))))
+  (def 'caaar (lambda (x) (car (car (car x)))))
+  (def 'caadr (lambda (x) (car (car (cdr x)))))
+  (def 'cadar (lambda (x) (car (cdr (car x)))))
+  (def 'caddr (lambda (x) (car (cdr (cdr x)))))
+  (def 'cdaar (lambda (x) (cdr (car (car x)))))
+  (def 'cdadr (lambda (x) (cdr (car (cdr x)))))
+  (def 'cddar (lambda (x) (cdr (cdr (car x)))))
+  (def 'cdddr (lambda (x) (cdr (cdr (cdr x)))))
+  (def 'caaaar (lambda (x) (car (car (car (car x))))))
+  (def 'caaadr (lambda (x) (car (car (car (cdr x))))))
+  (def 'caadar (lambda (x) (car (car (cdr (car x))))))
+  (def 'caaddr (lambda (x) (car (car (cdr (cdr x))))))
+  (def 'cadaar (lambda (x) (car (cdr (car (car x))))))
+  (def 'cadadr (lambda (x) (car (cdr (car (cdr x))))))
+  (def 'caddar (lambda (x) (car (cdr (cdr (car x))))))
+  (def 'cadddr (lambda (x) (car (cdr (cdr (cdr x))))))
+  (def 'cdaaar (lambda (x) (cdr (car (car (car x))))))
+  (def 'cdaadr (lambda (x) (cdr (car (car (cdr x))))))
+  (def 'cdadar (lambda (x) (cdr (car (cdr (car x))))))
+  (def 'cdaddr (lambda (x) (cdr (car (cdr (cdr x))))))
+  (def 'cddaar (lambda (x) (cdr (cdr (car (car x))))))
+  (def 'cddadr (lambda (x) (cdr (cdr (car (cdr x))))))
+  (def 'cdddar (lambda (x) (cdr (cdr (cdr (car x))))))
+  (def 'cddddr (lambda (x) (cdr (cdr (cdr (cdr x))))))
   ;; ISLISP §15.1: car/cdr of nil returns nil; car/cdr of non-pair signals <domain-error>
   (def 'car
     (lambda (x)
@@ -4420,6 +4456,108 @@
                         (loop (+ i 1) n))))))
            (else
             (error "find needs list/vector/string as sequence" seq)))))))
+  ;; ISLISP §15.5: position — first index of matching element (nil if not found)
+  (def 'position
+    (lambda args
+      (unless (>= (length args) 2)
+        (error "position needs item and sequence" args))
+      (let ((item (car args))
+            (seq (cadr args))
+            (opts (cddr args))
+            (test #f)
+            (key #f))
+        (let parse ((rest opts))
+          (unless (null? rest)
+            (unless (pair? (cdr rest))
+              (error "position keyword arguments must be pairs" rest))
+            (let ((k (car rest))
+                  (v (cadr rest)))
+              (cond
+               ((eq? k ':test) (set! test v))
+               ((eq? k ':key) (set! key v))
+               (else (error "unknown position keyword" k))))
+            (parse (cddr rest))))
+        (letrec
+            ((apply-key
+              (lambda (x)
+                (if key (apply-islisp key (list x)) x)))
+             (match?
+              (lambda (x)
+                (if test
+                    (truthy? (apply-islisp test (list item (apply-key x))))
+                    (eqv? item (apply-key x))))))
+          (cond
+           ((list? seq)
+            (let loop ((rest seq) (i 0))
+              (if (null? rest)
+                  '()
+                  (if (match? (car rest))
+                      i
+                      (loop (cdr rest) (+ i 1))))))
+           ((vector? seq)
+            (let loop ((i 0) (n (vector-length seq)))
+              (if (>= i n)
+                  '()
+                  (if (match? (vector-ref seq i))
+                      i
+                      (loop (+ i 1) n)))))
+           ((string? seq)
+            (let loop ((i 0) (n (string-length seq)))
+              (if (>= i n)
+                  '()
+                  (if (match? (string-ref seq i))
+                      i
+                      (loop (+ i 1) n)))))
+           (else
+            (error "position needs list/vector/string as sequence" seq)))))))
+  ;; ISLISP §15.7: count — number of matching elements
+  (def 'count
+    (lambda args
+      (unless (>= (length args) 2)
+        (error "count needs item and sequence" args))
+      (let ((item (car args))
+            (seq (cadr args))
+            (opts (cddr args))
+            (test #f)
+            (key #f))
+        (let parse ((rest opts))
+          (unless (null? rest)
+            (unless (pair? (cdr rest))
+              (error "count keyword arguments must be pairs" rest))
+            (let ((k (car rest))
+                  (v (cadr rest)))
+              (cond
+               ((eq? k ':test) (set! test v))
+               ((eq? k ':key) (set! key v))
+               (else (error "unknown count keyword" k))))
+            (parse (cddr rest))))
+        (letrec
+            ((apply-key
+              (lambda (x)
+                (if key (apply-islisp key (list x)) x)))
+             (match?
+              (lambda (x)
+                (if test
+                    (truthy? (apply-islisp test (list item (apply-key x))))
+                    (eqv? item (apply-key x))))))
+          (cond
+           ((list? seq)
+            (let loop ((rest seq) (n 0))
+              (if (null? rest)
+                  n
+                  (loop (cdr rest) (if (match? (car rest)) (+ n 1) n)))))
+           ((vector? seq)
+            (let loop ((i 0) (len (vector-length seq)) (n 0))
+              (if (>= i len)
+                  n
+                  (loop (+ i 1) len (if (match? (vector-ref seq i)) (+ n 1) n)))))
+           ((string? seq)
+            (let loop ((i 0) (len (string-length seq)) (n 0))
+              (if (>= i len)
+                  n
+                  (loop (+ i 1) len (if (match? (string-ref seq i)) (+ n 1) n)))))
+           (else
+            (error "count needs list/vector/string as sequence" seq)))))))
   (def 'eq (lambda (a b) (if (eq? a b) #t '())))
   (def 'eql (lambda (a b) (if (eqv? a b) #t '())))
   (def 'equal (lambda (a b) (if (equal? a b) #t '())))
@@ -4548,6 +4686,26 @@
       (let ((n (string-length s)))
         (unless (< i n) (error "string-ref index out of range" i n))
         (string-ref s i))))
+  ;; ISLISP §17.2: string-set (mutation)
+  (def 'string-set
+    (lambda (s i c)
+      (ensure-string s "string-set")
+      (ensure-nonnegative-integer i "string-set")
+      (ensure-char c "string-set")
+      (let ((n (string-length s)))
+        (unless (< i n) (error "string-set: index out of range" i n))
+        (string-set! s i c)
+        c)))
+  ;; ISLISP §17: make-string as alias for create-string
+  (def 'make-string
+    (lambda args
+      (unless (or (= (length args) 1) (= (length args) 2))
+        (error "make-string takes length and optional fill-char" args))
+      (let ((n (car args))
+            (fill (if (= (length args) 2) (cadr args) #\space)))
+        (ensure-nonnegative-integer n "make-string")
+        (ensure-char fill "make-string")
+        (make-string n fill))))
   (def 'string-copy
     (lambda (s)
       (ensure-string s "string-copy")
@@ -4674,6 +4832,13 @@
     (lambda args
       (let ((port (if (pair? args) (car args) (current-output-port))))
         (unless (output-port? port) (error "terpri arg must be an output stream" port))
+        (newline port)
+        '())))
+  ;; ISLISP §18: newline — output a newline to stream (same as terpri but ISLISP name)
+  (def 'newline
+    (lambda args
+      (let ((port (if (pair? args) (car args) (current-output-port))))
+        (unless (output-port? port) (error "newline: arg must be an output stream" port))
         (newline port)
         '())))
   ;; ---- §18.5: prin1, princ, fresh-line, write-string ----
@@ -6294,7 +6459,20 @@
             (let ((result (apply-islisp pred (map car tails))))
               (if (truthy? result)
                   (loop (map cdr tails))
-                  #t)))))))
+                  #t))))))
+  ;; ---- ISLISP §18.2: with-standard-input/output/error-output helpers ----
+  (def '%with-si-helper
+    (lambda (port thunk)
+      (parameterize ((current-input-port port))
+        (apply-islisp thunk '()))))
+  (def '%with-so-helper
+    (lambda (port thunk)
+      (parameterize ((current-output-port port))
+        (apply-islisp thunk '()))))
+  (def '%with-eo-helper
+    (lambda (port thunk)
+      (parameterize ((current-error-port port))
+        (apply-islisp thunk '())))))
 
 (define *extended-primitive-symbols*
   '(debug break getenv setenv system system-timeout
@@ -6466,6 +6644,22 @@
                         body))))
        env)
       (package-export! *current-package* 'with-open-output-file)
+      ;; ---- ISLISP §18.2: with-standard-input/output/error-output macros ----
+      (eval-islisp
+       '(defmacro with-standard-input (stream &rest body)
+          (list '%with-si-helper stream (list 'lambda '() (cons 'progn body))))
+       env)
+      (package-export! *current-package* 'with-standard-input)
+      (eval-islisp
+       '(defmacro with-standard-output (stream &rest body)
+          (list '%with-so-helper stream (list 'lambda '() (cons 'progn body))))
+       env)
+      (package-export! *current-package* 'with-standard-output)
+      (eval-islisp
+       '(defmacro with-error-output (stream &rest body)
+          (list '%with-eo-helper stream (list 'lambda '() (cons 'progn body))))
+       env)
+      (package-export! *current-package* 'with-error-output)
       (when (strict-profile?)
         (disable-extended-primitives! env))
       ;; Lightweight CFFI-compatible facade (extended profile only).

@@ -1547,6 +1547,81 @@
    (list 'value '(class-name (class-of '())) '<null>)
    (list 'value '(symbolp (class-name (class-of #t))) #t)))
 
+;; ---- Round 7 additions ----
+(define std-neq-cases
+  (list
+   (list 'value '(/= 1 2) #t)
+   (list 'value '(/= 2 2) '())
+   (list 'value '(/= 1.0 2.0) #t)
+   (list 'value '(/= 5 5) '())))
+
+(define std-reciprocal-cases
+  (list
+   (list 'value '(floatp (reciprocal 2)) #t)
+   (list 'value '(reciprocal 1) 1.0)
+   (list 'value '(< (abs (- (reciprocal 4) 0.25)) 1e-10) #t)
+   (list 'error '(reciprocal 0) 'error)))
+
+(define std-cxr-cases
+  (list
+   (list 'value '(caar '((1 2) 3)) 1)
+   (list 'value '(cadr '(1 2 3)) 2)
+   (list 'value '(cdar '((1 2) 3)) '(2))
+   (list 'value '(cddr '(1 2 3)) '(3))
+   (list 'value '(caddr '(1 2 3)) 3)
+   (list 'value '(cdddr '(1 2 3 4)) '(4))
+   (list 'value '(cadddr '(1 2 3 4)) 4)
+   (list 'value '(caaar '(((1)))) 1)))
+
+(define std-position-cases
+  (list
+   (list 'value '(position 2 '(1 2 3)) 1)
+   (list 'value '(position 9 '(1 2 3)) '())
+   (list 'value '(position #\b "abc") 1)
+   (list 'value '(position 3 (vector 1 2 3)) 2)))
+
+(define std-count-cases
+  (list
+   (list 'value '(count 2 '(1 2 3 2 4)) 2)
+   (list 'value '(count 9 '(1 2 3)) 0)
+   (list 'value '(count #\a "banana") 3)
+   (list 'value '(count 1 (vector 1 2 1 3)) 2)))
+
+(define std-newline-cases
+  (list
+   (list 'value '(progn (newline) #t) #t)
+   (list 'value '(let ((s (open-output-file "/tmp/isl-nl-test.txt")))
+                   (newline s)
+                   (close s)
+                   #t) #t)))
+
+(define std-make-string-cases
+  (list
+   (list 'value '(string-length (make-string 5)) 5)
+   (list 'value '(make-string 3 #\x) "xxx")
+   (list 'value '(make-string 0) "")))
+
+(define std-string-set-cases
+  (list
+   (list 'value '(let ((s (make-string 3 #\a)))
+                   (string-set s 1 #\b)
+                   s) "aba")
+   (list 'value '(let ((s (create-string 4 #\z)))
+                   (string-set s 0 #\a)
+                   (string-ref s 0)) #\a)
+   (list 'error '(let ((s "abc")) (string-set s 5 #\x)) 'error)))
+
+(define std-with-standard-stream-cases
+  (list
+   (list 'value
+         '(let ((s (open-output-file "/tmp/isl-wso-test.txt")))
+            (with-standard-output s
+              (progn (princ "hello") (close s) #t)))
+         #t)
+   (list 'value
+         '(with-standard-output (standard-output) 42)
+         42)))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -1637,7 +1712,16 @@
    (list "std-SymbolPackage" std-symbol-package-cases)
    (list "std-OpenFile"      std-open-file-cases)
    (list "std-FinishOutput"  std-finish-output-cases)
-   (list "std-ClassName"     std-class-name-cases)))
+   (list "std-ClassName"     std-class-name-cases)
+   (list "std-Neq"           std-neq-cases)
+   (list "std-Reciprocal"    std-reciprocal-cases)
+   (list "std-Cxr"           std-cxr-cases)
+   (list "std-Position"      std-position-cases)
+   (list "std-Count"         std-count-cases)
+   (list "std-Newline"       std-newline-cases)
+   (list "std-MakeString"    std-make-string-cases)
+   (list "std-StringSet"     std-string-set-cases)
+   (list "std-WithStdStream" std-with-standard-stream-cases)))
 
 (define strict-milestones
   (list
@@ -1729,6 +1813,15 @@
    (list "std-SymbolPackage" std-symbol-package-cases)
    (list "std-OpenFile"      std-open-file-cases)
    (list "std-FinishOutput"  std-finish-output-cases)
-   (list "std-ClassName"     std-class-name-cases)))
+   (list "std-ClassName"     std-class-name-cases)
+   (list "std-Neq"           std-neq-cases)
+   (list "std-Reciprocal"    std-reciprocal-cases)
+   (list "std-Cxr"           std-cxr-cases)
+   (list "std-Position"      std-position-cases)
+   (list "std-Count"         std-count-cases)
+   (list "std-Newline"       std-newline-cases)
+   (list "std-MakeString"    std-make-string-cases)
+   (list "std-StringSet"     std-string-set-cases)
+   (list "std-WithStdStream" std-with-standard-stream-cases)))
 
 (define extended-milestones all-milestones)
