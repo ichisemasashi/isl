@@ -1562,7 +1562,13 @@
           (runtime-raise 'type-error "write-byte needs an output stream" port))
         (write-u8 b port)
         (host->runtime-value b))))
-  ;; ---- 4-D: input-stream-p, output-stream-p ----
+  ;; ---- 4-D: streamp, input-stream-p, output-stream-p ----
+  (def 'streamp
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "streamp expects 1 argument" args))
+      (let ((obj (runtime-value->host (car args))))
+        (host->runtime-value (if (or (input-port? obj) (output-port? obj)) #t '())))))
   (def 'input-stream-p
     (lambda (args state)
       (unless (= (length args) 1)
@@ -1603,6 +1609,18 @@
         (with-module isl.core
           (unless (isl-condition? cond-obj)
             (error "condition-continuable needs an isl condition object" cond-obj)))
+        (host->runtime-value
+         (with-module isl.core
+           (if (isl-condition-continuable? cond-obj) #t '()))))))
+  ;; ISLISP §29: condition-continuable-p (standard name alias)
+  (def 'condition-continuable-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "condition-continuable-p expects 1 argument" args))
+      (let ((cond-obj (runtime-value->host (car args))))
+        (with-module isl.core
+          (unless (isl-condition? cond-obj)
+            (error "condition-continuable-p needs an isl condition object" cond-obj)))
         (host->runtime-value
          (with-module isl.core
            (if (isl-condition-continuable? cond-obj) #t '()))))))
@@ -3569,6 +3587,35 @@
             (runtime-raise 'index-out-of-range "elt: string index out of range" (cadr args)))
           (host->runtime-value (string-ref seq z)))
          (else (runtime-raise 'type-error "elt: first argument must be a sequence" (car args)))))))
+  ;; ISLISP §15.2: set-elt — sequence element setter
+  (def 'set-elt
+    (lambda (args state)
+      (unless (= (length args) 3)
+        (runtime-raise 'arity "set-elt expects 3 arguments" args))
+      (let ((val (runtime-value->host (car args)))
+            (seq (runtime-value->host (cadr args)))
+            (z   (runtime-integer (caddr args) "set-elt")))
+        (cond
+         ((list? seq)
+          (when (< z 0) (runtime-raise 'index-out-of-range "set-elt: index must be non-negative" (caddr args)))
+          (let loop ((rest seq) (n z))
+            (cond
+             ((null? rest) (runtime-raise 'index-out-of-range "set-elt: index out of range" (caddr args)))
+             ((= n 0) (set-car! rest val) (host->runtime-value val))
+             (else (loop (cdr rest) (- n 1))))))
+         ((vector? seq)
+          (when (or (< z 0) (>= z (vector-length seq)))
+            (runtime-raise 'index-out-of-range "set-elt: vector index out of range" (caddr args)))
+          (vector-set! seq z val)
+          (host->runtime-value val))
+         ((string? seq)
+          (when (or (< z 0) (>= z (string-length seq)))
+            (runtime-raise 'index-out-of-range "set-elt: string index out of range" (caddr args)))
+          (unless (char? val)
+            (runtime-raise 'type-error "set-elt: value for string must be a character" (car args)))
+          (string-set! seq z val)
+          (host->runtime-value val))
+         (else (runtime-raise 'type-error "set-elt: second argument must be a sequence" (cadr args)))))))
   ;; ISLISP §15.3: subseq — extract subsequence
   (def 'subseq
     (lambda (args state)

@@ -1547,6 +1547,29 @@
    (list 'value '(class-name (class-of '())) '<null>)
    (list 'value '(symbolp (class-name (class-of #t))) #t)))
 
+;; ---- Round 8 additions ----
+(define std-streamp-cases
+  (list
+   (list 'value '(streamp (standard-input)) #t)
+   (list 'value '(streamp (standard-output)) #t)
+   (list 'value '(streamp 42) '())
+   (list 'value '(streamp "hello") '())))
+
+(define std-set-elt-cases
+  (list
+   (list 'value '(let ((v (vector 1 2 3))) (set-elt 99 v 1) (elt v 1)) 99)
+   (list 'value '(let ((lst (list 10 20 30))) (set-elt 55 lst 2) (elt lst 2)) 55)
+   (list 'value '(let ((s (create-string 3 #\a))) (set-elt #\z s 1) (elt s 1)) #\z)
+   (list 'error '(set-elt 0 (vector 1 2) 5) 'error)))
+
+(define std-condition-cont-cases
+  (list
+   (list 'value
+         '(let ((c (make-condition '<error> "test" nil)))
+            (condition-continuable-p c))
+         '())
+   (list 'value '(functionp (function condition-continuable-p)) #t)))
+
 ;; ---- Round 7 additions ----
 (define std-neq-cases
   (list
@@ -1721,7 +1744,10 @@
    (list "std-Newline"       std-newline-cases)
    (list "std-MakeString"    std-make-string-cases)
    (list "std-StringSet"     std-string-set-cases)
-   (list "std-WithStdStream" std-with-standard-stream-cases)))
+   (list "std-WithStdStream" std-with-standard-stream-cases)
+   (list "std-Streamp"       std-streamp-cases)
+   (list "std-SetElt"        std-set-elt-cases)
+   (list "std-CondContP"     std-condition-cont-cases)))
 
 (define strict-milestones
   (list
@@ -1822,6 +1848,9 @@
    (list "std-Newline"       std-newline-cases)
    (list "std-MakeString"    std-make-string-cases)
    (list "std-StringSet"     std-string-set-cases)
-   (list "std-WithStdStream" std-with-standard-stream-cases)))
+   (list "std-WithStdStream" std-with-standard-stream-cases)
+   (list "std-Streamp"       std-streamp-cases)
+   (list "std-SetElt"        std-set-elt-cases)
+   (list "std-CondContP"     std-condition-cont-cases)))
 
 (define extended-milestones all-milestones)

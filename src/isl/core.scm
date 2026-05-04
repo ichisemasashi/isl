@@ -4229,6 +4229,29 @@
           (error "elt: string index out of range" z))
         (string-ref seq z))
        (else (error "elt: first argument must be a sequence" seq)))))
+  ;; ISLISP §15.2: set-elt — sequence element setter
+  (def 'set-elt
+    (lambda (val seq z)
+      (cond
+       ((list? seq)
+        (unless (and (integer? z) (>= z 0)) (error "set-elt: index must be non-negative integer" z))
+        (let loop ((rest seq) (n z))
+          (cond
+           ((null? rest) (error "set-elt: index out of range" z))
+           ((= n 0) (set-car! rest val) val)
+           (else (loop (cdr rest) (- n 1))))))
+       ((vector? seq)
+        (unless (and (integer? z) (>= z 0) (< z (vector-length seq)))
+          (error "set-elt: vector index out of range" z))
+        (vector-set! seq z val)
+        val)
+       ((string? seq)
+        (unless (and (integer? z) (>= z 0) (< z (string-length seq)))
+          (error "set-elt: string index out of range" z))
+        (unless (char? val) (error "set-elt: value for string must be a character" val))
+        (string-set! seq z val)
+        val)
+       (else (error "set-elt: first argument must be a sequence" seq)))))
   ;; ISLISP §15.3: subseq — extract subsequence
   (def 'subseq
     (lambda (seq z1 z2)
@@ -5032,6 +5055,9 @@
         (write-u8 b port)
         b)))
   ;; ---- 4-D: input-stream-p, output-stream-p ----
+  (def 'streamp
+    (lambda (obj)
+      (if (or (input-port? obj) (output-port? obj)) #t '())))
   (def 'input-stream-p
     (lambda (obj)
       (if (input-port? obj) #t '())))
@@ -5059,6 +5085,12 @@
     (lambda (cond-obj)
       (unless (isl-condition? cond-obj)
         (error "condition-continuable needs an isl condition object" cond-obj))
+      (if (isl-condition-continuable? cond-obj) #t '())))
+  ;; ISLISP §29: condition-continuable-p (standard name alias)
+  (def 'condition-continuable-p
+    (lambda (cond-obj)
+      (unless (isl-condition? cond-obj)
+        (error "condition-continuable-p needs an isl condition object" cond-obj))
       (if (isl-condition-continuable? cond-obj) #t '())))
   ;; ---- 5-C: continue-condition ----
   (def 'continue-condition
