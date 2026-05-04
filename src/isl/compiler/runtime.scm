@@ -1151,24 +1151,31 @@
           (if (eof-object? ch)
               (host->runtime-value '())   ; Phase 5: <end-of-stream>
               (host->runtime-value ch))))))
+  ;; ---- Phase 8-A: ISLISP-compliant format using render-format from isl.core ----
   (def 'format
     (lambda (args state)
       (unless (>= (length args) 2)
         (runtime-raise 'arity "format expects destination and format string" args))
-      (let* ((dst (runtime-value->host (car args)))
-             (fmt (runtime-string (cadr args) "format"))
-             (vals (map runtime-value->host (cddr args))))
+      (let* ((dst  (runtime-value->host (car args)))
+             (fmt  (runtime-string (cadr args) "format"))
+             (vals (map runtime-value->host (cddr args)))
+             ;; Use the same render-format as the interpreter for consistency.
+             (rendered (with-module isl.core (render-format fmt vals))))
         (cond
-         ((or (null? dst) (eq? dst '()))
-          (host->runtime-value (apply format #f fmt vals)))
+         ;; nil (= '() in ISLISP, or #f) → return as string
+         ((or (null? dst) (eq? dst #f))
+          (host->runtime-value rendered))
+         ;; t → standard output
          ((eq? dst #t)
-          (apply format #t fmt vals)
+          (display rendered)
           (host->runtime-value '()))
+         ;; output-port → write to it
          ((output-port? dst)
-          (apply format dst fmt vals)
+          (display rendered dst)
           (host->runtime-value '()))
          (else
-          (runtime-raise 'type-error "format destination must be NIL/T or output-port" dst))))))
+          (runtime-raise 'type-error
+                         "format: destination must be nil, t, or an output stream" dst))))))
   (def 'read
     (lambda (args state)
       (unless (or (= (length args) 0) (= (length args) 1))

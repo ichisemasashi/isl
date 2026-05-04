@@ -21,7 +21,9 @@
           ;; Phase 6: dynamic variables + strict sanitization
           *dynamic-var-table* resolve-binding-symbol sanitize-for-strict
           ;; Phase 7-A: next-method support
-          *next-methods* *current-method-args*))
+          *next-methods* *current-method-args*
+          ;; Phase 8: format engine (used by compiler runtime)
+          render-format display-to-string write-to-string))
 
 (select-module isl.core)
 
@@ -1646,6 +1648,15 @@
                               (error "format ~? needs a list as argument list" sub-args))
                             (display (render-format sub-fmt sub-args) p)
                             (loop (+ i 2) (cddr rest))))
+                         ((char=? u #\I)
+                          ;; ~i — ignore (consume) one argument
+                          (when (null? rest)
+                            (error "too few arguments for format ~I" fmt))
+                          (loop (+ i 2) (cdr rest)))
+                         ((char=? u #\N)
+                          ;; ~n or ~N — fresh line (same as ~% for simplicity)
+                          (newline p)
+                          (loop (+ i 2) rest))
                          ((char=? d #\~)
                           (write-char #\~ p)
                           (loop (+ i 2) rest))
@@ -5259,35 +5270,31 @@
               (error "Feature is not provided" feature)))
         #t)))
   (def 'format
+    ;; ISLISP standard: (format output-stream format-string obj*)
+    ;; output-stream: t → standard-output, nil → return string, output-port → write to port
     (lambda args
-      (cond
-       ((null? args)
-        (error "format needs at least a control string"))
-       ;; String destination: append formatted output and return new string.
-       ((and (>= (length args) 2)
-             (string? (car args))
-             (string? (cadr args)))
-        (string-append (car args)
-                       (render-format (cadr args) (cddr args))))
-       ;; Backward-compat shorthand: (format "fmt" ...)
-       ((string? (car args))
-        (let ((out (render-format (car args) (cdr args))))
-          (display out)
-          '()))
-       ((< (length args) 2)
-        (error "format needs destination and control string"))
-       ((eq? (car args) #t)
-        (let ((out (render-format (cadr args) (cddr args))))
-          (display out)
-          '()))
-       ((or (null? (car args)) (eq? (car args) #f))
-        (render-format (cadr args) (cddr args)))
-       ((output-port? (car args))
-        (let ((out (render-format (cadr args) (cddr args))))
-          (display out (car args))
-          '()))
-       (else
-        (error "unsupported format destination" (car args))))))
+      (unless (>= (length args) 2)
+        (error "format: needs at least destination and control-string"))
+      (let ((dest    (car args))
+            (fmt     (cadr args))
+            (fmtargs (cddr args)))
+        (unless (string? fmt)
+          (error "format: second argument must be a string" fmt))
+        (let ((rendered (render-format fmt fmtargs)))
+          (cond
+           ;; t → current standard output
+           ((eq? dest #t)
+            (display rendered)
+            '())
+           ;; nil (ISLISP) = '() or #f → return as string
+           ((or (null? dest) (eq? dest #f))
+            rendered)
+           ;; output port / stream → write to it
+           ((output-port? dest)
+            (display rendered dest)
+            '())
+           (else
+            (error "format: destination must be t, nil, or an output stream" dest)))))))
   (def 'not
     (lambda (x)
       (if (truthy? x) #f #t)))

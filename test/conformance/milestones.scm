@@ -873,6 +873,71 @@
             (slot-boundp p7-s2-obj (quote w)))
          '())))
 
+;; ---- Phase 8: format ----
+
+(define phase8-format-cases
+  (list
+   ;; 8-A: format nil ~a number → string
+   (list 'value
+         '(format nil "~a" 42)
+         "42")
+   ;; 8-A: format nil ~a string → string
+   (list 'value
+         '(format nil "~a" "hello")
+         "hello")
+   ;; 8-A: format nil multiple args
+   (list 'value
+         '(format nil "~a and ~a" 1 2)
+         "1 and 2")
+   ;; 8-A: format nil ~s → quoted string
+   (list 'value
+         '(format nil "~s" "hi")
+         "\"hi\"")
+   ;; 8-A: format nil ~~ → tilde
+   (list 'value
+         '(format nil "~~")
+         "~")
+   ;; 8-A: format nil ~% → newline
+   (list 'value
+         '(format nil "line1~%line2")
+         "line1\nline2")
+   ;; 8-A: format nil ~d decimal
+   (list 'value
+         '(format nil "~d" 255)
+         "255")
+   ;; 8-A: format nil ~x hexadecimal
+   (list 'value
+         '(format nil "~x" 255)
+         "ff")
+   ;; 8-A: format nil ~o octal
+   (list 'value
+         '(format nil "~o" 255)
+         "377")
+   ;; 8-A: format nil ~b binary
+   (list 'value
+         '(format nil "~b" 10)
+         "1010")
+   ;; 8-A: format nil ~c character
+   (list 'value
+         '(format nil "~c" #\A)
+         "A")
+   ;; 8-A: format nil ~i ignores arg
+   (list 'value
+         '(format nil "~ihello" 42)
+         "hello")
+   ;; 8-A: format t returns nil
+   (list 'value
+         '(format t "~a" 1)
+         '())
+   ;; 8-A: too few args → error
+   (list 'error
+         '(format nil "~a")
+         'error)
+   ;; 8-A: bad destination → error
+   (list 'error
+         '(format 42 "~a" 1)
+         'error)))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -912,7 +977,8 @@
    (list "Phase7-AuxMethod"  phase7-aux-method-cases)
    (list "Phase7-Subclassp"  phase7-subclassp-cases)
    (list "Phase7-StdObject"  phase7-standard-object-cases)
-   (list "Phase7-Slots"      phase7-slot-cases)))
+   (list "Phase7-Slots"      phase7-slot-cases)
+   (list "Phase8-Format"     phase8-format-cases)))
 
 (define strict-milestones
   (list
@@ -953,6 +1019,7 @@
    (list "Phase7-AuxMethod"  phase7-aux-method-cases)
    (list "Phase7-Subclassp"  phase7-subclassp-cases)
    (list "Phase7-StdObject"  phase7-standard-object-cases)
-   (list "Phase7-Slots"      phase7-slot-cases)))
+   (list "Phase7-Slots"      phase7-slot-cases)
+   (list "Phase8-Format"     phase8-format-cases)))
 
 (define extended-milestones all-milestones)
