@@ -1455,6 +1455,98 @@
    (list 'value '(format nil "~16R" 255) "ff")
    (list 'value '(format nil "~10R" 42) "42")))
 
+;; std-MemqAssq: memq, memql, assq, assql (§15.3)
+(define std-memq-assq-cases
+  (list
+   (list 'value '(memq 'b '(a b c)) '(b c))
+   (list 'value '(memq 'd '(a b c)) '())
+   (list 'value '(memql 2 '(1 2 3)) '(2 3))
+   (list 'value '(assq 'b '((a 1) (b 2) (c 3))) '(b 2))
+   (list 'value '(assql 2 '((1 a) (2 b) (3 c))) '(2 b))))
+
+;; std-MapConMapl: mapl, mapcon (§15.6)
+(define std-mapcon-mapl-cases
+  (list
+   (list 'value
+         '(let ((result '()))
+            (mapl (lambda (xs) (setq result (cons (car xs) result))) '(1 2 3))
+            result)
+         '(3 2 1))
+   (list 'value '(mapcon (lambda (xs) (if (oddp (car xs)) xs '())) '(1 2 3 4 5))
+         '(1 2 3 4 5 3 4 5 5))
+   (list 'value '(mapcon (lambda (xs) (list (car xs))) '(a b c)) '(a b c))))
+
+;; std-Fill: fill sequence with value (§15.7)
+(define std-fill-cases
+  (list
+   (list 'value '(let ((v (vector 1 2 3))) (fill v 0) v) #(0 0 0))
+   (list 'value '(let ((s (string-copy "abc"))) (fill s #\x) s) "xxx")
+   (list 'value '(let ((lst (list 1 2 3))) (fill lst 9) lst) '(9 9 9))))
+
+;; std-CopyList: copy-list (§15.2.2)
+(define std-copy-list-cases
+  (list
+   (list 'value '(let* ((orig '(1 2 3)) (copy (copy-list orig)))
+                   (eq orig copy))
+         '())
+   (list 'value '(equal (copy-list '(a b c)) '(a b c)) #t)))
+
+;; std-NumberString: number-to-string, parse-number (§20.2 / §11.8)
+(define std-number-string-cases
+  (list
+   (list 'value '(number-to-string 42) "42")
+   (list 'value '(number-to-string 255 16) "ff")
+   (list 'value '(parse-number "42") 42)
+   (list 'value '(parse-number "ff" 16) 255)
+   (list 'error '(parse-number "not-a-number") 'error)))
+
+;; std-SymbolPackage: symbol-package (§14.1.2)
+(define std-symbol-package-cases
+  (list
+   (list 'value '(stringp (symbol-package 'foo)) #t)
+   (list 'value '(symbol-package 'nil) "isl")
+   (list 'value '(symbol-package 't) "isl")))
+
+;; std-OpenFile: open-input-file, open-output-file (§18.2 canonical names)
+(define std-open-file-cases
+  (list
+   ;; open-input-file on a known system file
+   (list 'value
+         '(let* ((f (open-input-file "/dev/null"))
+                 (_ (close f)))
+            #t)
+         #t)
+   ;; open-output-file creates a writable stream
+   (list 'value
+         '(let* ((tmp "/tmp/isl-test-open.txt")
+                 (f   (open-output-file tmp))
+                 (_   (write-char #\x f))
+                 (_   (close f)))
+            #t)
+         #t)))
+
+;; std-FinishOutput: finish-output flushes without error (§18.7)
+(define std-finish-output-cases
+  (list
+   (list 'value '(progn (finish-output) #t) #t)
+   ;; finish-output on an output-file should not error
+   (list 'value
+         '(let* ((f (open-output-file "/tmp/isl-flush-test.txt"))
+                 (_ (write-char #\z f))
+                 (_ (finish-output f))
+                 (_ (close f)))
+            #t)
+         #t)))
+
+;; std-ClassNameOf: class-name returns a symbol (§6.3.1)
+(define std-class-name-cases
+  (list
+   (list 'value '(class-name (class-of 42)) '<integer>)
+   (list 'value '(class-name (class-of "hello")) '<string>)
+   (list 'value '(class-name (class-of #\a)) '<character>)
+   (list 'value '(class-name (class-of '())) '<null>)
+   (list 'value '(symbolp (class-name (class-of #t))) #t)))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -1536,7 +1628,16 @@
    (list "std-AppendBang"    std-append-bang-cases)
    (list "std-GenVecSet"     std-general-vector-set-cases)
    (list "std-SetAref"       std-set-aref-cases)
-   (list "std-FormatRadix"   std-format-radix-cases)))
+   (list "std-FormatRadix"   std-format-radix-cases)
+   (list "std-MemqAssq"      std-memq-assq-cases)
+   (list "std-MapConMapl"    std-mapcon-mapl-cases)
+   (list "std-Fill"          std-fill-cases)
+   (list "std-CopyList"      std-copy-list-cases)
+   (list "std-NumberString"  std-number-string-cases)
+   (list "std-SymbolPackage" std-symbol-package-cases)
+   (list "std-OpenFile"      std-open-file-cases)
+   (list "std-FinishOutput"  std-finish-output-cases)
+   (list "std-ClassName"     std-class-name-cases)))
 
 (define strict-milestones
   (list
@@ -1619,6 +1720,15 @@
    (list "std-AppendBang"    std-append-bang-cases)
    (list "std-GenVecSet"     std-general-vector-set-cases)
    (list "std-SetAref"       std-set-aref-cases)
-   (list "std-FormatRadix"   std-format-radix-cases)))
+   (list "std-FormatRadix"   std-format-radix-cases)
+   (list "std-MemqAssq"      std-memq-assq-cases)
+   (list "std-MapConMapl"    std-mapcon-mapl-cases)
+   (list "std-Fill"          std-fill-cases)
+   (list "std-CopyList"      std-copy-list-cases)
+   (list "std-NumberString"  std-number-string-cases)
+   (list "std-SymbolPackage" std-symbol-package-cases)
+   (list "std-OpenFile"      std-open-file-cases)
+   (list "std-FinishOutput"  std-finish-output-cases)
+   (list "std-ClassName"     std-class-name-cases)))
 
 (define extended-milestones all-milestones)

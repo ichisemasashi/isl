@@ -1407,6 +1407,13 @@
         (runtime-raise 'arity "open-input-stream expects 1 argument" args))
       (let ((filename (runtime-string (car args) "open-input-stream")))
         (host->runtime-value (open-input-file filename)))))
+  ;; ISLISP §18.2 canonical names
+  (def 'open-input-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "open-input-file expects 1 argument" args))
+      (let ((filename (runtime-string (car args) "open-input-file")))
+        (host->runtime-value (open-input-file filename)))))
   (def 'open-output-stream
     (lambda (args state)
       (unless (= (length args) 1)
@@ -1415,11 +1422,26 @@
         (host->runtime-value
          (open-output-file filename :if-exists :supersede
                                     :if-does-not-exist :create)))))
+  (def 'open-output-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "open-output-file expects 1 argument" args))
+      (let ((filename (runtime-string (car args) "open-output-file")))
+        (host->runtime-value
+         (open-output-file filename :if-exists :supersede
+                                    :if-does-not-exist :create)))))
   (def 'open-io-stream
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "open-io-stream expects 1 argument" args))
       (let ((filename (runtime-string (car args) "open-io-stream")))
+        (host->runtime-value
+         (open-file filename (logior O_RDWR O_CREAT) #o666)))))
+  (def 'open-io-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "open-io-file expects 1 argument" args))
+      (let ((filename (runtime-string (car args) "open-io-file")))
         (host->runtime-value
          (open-file filename (logior O_RDWR O_CREAT) #o666)))))
   (def 'close
@@ -1432,6 +1454,46 @@
          ((output-port? stream) (close-output-port stream))
          (else (runtime-raise 'type-error "close needs a stream" stream))))
       (host->runtime-value '())))
+  ;; ISLISP §18.7: finish-output — flush output buffer
+  (def 'finish-output
+    (lambda (args state)
+      (unless (or (= (length args) 0) (= (length args) 1))
+        (runtime-raise 'arity "finish-output expects 0 or 1 argument" args))
+      (let ((port (if (= (length args) 1)
+                      (runtime-value->host (car args))
+                      (current-output-port))))
+        (unless (output-port? port)
+          (runtime-raise 'type-error "finish-output needs an output stream" port))
+        (flush port)
+        (host->runtime-value '()))))
+  ;; ISLISP §18.3: read-byte, write-byte
+  (def 'read-byte
+    (lambda (args state)
+      (unless (or (= (length args) 0) (= (length args) 1))
+        (runtime-raise 'arity "read-byte expects 0 or 1 argument" args))
+      (let ((port (if (= (length args) 1)
+                      (runtime-value->host (car args))
+                      (current-input-port))))
+        (unless (input-port? port)
+          (runtime-raise 'type-error "read-byte needs an input stream" port))
+        (let ((b (read-u8 port)))
+          (if (eof-object? b)
+              (runtime-raise 'end-of-stream "read-byte: end of stream" args)
+              (host->runtime-value b))))))
+  (def 'write-byte
+    (lambda (args state)
+      (unless (and (>= (length args) 1) (<= (length args) 2))
+        (runtime-raise 'arity "write-byte expects 1 or 2 arguments" args))
+      (let ((b    (runtime-integer (car args) "write-byte"))
+            (port (if (= (length args) 2)
+                      (runtime-value->host (cadr args))
+                      (current-output-port))))
+        (when (or (< b 0) (> b 255))
+          (runtime-raise 'type-error "write-byte: argument must be a byte (0-255)" (car args)))
+        (unless (output-port? port)
+          (runtime-raise 'type-error "write-byte needs an output stream" port))
+        (write-u8 b port)
+        (host->runtime-value b))))
   ;; ---- 4-D: input-stream-p, output-stream-p ----
   (def 'input-stream-p
     (lambda (args state)
@@ -1653,6 +1715,19 @@
             (if cls
                 (host->runtime-value cls)
                 (runtime-raise 'type-error "class-of: cannot determine class" obj))))))))
+  ;; ISLISP §6.3.1: class-name — returns the name (symbol) of a class
+  (def 'class-name
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "class-name expects 1 argument" args))
+      (let ((cls (runtime-value->host (car args))))
+        (cond
+         ((rt-class? cls)
+          ;; Strip package prefix: ISLISP::<integer> → <integer>
+          (let ((raw (rt-class-name cls)))
+            (host->runtime-value
+             (string->symbol (with-module isl.core (symbol-base-name raw))))))
+         (else (runtime-raise 'type-error "class-name: argument must be a class" (car args)))))))
   (def 'instancep
     (lambda (args state)
       (cond
@@ -2289,6 +2364,40 @@
                        10)))
         (let ((result (string->number s radix)))
           (host->runtime-value (if result result '()))))))
+  ;; ISLISP §20.2 canonical names
+  (def 'number-to-string
+    (lambda (args state)
+      (unless (and (>= (length args) 1) (<= (length args) 2))
+        (runtime-raise 'arity "number-to-string expects 1 or 2 arguments" args))
+      (let ((n (runtime-number (car args) "number-to-string"))
+            (radix (if (= (length args) 2)
+                       (runtime-integer (cadr args) "number-to-string")
+                       10)))
+        (host->runtime-value (number->string n radix)))))
+  ;; ISLISP §11.8: parse-number — parse number from string, error on failure
+  (def 'parse-number
+    (lambda (args state)
+      (unless (and (>= (length args) 1) (<= (length args) 2))
+        (runtime-raise 'arity "parse-number expects 1 or 2 arguments" args))
+      (let ((s (runtime-string (car args) "parse-number"))
+            (radix (if (= (length args) 2)
+                       (runtime-integer (cadr args) "parse-number")
+                       10)))
+        (let ((result (string->number s radix)))
+          (unless result
+            (runtime-raise 'type-error "parse-number: cannot parse as number" (car args)))
+          (host->runtime-value result)))))
+  ;; ISLISP canonical: string-to-number (returns nil on failure)
+  (def 'string-to-number
+    (lambda (args state)
+      (unless (and (>= (length args) 1) (<= (length args) 2))
+        (runtime-raise 'arity "string-to-number expects 1 or 2 arguments" args))
+      (let ((s (runtime-string (car args) "string-to-number"))
+            (radix (if (= (length args) 2)
+                       (runtime-integer (cadr args) "string-to-number")
+                       10)))
+        (let ((result (string->number s radix)))
+          (host->runtime-value (if result result '()))))))
 
   ;; ---- Phase 1-C: 型述語 ----
   (def 'consp
@@ -2452,6 +2561,32 @@
               (let* ((call-args (map (lambda (t) (host->runtime-value t)) tails))
                      (r (runtime-apply fn call-args state)))
                 (loop (map cdr tails) (cons (runtime-value->host r) acc))))))))
+  ;; ISLISP §15.6: mapl — like maplist but for side effects, returns first list
+  (def 'mapl
+    (lambda (args state)
+      (unless (>= (length args) 2)
+        (runtime-raise 'arity "mapl expects function and at least one list" args))
+      (let ((fn         (car args))
+            (lists      (map (lambda (a) (runtime-list a "mapl")) (cdr args)))
+            (first-rv   (cadr args)))
+        (let loop ((tails lists))
+          (unless (any null? tails)
+            (runtime-apply fn (map (lambda (t) (host->runtime-value t)) tails) state)
+            (loop (map cdr tails))))
+        first-rv)))
+  ;; ISLISP §15.6: mapcon — nconc of maplist results
+  (def 'mapcon
+    (lambda (args state)
+      (unless (>= (length args) 2)
+        (runtime-raise 'arity "mapcon expects function and at least one list" args))
+      (let ((fn    (car args))
+            (lists (map (lambda (a) (runtime-list a "mapcon")) (cdr args))))
+        (let loop ((tails lists) (acc '()))
+          (if (any null? tails)
+              (host->runtime-value (apply append (reverse acc)))
+              (let* ((call-args (map (lambda (t) (host->runtime-value t)) tails))
+                     (r (runtime-value->host (runtime-apply fn call-args state))))
+                (loop (map cdr tails) (cons (if (list? r) r '()) acc))))))))
   (def 'member
     (lambda (args state)
       (unless (and (>= (length args) 2) (<= (length args) 4))
@@ -2494,7 +2629,55 @@
            (else
             (if (equal? (runtime-value->host key) (caar rest))
                 (host->runtime-value (car rest))
-                (loop (cdr rest)))))))))
+                (loop (cdr rest))))))))  )
+  ;; ISLISP §15.3: memq (eq test), memql (eql test)
+  (def 'memq
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "memq expects 2 arguments" args))
+      (let ((obj (runtime-value->host (car args)))
+            (lst (runtime-list (cadr args) "memq")))
+        (let loop ((rest lst))
+          (cond
+           ((null? rest) (host->runtime-value '()))
+           ((eq? obj (car rest)) (host->runtime-value rest))
+           (else (loop (cdr rest))))))))
+  (def 'memql
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "memql expects 2 arguments" args))
+      (let ((obj (runtime-value->host (car args)))
+            (lst (runtime-list (cadr args) "memql")))
+        (let loop ((rest lst))
+          (cond
+           ((null? rest) (host->runtime-value '()))
+           ((eqv? obj (car rest)) (host->runtime-value rest))
+           (else (loop (cdr rest))))))))
+  ;; ISLISP §15.3: assq (eq test), assql (eql test)
+  (def 'assq
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "assq expects 2 arguments" args))
+      (let ((key   (runtime-value->host (car args)))
+            (alist (runtime-list (cadr args) "assq")))
+        (let loop ((rest alist))
+          (cond
+           ((null? rest) (host->runtime-value '()))
+           ((not (pair? (car rest))) (loop (cdr rest)))
+           ((eq? key (caar rest)) (host->runtime-value (car rest)))
+           (else (loop (cdr rest))))))))
+  (def 'assql
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "assql expects 2 arguments" args))
+      (let ((key   (runtime-value->host (car args)))
+            (alist (runtime-list (cadr args) "assql")))
+        (let loop ((rest alist))
+          (cond
+           ((null? rest) (host->runtime-value '()))
+           ((not (pair? (car rest))) (loop (cdr rest)))
+           ((eqv? key (caar rest)) (host->runtime-value (car rest)))
+           (else (loop (cdr rest))))))))
   (def 'remove
     (lambda (args state)
       (unless (and (>= (length args) 2) (<= (length args) 4))
@@ -2577,6 +2760,41 @@
       (unless (= (length args) 1)
         (runtime-raise 'arity "list-copy expects 1 argument" args))
       (host->runtime-value (list-copy (runtime-list (car args) "list-copy")))))
+  ;; ISLISP §15.2.2: copy-list — canonical ISLISP name
+  (def 'copy-list
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "copy-list expects 1 argument" args))
+      (host->runtime-value (list-copy (runtime-list (car args) "copy-list")))))
+  ;; ISLISP §15.7: fill — fill sequence with value
+  (def 'fill
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "fill expects 2 arguments" args))
+      (let ((seq (runtime-value->host (car args)))
+            (obj (runtime-value->host (cadr args))))
+        (cond
+         ((vector? seq)
+          (let loop ((i 0))
+            (unless (>= i (vector-length seq))
+              (vector-set! seq i obj)
+              (loop (+ i 1))))
+          (host->runtime-value seq))
+         ((string? seq)
+          (unless (char? obj)
+            (runtime-raise 'type-error "fill: value for string must be a character" (cadr args)))
+          (let loop ((i 0))
+            (unless (>= i (string-length seq))
+              (string-set! seq i obj)
+              (loop (+ i 1))))
+          (host->runtime-value seq))
+         ((list? seq)
+          (let loop ((rest seq))
+            (unless (null? rest)
+              (set-car! rest obj)
+              (loop (cdr rest))))
+          (host->runtime-value seq))
+         (else (runtime-raise 'type-error "fill: first argument must be a sequence" (car args)))))))
   (def 'nthcdr
     (lambda (args state)
       (unless (= (length args) 2)
@@ -2842,6 +3060,17 @@
               ((symbol? s) (host->runtime-value (symbol->string s)))
               (else
                (runtime-raise 'type-error "symbol-name: argument must be a symbol" s))))))
+  ;; ISLISP §14.1.2: symbol-package — returns home package name
+  (def 'symbol-package
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "symbol-package expects 1 argument" args))
+      (let ((s (runtime-value->host (car args))))
+        (cond ((null? s)   (host->runtime-value "isl"))
+              ((eq? s #t)  (host->runtime-value "isl"))
+              ((symbol? s) (host->runtime-value "isl"))
+              (else
+               (runtime-raise 'type-error "symbol-package: argument must be a symbol" s))))))
   (def 'char-code
     (lambda (args state)
       (unless (= (length args) 1)

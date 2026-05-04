@@ -3725,10 +3725,40 @@
         (unless (memv radix '(2 8 10 16))
           (error "number->string radix must be 2, 8, 10 or 16" radix))
         (number->string n radix))))
+  ;; ISLISP §20.2 canonical name: number-to-string
+  (def 'number-to-string
+    (lambda args
+      (unless (and (pair? args) (number? (car args)))
+        (error "number-to-string needs a number" args))
+      (let ((n     (car args))
+            (radix (if (and (pair? (cdr args)) (integer? (cadr args)))
+                       (cadr args) 10)))
+        (number->string n radix))))
   (def 'string->number
     (lambda args
       (unless (and (pair? args) (string? (car args)))
         (error "string->number needs a string" args))
+      (let ((s     (car args))
+            (radix (if (and (pair? (cdr args)) (integer? (cadr args)))
+                       (cadr args) 10)))
+        (let ((result (string->number s radix)))
+          (if result result '())))))
+  ;; ISLISP §11.8: parse-number — parse number from string
+  (def 'parse-number
+    (lambda args
+      (unless (and (pair? args) (string? (car args)))
+        (error "parse-number needs a string" args))
+      (let* ((s (car args))
+             (radix (if (and (pair? (cdr args)) (integer? (cadr args)))
+                        (cadr args) 10))
+             (result (string->number s radix)))
+        (unless result (error "parse-number: cannot parse as number" s))
+        result)))
+  ;; ISLISP canonical alias: string-to-number (returns nil on failure)
+  (def 'string-to-number
+    (lambda args
+      (unless (and (pair? args) (string? (car args)))
+        (error "string-to-number needs a string" args))
       (let ((s     (car args))
             (radix (if (and (pair? (cdr args)) (integer? (cadr args)))
                        (cadr args) 10)))
@@ -4000,6 +4030,27 @@
             (reverse acc)
             (loop (map cdr tails)
                   (cons (apply-islisp f tails) acc))))))
+  ;; ISLISP §15.6: mapl — like maplist but for side effects, returns first list
+  (def 'mapl
+    (lambda (f . lists)
+      (when (null? lists) (error "mapl needs at least one list"))
+      (for-each (lambda (l) (unless (list? l) (error "mapl needs lists" l))) lists)
+      (let ((first-list (car lists)))
+        (let loop ((tails lists))
+          (unless (any null? tails)
+            (apply-islisp f tails)
+            (loop (map cdr tails))))
+        first-list)))
+  ;; ISLISP §15.6: mapcon — nconc of maplist results
+  (def 'mapcon
+    (lambda (f . lists)
+      (when (null? lists) (error "mapcon needs at least one list"))
+      (for-each (lambda (l) (unless (list? l) (error "mapcon needs lists" l))) lists)
+      (let loop ((tails lists) (acc '()))
+        (if (any null? tails)
+            (apply append (reverse acc))
+            (loop (map cdr tails)
+                  (cons (apply-islisp f tails) acc))))))
   (def 'member
     (lambda (obj lst . opts)
       (let ((test (if (and (pair? opts) (eq? (car opts) ':test))
@@ -4029,6 +4080,42 @@
            (else
             (if (equal? key (caar rest))
                 (car rest) (loop (cdr rest)))))))))
+  ;; ISLISP §15.3: memq (eq test), memql (eql test)
+  (def 'memq
+    (lambda (obj lst)
+      (unless (list? lst) (error "memq needs a list" lst))
+      (let loop ((rest lst))
+        (cond
+         ((null? rest) '())
+         ((eq? obj (car rest)) rest)
+         (else (loop (cdr rest)))))))
+  (def 'memql
+    (lambda (obj lst)
+      (unless (list? lst) (error "memql needs a list" lst))
+      (let loop ((rest lst))
+        (cond
+         ((null? rest) '())
+         ((eqv? obj (car rest)) rest)
+         (else (loop (cdr rest)))))))
+  ;; ISLISP §15.3: assq (eq test), assql (eql test)
+  (def 'assq
+    (lambda (key alist)
+      (unless (list? alist) (error "assq needs an alist" alist))
+      (let loop ((rest alist))
+        (cond
+         ((null? rest) '())
+         ((not (pair? (car rest))) (loop (cdr rest)))
+         ((eq? key (caar rest)) (car rest))
+         (else (loop (cdr rest)))))))
+  (def 'assql
+    (lambda (key alist)
+      (unless (list? alist) (error "assql needs an alist" alist))
+      (let loop ((rest alist))
+        (cond
+         ((null? rest) '())
+         ((not (pair? (car rest))) (loop (cdr rest)))
+         ((eqv? key (caar rest)) (car rest))
+         (else (loop (cdr rest)))))))
   (def 'remove
     (lambda (obj lst . opts)
       (let ((test (if (and (pair? opts) (eq? (car opts) ':test))
@@ -4174,6 +4261,36 @@
     (lambda (lst)
       (unless (list? lst) (error "list-copy needs a list" lst))
       (map (lambda (x) x) lst)))
+  ;; ISLISP §15.2.2: copy-list — canonical ISLISP name
+  (def 'copy-list
+    (lambda (lst)
+      (unless (list? lst) (error "copy-list needs a list" lst))
+      (map (lambda (x) x) lst)))
+  ;; ISLISP §15.7: fill — fill sequence with value
+  (def 'fill
+    (lambda (seq obj)
+      (cond
+       ((vector? seq)
+        (let loop ((i 0))
+          (unless (>= i (vector-length seq))
+            (vector-set! seq i obj)
+            (loop (+ i 1))))
+        seq)
+       ((string? seq)
+        (unless (char? obj) (error "fill: value for string must be a character" obj))
+        (let loop ((i 0))
+          (unless (>= i (string-length seq))
+            (string-set! seq i obj)
+            (loop (+ i 1))))
+        seq)
+       ((list? seq)
+        ;; ISLISP fill on list: destructively replace each car
+        (let loop ((rest seq))
+          (unless (null? rest)
+            (set-car! rest obj)
+            (loop (cdr rest))))
+        seq)
+       (else (error "fill: first argument must be a sequence" seq)))))
   (def 'nthcdr
     (lambda (n lst)
       (unless (and (integer? n) (>= n 0)) (error "nthcdr n must be non-negative integer" n))
@@ -4692,15 +4809,29 @@
     (lambda (filename)
       (ensure-string filename "open-input-stream")
       (open-input-file filename)))
+  ;; ISLISP §18.2 canonical names: open-input-file, open-output-file, open-io-file
+  (def 'open-input-file
+    (lambda (filename)
+      (ensure-string filename "open-input-file")
+      (open-input-file filename)))
   (def 'open-output-stream
     (lambda (filename)
       (ensure-string filename "open-output-stream")
+      (open-output-file filename :if-exists :supersede
+                                 :if-does-not-exist :create)))
+  (def 'open-output-file
+    (lambda (filename)
+      (ensure-string filename "open-output-file")
       (open-output-file filename :if-exists :supersede
                                  :if-does-not-exist :create)))
   (def 'open-io-stream
     (lambda (filename)
       (ensure-string filename "open-io-stream")
       ;; open-input-output-file opens the file for reading and writing
+      (open-file filename (logior O_RDWR O_CREAT) #o666)))
+  (def 'open-io-file
+    (lambda (filename)
+      (ensure-string filename "open-io-file")
       (open-file filename (logior O_RDWR O_CREAT) #o666)))
   (def 'close
     (lambda (stream)
@@ -4709,6 +4840,32 @@
        ((output-port? stream) (close-output-port stream))
        (else (error "close needs a stream" stream)))
       '()))
+  ;; ISLISP §18.7: finish-output — flush output buffer
+  (def 'finish-output
+    (lambda args
+      (let ((port (if (pair? args) (car args) (current-output-port))))
+        (unless (output-port? port) (error "finish-output needs an output stream" port))
+        (flush port)
+        '())))
+  ;; ISLISP §18.3: read-byte, write-byte
+  (def 'read-byte
+    (lambda args
+      (let ((port (if (pair? args) (car args) (current-input-port))))
+        (unless (input-port? port) (error "read-byte needs an input stream" port))
+        (let ((b (read-u8 port)))
+          (if (eof-object? b)
+              (eof-stream-error "read-byte")
+              b)))))
+  (def 'write-byte
+    (lambda args
+      (unless (pair? args) (error "write-byte needs a byte" args))
+      (let ((b    (car args))
+            (port (if (pair? (cdr args)) (cadr args) (current-output-port))))
+        (unless (and (integer? b) (>= b 0) (<= b 255))
+          (error "write-byte: argument must be a byte (0-255)" b))
+        (unless (output-port? port) (error "write-byte needs an output stream" port))
+        (write-u8 b port)
+        b)))
   ;; ---- 4-D: input-stream-p, output-stream-p ----
   (def 'input-stream-p
     (lambda (obj)
@@ -5799,6 +5956,14 @@
        (else
         (let ((cls (native-value->class-obj obj)))
           (or cls (error "class-of: cannot determine class" obj)))))))
+  ;; ISLISP §6.3.1: class-name — returns the name (symbol) of a class
+  (def 'class-name
+    (lambda (cls)
+      (cond
+       ((class? cls)
+        ;; Strip package prefix: ISLISP::<integer> → <integer>
+        (string->symbol (symbol-base-name (class-name cls))))
+       (else (error "class-name: argument must be a class" cls)))))
   (def 'instancep
     (lambda args
       (cond
@@ -6061,6 +6226,13 @@
             ((eq? s #t) "t")
             ((symbol? s) (symbol->string s))
             (else (error "symbol-name needs a symbol" s)))))
+  ;; ISLISP §14.1.2: symbol-package — returns the home package name or nil
+  (def 'symbol-package
+    (lambda (s)
+      (cond ((null? s)   "isl")   ; nil is in the isl package
+            ((eq? s #t)  "isl")   ; t is in the isl package
+            ((symbol? s) "isl")   ; all symbols in this impl are in "isl"
+            (else (error "symbol-package needs a symbol" s)))))
   ;; ---- Modification F: character predicates ----
   (def 'char-alphabetic-p
     (lambda (c)
