@@ -756,6 +756,123 @@
    ;; t is #t
    (list 'value '(eq t t) #t)))
 
+;; ---- Phase 7: OOP 完全化 ----
+(define phase7-next-method-cases
+  (list
+   ;; 7-A: call-next-method in primary methods
+   (list 'value
+         '(progn
+            (defclass <p7-animal> () ())
+            (defgeneric p7-speak (a))
+            (defmethod p7-speak ((a <p7-animal>)) "woof")
+            (defclass <p7-dog> (<p7-animal>) ())
+            (defmethod p7-speak ((d <p7-dog>))
+              (string-append "Dog: " (call-next-method)))
+            (p7-speak (make-instance (class <p7-dog>))))
+         "Dog: woof")
+   ;; next-method-p with a next method
+   (list 'value
+         '(progn
+            (defclass <p7-base> () ())
+            (defclass <p7-sub> (<p7-base>) ())
+            (defgeneric p7-nm-test (x))
+            (defmethod p7-nm-test ((x <p7-base>)) "base")
+            (defmethod p7-nm-test ((x <p7-sub>))
+              (if (next-method-p) #t '()))
+            (p7-nm-test (make-instance (class <p7-sub>))))
+         #t)
+   ;; next-method-p without a next method
+   (list 'value
+         '(progn
+            (defclass <p7-lone> () ())
+            (defgeneric p7-lone-fn (x))
+            (defmethod p7-lone-fn ((x <p7-lone>))
+              (if (next-method-p) #t '()))
+            (p7-lone-fn (make-instance (class <p7-lone>))))
+         '())))
+
+(define phase7-aux-method-cases
+  (list
+   ;; 7-B: :before/:after order
+   (list 'value
+         '(progn
+            (defvar p7-log (quote ()))
+            (defclass <p7-evt> () ())
+            (defgeneric p7-fire (x))
+            (defmethod p7-fire ((x <p7-evt>)) (setq p7-log (cons (quote main) p7-log)) (quote ok))
+            (defmethod p7-fire :before ((x <p7-evt>)) (setq p7-log (cons (quote before) p7-log)))
+            (defmethod p7-fire :after  ((x <p7-evt>)) (setq p7-log (cons (quote after)  p7-log)))
+            (p7-fire (make-instance (class <p7-evt>)))
+            p7-log)
+         '(after main before))
+   ;; 7-B: :around wraps primary
+   (list 'value
+         '(progn
+            (defclass <p7-wrap> () ())
+            (defgeneric p7-wrap-fn (x))
+            (defmethod p7-wrap-fn ((x <p7-wrap>)) "inner")
+            (defmethod p7-wrap-fn :around ((x <p7-wrap>))
+              (string-append "[" (call-next-method) "]"))
+            (p7-wrap-fn (make-instance (class <p7-wrap>))))
+         "[inner]")))
+
+(define phase7-subclassp-cases
+  (list
+   ;; 7-C: subclassp
+   (list 'value
+         '(progn
+            (defclass <p7-animal> () ())
+            (defclass <p7-cat> (<p7-animal>) ())
+            (subclassp (class <p7-cat>) (class <p7-animal>)))
+         #t)
+   (list 'value
+         '(progn
+            (defclass <p7-x> () ())
+            (defclass <p7-y> () ())
+            (subclassp (class <p7-x>) (class <p7-y>)))
+         '())
+   ;; 7-C: (class <name>) form
+   (list 'value
+         '(progn
+            (defclass <p7-named> () ())
+            (if (class <p7-named>) #t '()))
+         #t)))
+
+(define phase7-standard-object-cases
+  (list
+   ;; 7-D: user class inherits from <standard-object>
+   (list 'value
+         '(progn
+            (defclass <p7-user> () ())
+            (subclassp (class <p7-user>) (class <standard-object>)))
+         #t)
+   ;; <standard-object> exists
+   (list 'value
+         '(if (class <standard-object>) #t '())
+         #t)
+   ;; <built-in-class> exists
+   (list 'value
+         '(if (class <built-in-class>) #t '())
+         #t)))
+
+(define phase7-slot-cases
+  (list
+   ;; 7-F: slot-boundp
+   (list 'value
+         '(progn
+            (defclass <p7-s> () ((v :initarg :v :initform 1)))
+            (defvar p7-s-obj (make-instance (class <p7-s>)))
+            (slot-boundp p7-s-obj (quote v)))
+         #t)
+   ;; slot-makunbound then slot-boundp
+   (list 'value
+         '(progn
+            (defclass <p7-s2> () ((w :initform 2)))
+            (defvar p7-s2-obj (make-instance (class <p7-s2>)))
+            (slot-makunbound p7-s2-obj (quote w))
+            (slot-boundp p7-s2-obj (quote w)))
+         '())))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -790,7 +907,12 @@
    (list "Phase5-Hierarchy"  phase5-hierarchy-cases)
    (list "Phase5-Ignore"     phase5-ignore-cases)
    (list "Phase6-Dynamic"    phase6-dynamic-cases)
-   (list "Phase6-Sanitize"   phase6-sanitize-cases)))
+   (list "Phase6-Sanitize"   phase6-sanitize-cases)
+   (list "Phase7-NextMethod" phase7-next-method-cases)
+   (list "Phase7-AuxMethod"  phase7-aux-method-cases)
+   (list "Phase7-Subclassp"  phase7-subclassp-cases)
+   (list "Phase7-StdObject"  phase7-standard-object-cases)
+   (list "Phase7-Slots"      phase7-slot-cases)))
 
 (define strict-milestones
   (list
@@ -826,6 +948,11 @@
    (list "Phase5-Hierarchy"  phase5-hierarchy-cases)
    (list "Phase5-Ignore"     phase5-ignore-cases)
    (list "Phase6-Dynamic"    phase6-dynamic-cases)
-   (list "Phase6-Sanitize"   phase6-sanitize-cases)))
+   (list "Phase6-Sanitize"   phase6-sanitize-cases)
+   (list "Phase7-NextMethod" phase7-next-method-cases)
+   (list "Phase7-AuxMethod"  phase7-aux-method-cases)
+   (list "Phase7-Subclassp"  phase7-subclassp-cases)
+   (list "Phase7-StdObject"  phase7-standard-object-cases)
+   (list "Phase7-Slots"      phase7-slot-cases)))
 
 (define extended-milestones all-milestones)

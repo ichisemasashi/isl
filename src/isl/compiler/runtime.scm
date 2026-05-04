@@ -276,16 +276,18 @@
 
 (define (rt-instance-class x) (vector-ref x 1))
 (define (rt-instance-slots x) (vector-ref x 2))
+(define (rt-instance-set-slots! x slots) (vector-set! x 2 slots))
 
-(define (make-rt-method specializers params fn-val)
-  (vector 'rt-method specializers params fn-val))
+(define (make-rt-method qualifier specializers params fn-val)
+  (vector 'rt-method qualifier specializers params fn-val))
 
 (define (rt-method? x)
-  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'rt-method)))
+  (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'rt-method)))
 
-(define (rt-method-specializers m) (vector-ref m 1))
-(define (rt-method-params m) (vector-ref m 2))
-(define (rt-method-fn m) (vector-ref m 3))
+(define (rt-method-qualifier m) (vector-ref m 1))
+(define (rt-method-specializers m) (vector-ref m 2))
+(define (rt-method-params m) (vector-ref m 3))
+(define (rt-method-fn m) (vector-ref m 4))
 
 (define (make-rt-generic name params methods)
   (vector 'rt-generic name params methods))
@@ -1431,6 +1433,13 @@
                     (runtime-raise 'invalid-ir "Unknown initarg for make-instance" k))
                   (rt-instance-slot-set! obj (rt-slot-name spec) v))
                 (apply-initargs (cddr rest)))))
+          ;; Phase 7-E: call initialize-object hook
+          (let ((init-pair (env-find-pair (state-global-env state) 'initialize-object)))
+            (when init-pair
+              (runtime-apply (cdr init-pair)
+                             (list (host->runtime-value obj)
+                                   (host->runtime-value (map runtime-value->host (cdr args))))
+                             state)))
           (host->runtime-value obj)))))
   (def 'class-of
     (lambda (args state)
@@ -1454,6 +1463,74 @@
       (let ((obj (runtime-value->host (car args)))
             (slot (runtime-value->host (cadr args))))
         (host->runtime-value (rt-instance-slot-ref obj slot)))))
+  ;; ---- Phase 7-A ----
+  (def 'call-next-method
+    (lambda (args state)
+      (let ((stack (*rt-next-methods*)))
+        (when (null? stack)
+          (runtime-raise 'control-error "call-next-method: no next method available" '()))
+        (let* ((next-fn (car stack))
+               (effective-args (if (null? args) (*rt-current-method-args*) args)))
+          (parameterize ((*rt-next-methods* (cdr stack))
+                         (*rt-current-method-args* effective-args))
+            (next-fn effective-args))))))
+  (def 'next-method-p
+    (lambda (args state)
+      (host->runtime-value (if (null? (*rt-next-methods*)) '() #t))))
+  ;; ---- Phase 7-C ----
+  (def 'subclassp
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "subclassp expects 2 arguments" args))
+      (let* ((sub-raw (runtime-value->host (car args)))
+             (sup-raw (runtime-value->host (cadr args)))
+             (global (state-global-env state)))
+        (let ((sub-cls (cond ((rt-class? sub-raw) sub-raw)
+                             ((symbol? sub-raw)
+                              (let ((p (env-find-pair global sub-raw)))
+                                (and p (runtime-value->host (cdr p)))))
+                             (else #f)))
+              (sup-cls (cond ((rt-class? sup-raw) sup-raw)
+                             ((symbol? sup-raw)
+                              (let ((p (env-find-pair global sup-raw)))
+                                (and p (runtime-value->host (cdr p)))))
+                             (else #f))))
+          (unless (rt-class? sub-cls)
+            (runtime-raise 'type-error "subclassp: first arg is not a class" (car args)))
+          (unless (rt-class? sup-cls)
+            (runtime-raise 'type-error "subclassp: second arg is not a class" (cadr args)))
+          (host->runtime-value (if (rt-subclassp? sub-cls sup-cls) #t '()))))))
+  ;; Phase 7-E: initialize-object is installed as a generic in make-runtime-state
+  ;; ---- Phase 7-F ----
+  (def 'slot-boundp
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "slot-boundp expects 2 arguments" args))
+      (let ((obj (runtime-value->host (car args)))
+            (slot (runtime-value->host (cadr args))))
+        (unless (rt-instance? obj)
+          (runtime-raise 'type-error "slot-boundp needs instance" (car args)))
+        (unless (symbol? slot)
+          (runtime-raise 'type-error "slot-boundp slot must be symbol" (cadr args)))
+        (host->runtime-value
+         (if (find-instance-slot-entry (rt-instance-slots obj) slot) #t '())))))
+  (def 'slot-makunbound
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "slot-makunbound expects 2 arguments" args))
+      (let ((obj (runtime-value->host (car args)))
+            (slot (runtime-value->host (cadr args))))
+        (unless (rt-instance? obj)
+          (runtime-raise 'type-error "slot-makunbound needs instance" (car args)))
+        (unless (symbol? slot)
+          (runtime-raise 'type-error "slot-makunbound slot must be symbol" (cadr args)))
+        (let ((entry (find-instance-slot-entry (rt-instance-slots obj) slot)))
+          (unless entry
+            (runtime-raise 'invalid-ir "slot-makunbound: no such slot" slot))
+          (rt-instance-set-slots! obj
+            (filter (lambda (p) (not (eq? (car p) (car entry))))
+                    (rt-instance-slots obj)))
+          (car args)))))   ; return the instance
   (def 'tcp-connect
     (lambda (args state)
       (unless (= (length args) 2)
@@ -2839,6 +2916,18 @@
                         (runtime-raise 'invalid-ir "defclass superclass must be symbol" s))
                       (resolve-class-designator s env))
                     super-forms))
+              ;; Phase 7-D: default to <standard-object> if supers is empty
+              (supers
+               (if (and (null? supers)
+                        (not (eq? name '<standard-object>))
+                        (not (eq? name '<built-in-class>)))
+                   (let ((so-pair (env-find-pair env '<standard-object>)))
+                     (if (and so-pair
+                              (rt-value? (cdr so-pair))
+                              (rt-class? (runtime-value->host (cdr so-pair))))
+                         (list (runtime-value->host (cdr so-pair)))
+                         supers))
+                   supers))
               (own-slots
                (map (lambda (slot)
                       (unless (and (list? slot) (= (length slot) 6) (eq? (car slot) 'slot-spec))
@@ -2863,7 +2952,7 @@
                                (runtime-raise 'arity "reader expects 1 argument" args))
                              (host->runtime-value
                               (rt-instance-slot-ref (runtime-value->host (car args)) slot-name))))))
-                        (method (make-rt-method (list class-obj) '(obj) reader-fn)))
+                        (method (make-rt-method #f (list class-obj) '(obj) reader-fn)))
                    (set-rt-generic-methods! generic (cons method (rt-generic-methods generic)))))
                (rt-slot-readers s))
               (for-each
@@ -2880,7 +2969,7 @@
                                    (v (runtime-value->host (cadr args))))
                                (host->runtime-value
                                 (rt-instance-slot-set! obj slot-name v)))))))
-                        (method (make-rt-method (list class-obj #f) '(obj value) writer-fn)))
+                        (method (make-rt-method #f (list class-obj #f) '(obj value) writer-fn)))
                    (set-rt-generic-methods! generic (cons method (rt-generic-methods generic)))))
                (rt-slot-writers s))))
           own-slots)
@@ -2894,17 +2983,18 @@
        (ensure-generic-function! name env params)
        (host->runtime-value name)))
     ((defmethod)
-     (unless (and (list? payload) (= (length payload) 3) (symbol? (car payload)))
-       (runtime-raise 'invalid-ir "defmethod payload must be (name params body)" payload))
+     (unless (and (list? payload) (= (length payload) 4) (symbol? (car payload)))
+       (runtime-raise 'invalid-ir "defmethod payload must be (name qualifier params body)" payload))
      (let* ((name (car payload))
-            (raw-params (cadr payload))
-            (body (caddr payload))
+            (qualifier (cadr payload))
+            (raw-params (caddr payload))
+            (body (cadddr payload))
             (parsed (parse-method-params raw-params env))
             (plain-params (car parsed))
             (specializers (cadr parsed))
             (method-fn (make-fn-value (make-closure name plain-params body env)))
             (generic (ensure-generic-function! name env plain-params))
-            (method (make-rt-method specializers plain-params method-fn)))
+            (method (make-rt-method qualifier specializers plain-params method-fn)))
        (set-rt-generic-methods! generic (cons method (rt-generic-methods generic)))
        (host->runtime-value name)))
     ;; ---- Phase 3 ----
@@ -2988,8 +3078,53 @@
          (lambda () (runtime-eval-expr protected env state))
          (lambda ()
            (for-each (lambda (c) (runtime-eval-expr c env state)) cleanups)))))
+    ;; ---- Phase 7-C ----
+    ((class)
+     (unless (and (list? payload) (= (length payload) 1) (symbol? (car payload)))
+       (runtime-raise 'invalid-ir "class payload must be (sym)" payload))
+     (let* ((sym (car payload))
+            (pair (env-find-pair env sym)))
+       (unless pair
+         (runtime-raise 'invalid-ir "class: undefined class" sym))
+       (let ((raw (runtime-value->host (cdr pair))))
+         (unless (rt-class? raw)
+           (runtime-raise 'type-error "class: not a class" sym))
+         (cdr pair))))
     (else
      (runtime-raise 'unsupported-special "special form is not yet lowered" (list op payload)))))
+
+;; ---- Phase 7-A: next-method support (compiler) ----
+(define *rt-next-methods* (make-parameter '()))
+(define *rt-current-method-args* (make-parameter '()))
+
+(define (rt-sort-applicable methods args)
+  (let* ((scored (filter-map
+                   (lambda (m)
+                     (let ((score (method-applicability-score m args)))
+                       (and score (cons score m))))
+                   methods))
+         (sorted (sort scored (lambda (a b) (score<? (car a) (car b))))))
+    (map cdr sorted)))
+
+(define (rt-subclassp? sub super)
+  (or (eq? sub super)
+      (let loop ((supers (rt-class-supers sub)))
+        (and (pair? supers)
+             (or (rt-subclassp? (car supers) super)
+                 (loop (cdr supers)))))))
+
+(define (rt-invoke-chain procs extra-fn current-args state)
+  ;; Only advertise a next method if it would succeed.
+  (if (null? procs)
+      (if extra-fn
+          (extra-fn current-args)
+          (runtime-raise 'control-error "call-next-method: no next method available" '()))
+      (parameterize ((*rt-next-methods*
+                      (if (or (pair? (cdr procs)) extra-fn)
+                          (list (lambda (a) (rt-invoke-chain (cdr procs) extra-fn a state)))
+                          '()))
+                     (*rt-current-method-args* current-args))
+        (runtime-apply (car procs) current-args state))))
 
 (define (make-runtime-state . maybe-profile)
   (let ((profile (if (null? maybe-profile) 'extended (car maybe-profile)))
@@ -3003,6 +3138,22 @@
     (env-define! global-env '*standard-input*  (host->runtime-value (current-input-port)))
     (env-define! global-env '*standard-output* (host->runtime-value (current-output-port)))
     (env-define! global-env '*error-output*    (host->runtime-value (current-error-port)))
+    ;; ---- Phase 7-D: root OOP classes ----
+    (let ((boot-state (vector 'runtime-state profile global-env (host->runtime-value '()) frontend-env)))
+      (runtime-load-units!
+       boot-state
+       (frontend-compile-forms
+        '((defclass <standard-object> () ())
+          (defclass <built-in-class>  () ()))
+        frontend-env)))
+    ;; ---- Phase 7-E: initialize-object generic ----
+    (let ((boot-state (vector 'runtime-state profile global-env (host->runtime-value '()) frontend-env)))
+      (runtime-load-units!
+       boot-state
+       (frontend-compile-forms
+        '((defgeneric initialize-object (obj initargs))
+          (defmethod initialize-object ((obj <standard-object>) initargs) obj))
+        frontend-env)))
     ;; ---- Phase 5-A: ISLISP condition class hierarchy ----
     ;; Compile defclass forms through the frontend to get proper IR, then run them.
     ;; ignore-errors is already defined via the shared frontend-env (make-initial-env).
@@ -3147,10 +3298,37 @@
      ((primitive? fn)
       ((primitive-proc fn) arg-vals state))
      ((rt-generic? fn)
-      (let ((m (select-generic-method fn arg-vals)))
-        (if m
-            (runtime-apply (rt-method-fn m) arg-vals state)
-            (runtime-raise 'invalid-ir "No applicable method for generic function" (rt-generic-name fn)))))
+      (let* ((all-methods (rt-generic-methods fn))
+             (app-around  (rt-sort-applicable
+                           (filter (lambda (m) (eq? (rt-method-qualifier m) ':around)) all-methods)
+                           arg-vals))
+             (app-before  (rt-sort-applicable
+                           (filter (lambda (m) (eq? (rt-method-qualifier m) ':before)) all-methods)
+                           arg-vals))
+             (app-primary (rt-sort-applicable
+                           (filter (lambda (m) (not (rt-method-qualifier m))) all-methods)
+                           arg-vals))
+             (app-after   (reverse (rt-sort-applicable
+                                    (filter (lambda (m) (eq? (rt-method-qualifier m) ':after)) all-methods)
+                                    arg-vals))))
+        (when (null? app-primary)
+          (runtime-raise 'invalid-ir "No applicable primary method for generic function"
+                         (rt-generic-name fn)))
+        (letrec ((call-effective-primary
+                  (lambda (eff-args)
+                    (for-each (lambda (m)
+                                (parameterize ((*rt-next-methods* '()) (*rt-current-method-args* eff-args))
+                                  (runtime-apply (rt-method-fn m) eff-args state)))
+                              app-before)
+                    (let ((result (rt-invoke-chain (map rt-method-fn app-primary) #f eff-args state)))
+                      (for-each (lambda (m)
+                                  (parameterize ((*rt-next-methods* '()) (*rt-current-method-args* eff-args))
+                                    (runtime-apply (rt-method-fn m) eff-args state)))
+                                app-after)
+                      result))))
+          (if (null? app-around)
+              (call-effective-primary arg-vals)
+              (rt-invoke-chain (map rt-method-fn app-around) call-effective-primary arg-vals state)))))
      ((closure? fn)
       (let ((call-env (make-env (closure-env fn))))
         (bind-params! call-env (closure-params fn) arg-vals)

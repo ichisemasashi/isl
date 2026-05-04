@@ -182,15 +182,26 @@
    ((and (list? p) (= (length p) 2) (symbol? (car p)) (symbol? (cadr p))) p)
    (else #f)))
 
+(define (keyword-symbol-ir? x)
+  (and (symbol? x)
+       (> (string-length (symbol->string x)) 0)
+       (char=? (string-ref (symbol->string x) 0) #\:)))
+
 (define (normalize-defmethod-payload args)
   (if (>= (length args) 3)
-      (let ((name (car args))
-            (params (cadr args))
-            (body (cddr args)))
+      (let* (;; Optional qualifier: :before, :after, :around
+             (has-qual? (and (>= (length args) 4)
+                             (keyword-symbol-ir? (cadr args))
+                             (memq (cadr args) '(:before :after :around))))
+             (qualifier (if has-qual? (cadr args) #f))
+             (rest (if has-qual? (cddr args) (cdr args)))
+             (name (car args))
+             (params (car rest))
+             (body (cdr rest)))
         (if (and (symbol? name) (list? params))
             (let ((norm-params (map normalize-defmethod-param params)))
               (if (all-truthy? norm-params)
-                  (list name norm-params (normalize-body body))
+                  (list name qualifier norm-params (normalize-body body))
                   #f))
             #f))
       #f))
@@ -461,6 +472,11 @@
                  (list 'special 'dynamic-let
                        (list norm-bindings (normalize-body body))))))
          (list 'invalid-special op args)))
+    ;; ---- Phase 7-C ----
+    ((class)
+     (if (and (= (length args) 1) (symbol? (car args)))
+         (list 'special 'class (list (car args)))
+         (list 'invalid-special op args)))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -485,7 +501,7 @@
                     defclass defgeneric defmethod
                     flet labels the unwind-protect function
                     with-handler
-                    dynamic dynamic-let)
+                    dynamic dynamic-let class)
              (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))

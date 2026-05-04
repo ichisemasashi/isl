@@ -19,7 +19,9 @@
           isl-condition-continuable? isl-condition-irritants
           *isl-handler-stack* isl-signal-condition isl-subclassp?
           ;; Phase 6: dynamic variables + strict sanitization
-          *dynamic-var-table* resolve-binding-symbol sanitize-for-strict))
+          *dynamic-var-table* resolve-binding-symbol sanitize-for-strict
+          ;; Phase 7-A: next-method support
+          *next-methods* *current-method-args*))
 
 (select-module isl.core)
 
@@ -870,14 +872,15 @@
 (define (set-generic-methods! g methods) (vector-set! g 3 methods))
 
 (define (method? obj)
-  (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'method)))
+  (and (vector? obj) (= (vector-length obj) 5) (eq? (vector-ref obj 0) 'method)))
 
-(define (make-method specializers params proc)
-  (vector 'method specializers params proc))
+(define (make-method qualifier specializers params proc)
+  (vector 'method qualifier specializers params proc))
 
-(define (method-specializers m) (vector-ref m 1))
-(define (method-params m) (vector-ref m 2))
-(define (method-proc m) (vector-ref m 3))
+(define (method-qualifier m) (vector-ref m 1))
+(define (method-specializers m) (vector-ref m 2))
+(define (method-params m) (vector-ref m 3))
+(define (method-proc m) (vector-ref m 4))
 
 (define (class? obj)
   (and (vector? obj) (= (vector-length obj) 4) (eq? (vector-ref obj 0) 'class)))
@@ -1303,10 +1306,32 @@
             (loop (cdr methods) best-method best-score)))))))
 
 (define (apply-generic generic args)
-  (let ((m (select-generic-method generic args)))
-    (if m
-        (apply-islisp (method-proc m) args)
-        (error "No applicable method for generic function" (generic-name generic) args))))
+  (let* ((all-methods (generic-methods generic))
+         (app-around  (sort-applicable
+                       (filter (lambda (m) (eq? (method-qualifier m) ':around)) all-methods) args))
+         (app-before  (sort-applicable
+                       (filter (lambda (m) (eq? (method-qualifier m) ':before)) all-methods) args))
+         (app-primary (sort-applicable
+                       (filter (lambda (m) (not (method-qualifier m))) all-methods) args))
+         (app-after   (reverse (sort-applicable
+                                (filter (lambda (m) (eq? (method-qualifier m) ':after)) all-methods) args))))
+    (when (null? app-primary)
+      (error "No applicable primary method for generic function" (generic-name generic) args))
+    (letrec ((call-effective-primary
+              (lambda (eff-args)
+                (for-each (lambda (m)
+                            (parameterize ((*next-methods* '()) (*current-method-args* eff-args))
+                              (apply-islisp (method-proc m) eff-args)))
+                          app-before)
+                (let ((result (invoke-chain (map method-proc app-primary) #f eff-args)))
+                  (for-each (lambda (m)
+                              (parameterize ((*next-methods* '()) (*current-method-args* eff-args))
+                                (apply-islisp (method-proc m) eff-args)))
+                            app-after)
+                  result))))
+      (if (null? app-around)
+          (call-effective-primary args)
+          (invoke-chain (map method-proc app-around) call-effective-primary args)))))
 
 (define (trace-entry sym)
   (assoc sym *trace-table*))
@@ -2004,6 +2029,14 @@
                      (error "defclass superclass must be symbol" s))
                    (resolve-class-designator s env))
                  super-forms))
+           ;; Phase 7-D: if no explicit supers, default to <standard-object>
+           (supers
+            (if (and (null? supers)
+                     (not (eq? name (resolve-binding-symbol '<standard-object>)))
+                     (not (eq? name (resolve-binding-symbol '<built-in-class>))))
+                (let ((so (class-table-ref (resolve-binding-symbol '<standard-object>))))
+                  (if so (list so) supers))
+                supers))
            (own-slots (map parse-slot-spec slot-forms))
            (class-obj (make-class name supers own-slots))
            (global (global-frame env)))
@@ -2020,7 +2053,7 @@
                                     env
                                     reader))
                      (generic (ensure-generic-function! reader env '(obj)))
-                     (method (make-method (list class-obj) '(obj) method-proc)))
+                     (method (make-method #f (list class-obj) '(obj) method-proc)))
                 (set-generic-methods! generic (cons method (generic-methods generic)))))
             (slot-spec-readers s))
            (for-each
@@ -2033,7 +2066,7 @@
                                     env
                                     writer))
                      (generic (ensure-generic-function! writer env '(obj value)))
-                     (method (make-method (list class-obj #f) '(obj value) method-proc)))
+                     (method (make-method #f (list class-obj #f) '(obj value) method-proc)))
                 (set-generic-methods! generic (cons method (generic-methods generic)))))
             (slot-spec-writers s))
            (let ((acc (slot-spec-accessor s)))
@@ -2055,6 +2088,15 @@
         (frame-define! global sym g)
         g)))))
 
+;; ---- Phase 7-C: (class <name>) special form ----
+(define (eval-class-form args env)
+  (unless (= (length args) 1)
+    (error "class needs exactly one class-name" args))
+  (let ((name (resolve-binding-symbol (car args))))
+    (let ((entry (class-table-ref name)))
+      (unless entry (error "class: undefined class" name))
+      entry)))
+
 (define (eval-defgeneric args env)
   (unless (= (length args) 2)
     (error "defgeneric takes name and parameter list" args))
@@ -2070,8 +2112,13 @@
   (unless (>= (length args) 3)
     (error "defmethod takes name, parameter list and body" args))
   (let* ((name (resolve-binding-symbol (car args)))
-         (raw-params (cadr args))
-         (body (cddr args)))
+         (has-qualifier? (and (>= (length args) 4)
+                              (keyword-symbol? (cadr args))
+                              (memq (cadr args) '(:before :after :around))))
+         (qualifier (if has-qualifier? (cadr args) #f))
+         (rest (if has-qualifier? (cddr args) (cdr args)))
+         (raw-params (car rest))
+         (body (cdr rest)))
     (unless (symbol? name)
       (error "defmethod name must be symbol" name))
     (let* ((parsed (parse-method-params raw-params env))
@@ -2079,7 +2126,7 @@
            (specializers (cadr parsed))
            (method-proc (make-closure plain-params body env name))
            (generic (ensure-generic-function! name env plain-params))
-           (method (make-method specializers plain-params method-proc)))
+           (method (make-method qualifier specializers plain-params method-proc)))
       ;; Newer methods of same specificity should win.
       (set-generic-methods! generic (cons method (generic-methods generic)))
       name)))
@@ -3068,7 +3115,7 @@
 
 (define (special-form? sym)
   (memq sym '(quote quasiquote if cond case and or loop while do dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass flet labels the unwind-protect defconstant function with-handler
-             dynamic dynamic-let)))
+             dynamic dynamic-let class)))
 
 (define (extended-special-form? sym)
   (memq sym '(trace untrace)))
@@ -3175,6 +3222,9 @@
        (eval-dynamic args env))
       ((dynamic-let)
        (eval-dynamic-let args env tail?))
+      ;; ---- Phase 7-C ----
+      ((class)
+       (eval-class-form args env))
       (else
        (error "Unknown special form" op)))))
 
@@ -3241,6 +3291,33 @@
                (and (pair? supers)
                     (or (isl-subclassp? (class-name (car supers)) super-sym)
                         (loop (cdr supers)))))))))
+
+;; ---- Phase 7-A: next-method support ----
+(define *next-methods* (make-parameter '()))
+(define *current-method-args* (make-parameter '()))
+
+(define (sort-applicable methods args)
+  (let* ((scored (filter-map
+                   (lambda (m)
+                     (let ((score (method-applicability-score m args)))
+                       (and score (cons score m))))
+                   methods))
+         (sorted (sort scored (lambda (a b) (score<? (car a) (car b))))))
+    (map cdr sorted)))
+
+(define (invoke-chain procs extra-fn current-args)
+  ;; Call procs[0]; *next-methods* leads to procs[1..n] then extra-fn.
+  ;; Only advertise a next method if it would succeed.
+  (if (null? procs)
+      (if extra-fn
+          (extra-fn current-args)
+          (error "call-next-method: no next method available"))
+      (parameterize ((*next-methods*
+                      (if (or (pair? (cdr procs)) extra-fn)
+                          (list (lambda (a) (invoke-chain (cdr procs) extra-fn a)))
+                          '()))
+                     (*current-method-args* current-args))
+        (apply-islisp (car procs) current-args))))
 
 ;; ---- 5-B: handler stack and signalling ----
 (define *isl-handler-stack* (make-parameter '()))
@@ -5246,6 +5323,12 @@
                     (error "Unknown initarg for make-instance" k))
                   (instance-slot-set! obj (slot-spec-name spec) v))
                 (apply-initargs (cddr rest)))))
+          ;; Phase 7-E: call initialize-object hook
+          (let ((init-sym (resolve-binding-symbol 'initialize-object))
+                (global-frame (global-frame env)))
+            (when (frame-bound? global-frame init-sym)
+              (apply-islisp (frame-ref global-frame init-sym)
+                            (list obj raw-initargs))))
           obj))))
   (def 'class-of
     (lambda (obj)
@@ -5260,6 +5343,48 @@
   (def 'slot-value
     (lambda (obj slot)
       (instance-slot-ref obj slot)))
+  ;; ---- Phase 7-A ----
+  (def 'call-next-method
+    (lambda args
+      (let ((stack (*next-methods*)))
+        (when (null? stack)
+          (isl-signal-condition
+           (make-isl-condition '<control-error> "call-next-method: no next method available" #f '())))
+        (let* ((next-fn (car stack))
+               (effective-args (if (null? args) (*current-method-args*) args)))
+          (parameterize ((*next-methods* (cdr stack))
+                         (*current-method-args* effective-args))
+            (next-fn effective-args))))))
+  (def 'next-method-p
+    (lambda ()
+      (if (null? (*next-methods*)) '() #t)))
+  ;; ---- Phase 7-C ----
+  (def 'subclassp
+    (lambda (sub super)
+      (let ((sub-sym (cond ((class? sub) (class-name sub))
+                           ((symbol? sub) (resolve-binding-symbol sub))
+                           (else (error "subclassp: first arg must be symbol or class" sub))))
+            (sup-sym (cond ((class? super) (class-name super))
+                           ((symbol? super) (resolve-binding-symbol super))
+                           (else (error "subclassp: second arg must be symbol or class" super)))))
+        (if (isl-subclassp? sub-sym sup-sym) #t '()))))
+  ;; Phase 7-E: initialize-object is installed as a generic in make-initial-env
+  ;; ---- Phase 7-F ----
+  (def 'slot-boundp
+    (lambda (obj slot-name)
+      (unless (instance? obj) (error "slot-boundp needs an instance" obj))
+      (unless (symbol? slot-name) (error "slot-boundp slot-name must be symbol" slot-name))
+      (if (find-instance-slot-entry (instance-slots obj) slot-name) #t '())))
+  (def 'slot-makunbound
+    (lambda (obj slot-name)
+      (unless (instance? obj) (error "slot-makunbound needs an instance" obj))
+      (unless (symbol? slot-name) (error "slot-makunbound slot-name must be symbol" slot-name))
+      (let ((entry (find-instance-slot-entry (instance-slots obj) slot-name)))
+        (unless entry (error "slot-makunbound: no such slot" slot-name obj))
+        (set-instance-slots! obj
+          (filter (lambda (p) (not (eq? (car p) (car entry))))
+                  (instance-slots obj)))
+        obj)))
   (def 'current-package
     (lambda ()
       (string->symbol (package-name *current-package*))))
@@ -5411,6 +5536,17 @@
         (package-export! *current-package* '*standard-input*)
         (package-export! *current-package* '*standard-output*)
         (package-export! *current-package* '*error-output*))
+      ;; ---- Phase 7-D: root OOP classes ----
+      (for-each (lambda (form) (eval-islisp form env))
+        '((defclass <standard-object> () ())
+          (defclass <built-in-class>  () ())))
+      (for-each (lambda (name) (package-export! islisp name))
+        '(<standard-object> <built-in-class>))
+      ;; ---- Phase 7-E: initialize-object generic function ----
+      (for-each (lambda (form) (eval-islisp form env))
+        '((defgeneric initialize-object (obj initargs))
+          (defmethod initialize-object ((obj <standard-object>) initargs) obj)))
+      (package-export! islisp 'initialize-object)
       ;; ---- Phase 5-A: ISLISP condition class hierarchy ----
       (for-each (lambda (form) (eval-islisp form env))
         '((defclass <condition>                   ()                       ())
