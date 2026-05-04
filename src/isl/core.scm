@@ -1253,6 +1253,27 @@
 (define (score=? a b)
   (equal? a b))
 
+;; Returns the isl class object for a native (non-instance) Gauche value.
+;; Returns #f if not found (class table not yet initialized).
+(define (native-value->class-obj val)
+  (define (ctref name)
+    ;; Try resolved name first, then bare name as fallback
+    (or (class-table-ref (resolve-binding-symbol name))
+        (class-table-ref name)))
+  (cond
+   ((and (integer? val) (exact? val)) (ctref '<integer>))
+   ((and (number? val) (inexact? val)) (ctref '<float>))
+   ((number? val)   (ctref '<number>))
+   ((string? val)   (ctref '<string>))
+   ((symbol? val)   (ctref '<symbol>))
+   ((char? val)     (ctref '<character>))
+   ((pair? val)     (ctref '<cons>))
+   ((null? val)     (ctref '<null>))
+   ((vector? val)   (ctref '<general-vector>))
+   ((or (closure? val) (primitive? val)) (ctref '<function>))
+   ((or (input-port? val) (output-port? val)) (ctref '<stream>))
+   (else            (ctref '<object>))))
+
 (define (method-applicability-score method args)
   (let ((specializers (method-specializers method)))
     (if (< (length args) (length specializers))
@@ -1265,12 +1286,15 @@
               (let ((spec (car ss))
                     (arg (car as)))
                 (if spec
-                    (if (instance? arg)
-                        (let ((d (class-distance (instance-class arg) spec)))
-                          (if d
-                              (loop (cdr ss) (cdr as) (cons d acc))
-                              #f))
-                        #f)
+                    (let ((arg-class (if (instance? arg)
+                                         (instance-class arg)
+                                         (native-value->class-obj arg))))
+                      (if arg-class
+                          (let ((d (class-distance arg-class spec)))
+                            (if d
+                                (loop (cdr ss) (cdr as) (cons d acc))
+                                #f))
+                          #f))
                     (loop (cdr ss) (cdr as) (cons 1000000 acc)))))))))
 
 (define (method-more-specific-conflict? m1 m2)
@@ -1785,7 +1809,19 @@
     (error "loop until clause needs a test form" xs))
   (list (cadr xs) (cddr xs)))
 
+;; ISLISP standard (loop body*) — infinite loop; escaped by return-from/block.
+;; Extended CL-style: (loop for ... from ... to ... [until ...] [do ...])
 (define (eval-loop args env)
+  (if (or (null? args)
+          (not (memq (car args) '(for until do))))
+      ;; ISLISP standard: infinite loop form
+      (let loop-inf ()
+        (eval-sequence args env)
+        (loop-inf))
+      ;; Extended CL-style loop
+      (eval-loop-extended args env)))
+
+(define (eval-loop-extended args env)
   (let ((for-var #f)
         (start-form #f)
         (end-form #f)
@@ -2396,6 +2432,18 @@
     (vector-set! target index val)
     val))
 
+(define (eval-setf-string-ref-place place env val)
+  (let ((target (eval-islisp* (cadr place) env #f))
+        (index  (eval-islisp* (caddr place) env #f)))
+    (unless (string? target)
+      (error "setf string-ref: target must be a string" target))
+    (unless (and (integer? index) (>= index 0) (< index (string-length target)))
+      (error "setf string-ref: index out of range" index))
+    (unless (char? val)
+      (error "setf string-ref: value must be a character" val))
+    (string-set! target index val)
+    val))
+
 (define (eval-setf-gethash-place place env val)
   (let ((key (eval-islisp* (cadr place) env #f))
         (table (eval-islisp* (caddr place) env #f)))
@@ -2441,6 +2489,18 @@
     eval-setf-gethash-place)
    ((and (pair? place) (eq? (car place) 'slot-value) (= (length place) 3))
     eval-setf-slot-place)
+   ;; (setf (string-ref s i) ch)
+   ((and (pair? place) (eq? (car place) 'string-ref) (= (length place) 3))
+    eval-setf-string-ref-place)
+   ;; (setf (general-vector-ref v i) x)
+   ((and (pair? place) (eq? (car place) 'general-vector-ref) (= (length place) 3))
+    eval-setf-vector-place)
+   ;; (setf (dynamic var) val)
+   ((and (pair? place) (eq? (car place) 'dynamic) (= (length place) 2))
+    (lambda (place env val)
+      (let ((name (resolve-binding-symbol (cadr place))))
+        (hash-table-put! (*dynamic-var-table*) name val)
+        val)))
    ((and (pair? place) (symbol? (car place)) (= (length place) 2))
     eval-setf-accessor-place)
    (else #f)))
@@ -2548,7 +2608,11 @@
 ;; 3-B: the — type declaration
 (define (isl-instance-of? val class-name)
   ;; Check built-in types by ISLISP class name, then user-defined ISL instances.
-  (let* ((s (symbol->string (if (symbol? class-name) class-name 'unknown)))
+  ;; Strip package prefix (e.g. ISLISP::<integer> → <integer>) before comparison.
+  (let* ((cn (if (symbol? class-name)
+                 (string->symbol (symbol-base-name class-name))
+                 class-name))
+         (s (symbol->string (if (symbol? cn) cn 'unknown)))
          (bare (cond
                 ((and (> (string-length s) 0) (char=? (string-ref s 0) #\<)
                       (char=? (string-ref s (- (string-length s) 1)) #\>))
@@ -2570,9 +2634,10 @@
      ((string=? bare "general-vector") (vector? val))
      ((string=? bare "function")  (or (closure? val) (primitive? val)))
      (else
-      ;; Try user-defined class
+      ;; Try user-defined class: lookup by resolved name and by original symbol.
       (and (instance? val)
-           (let ((class-obj (class-table-ref class-name)))
+           (let ((class-obj (or (class-table-ref (resolve-binding-symbol class-name))
+                                (class-table-ref class-name))))
              (and class-obj
                   (let ((d (class-distance (instance-class val) class-obj)))
                     (if d #t #f)))))))))
@@ -3424,46 +3489,47 @@
   (def '* *)
   (def '/ /)
   (def 'mod modulo)
+  ;; ISLISP §11.10: floor/ceiling/truncate/round return exact integers.
   (def 'floor
     (lambda args
       (cond
        ((= (length args) 1)
-        (floor (car args)))
+        (inexact->exact (floor (car args))))
        ((= (length args) 2)
         (let ((x (car args)) (d (cadr args)))
           (unless (number? x) (error "floor x must be number" x))
           (unless (number? d) (error "floor divisor must be number" d))
-          (floor (/ x d))))
+          (inexact->exact (floor (/ x d)))))
        (else (error "floor takes 1 or 2 arguments" args)))))
   (def 'ceiling
     (lambda args
       (cond
-       ((= (length args) 1) (ceiling (car args)))
+       ((= (length args) 1) (inexact->exact (ceiling (car args))))
        ((= (length args) 2)
         (let ((x (car args)) (d (cadr args)))
           (unless (number? x) (error "ceiling x must be number" x))
           (unless (number? d) (error "ceiling divisor must be number" d))
-          (ceiling (/ x d))))
+          (inexact->exact (ceiling (/ x d)))))
        (else (error "ceiling takes 1 or 2 arguments" args)))))
   (def 'truncate
     (lambda args
       (cond
-       ((= (length args) 1) (truncate (car args)))
+       ((= (length args) 1) (inexact->exact (truncate (car args))))
        ((= (length args) 2)
         (let ((x (car args)) (d (cadr args)))
           (unless (number? x) (error "truncate x must be number" x))
           (unless (number? d) (error "truncate divisor must be number" d))
-          (truncate (/ x d))))
+          (inexact->exact (truncate (/ x d)))))
        (else (error "truncate takes 1 or 2 arguments" args)))))
   (def 'round
     (lambda args
       (cond
-       ((= (length args) 1) (round (car args)))
+       ((= (length args) 1) (inexact->exact (round (car args))))
        ((= (length args) 2)
         (let ((x (car args)) (d (cadr args)))
           (unless (number? x) (error "round x must be number" x))
           (unless (number? d) (error "round divisor must be number" d))
-          (round (/ x d))))
+          (inexact->exact (round (/ x d)))))
        (else (error "round takes 1 or 2 arguments" args)))))
   (def 'quotient
     (lambda (n d)
@@ -3548,15 +3614,15 @@
           (if result result '())))))
 
   ;; --- Phase 1-C: 型述語 ---
-  (def 'consp pair?)
-  (def 'characterp char?)
-  (def 'integerp (lambda (x) (and (integer? x) (exact? x))))
-  (def 'floatp inexact?)
+  (def 'consp (lambda (x) (if (pair? x) #t '())))
+  (def 'characterp (lambda (x) (if (char? x) #t '())))
+  (def 'integerp (lambda (x) (if (and (integer? x) (exact? x)) #t '())))
+  (def 'floatp (lambda (x) (if (inexact? x) #t '())))
   (def 'functionp
     (lambda (x)
-      (or (closure? x) (primitive? x))))
-  (def 'general-vector-p vector?)
-  (def 'general-array*-p vector?)
+      (if (or (closure? x) (primitive? x)) #t '())))
+  (def 'general-vector-p (lambda (x) (if (vector? x) #t '())))
+  (def 'general-array*-p (lambda (x) (if (vector? x) #t '())))
 
   ;; --- Phase 1-D: 三角関数・超越関数 ---
   (def 'exp  (lambda (x) (unless (number? x) (error "exp needs number" x))  (exp x)))
@@ -3578,11 +3644,11 @@
         (atan (car args) (cadr args)))
        (else (error "atan takes 1 or 2 arguments" args)))))
 
-  (def '= =)
-  (def '< <)
-  (def '> >)
-  (def '<= <=)
-  (def '>= >=)
+  (def '= (lambda (a b) (if (= a b) #t '())))
+  (def '< (lambda (a b) (if (< a b) #t '())))
+  (def '> (lambda (a b) (if (> a b) #t '())))
+  (def '<= (lambda (a b) (if (<= a b) #t '())))
+  (def '>= (lambda (a b) (if (>= a b) #t '())))
   (def 'cons cons)
   (def 'car car)
   (def 'cdr cdr)
@@ -3793,7 +3859,7 @@
             (if (truthy? (apply-islisp test (list key (caar rest))))
                 (car rest) (loop (cdr rest))))
            (else
-            (if (eqv? key (caar rest))
+            (if (equal? key (caar rest))
                 (car rest) (loop (cdr rest)))))))))
   (def 'remove
     (lambda (obj lst . opts)
@@ -3978,32 +4044,32 @@
                         (loop (+ i 1) n))))))
            (else
             (error "find needs list/vector/string as sequence" seq)))))))
-  (def 'eq eq?)
-  (def 'eql eqv?)
-  (def 'equal equal?)
-  (def 'null (lambda (x) (null? x)))
-  (def 'atom (lambda (x) (not (pair? x))))
-  (def 'numberp number?)
-  (def 'zerop zero?)
+  (def 'eq (lambda (a b) (if (eq? a b) #t '())))
+  (def 'eql (lambda (a b) (if (eqv? a b) #t '())))
+  (def 'equal (lambda (a b) (if (equal? a b) #t '())))
+  (def 'null (lambda (x) (if (null? x) #t '())))
+  (def 'atom (lambda (x) (if (not (pair? x)) #t '())))
+  (def 'numberp (lambda (x) (if (number? x) #t '())))
+  (def 'zerop (lambda (x) (if (zero? x) #t '())))
   (def 'plusp
     (lambda (x)
-      (> x 0)))
+      (if (> x 0) #t '())))
   (def 'minusp
     (lambda (x)
-      (< x 0)))
+      (if (< x 0) #t '())))
   (def 'evenp
     (lambda (x)
       (unless (integer? x)
         (error "evenp needs an integer" x))
-      (zero? (modulo x 2))))
+      (if (zero? (modulo x 2)) #t '())))
   (def 'oddp
     (lambda (x)
       (unless (integer? x)
         (error "oddp needs an integer" x))
-      (not (zero? (modulo x 2)))))
-  (def 'symbolp symbol?)
-  (def 'listp list?)
-  (def 'stringp string?)
+      (if (not (zero? (modulo x 2))) #t '())))
+  (def 'symbolp (lambda (x) (if (symbol? x) #t '())))
+  (def 'listp (lambda (x) (if (list? x) #t '())))
+  (def 'stringp (lambda (x) (if (string? x) #t '())))
   (def 'string
     (lambda args
       (if (null? args)
@@ -4032,32 +4098,32 @@
     (lambda (a b)
       (ensure-string a "string=")
       (ensure-string b "string=")
-      (string=? a b)))
+      (if (string=? a b) #t '())))
   (def 'string/=
     (lambda (a b)
       (ensure-string a "string/=")
       (ensure-string b "string/=")
-      (if (string=? a b) #f #t)))
+      (if (string=? a b) '() #t)))
   (def 'string<
     (lambda (a b)
       (ensure-string a "string<")
       (ensure-string b "string<")
-      (if (string<? a b) #t #f)))
+      (if (string<? a b) #t '())))
   (def 'string<=
     (lambda (a b)
       (ensure-string a "string<=")
       (ensure-string b "string<=")
-      (if (string<=? a b) #t #f)))
+      (if (string<=? a b) #t '())))
   (def 'string>
     (lambda (a b)
       (ensure-string a "string>")
       (ensure-string b "string>")
-      (if (string>? a b) #t #f)))
+      (if (string>? a b) #t '())))
   (def 'string>=
     (lambda (a b)
       (ensure-string a "string>=")
       (ensure-string b "string>=")
-      (if (string>=? a b) #t #f)))
+      (if (string>=? a b) #t '())))
   (def 'string-concat
     (lambda xs
       (for-each (lambda (x) (ensure-string x "string-concat")) xs)
@@ -4117,32 +4183,43 @@
     (lambda (s)
       (ensure-string s "string-downcase")
       (string-map char-downcase s)))
+  ;; ISLISP standard: string->list and list->string
+  (def 'string->list
+    (lambda (s)
+      (ensure-string s "string->list")
+      (string->list s)))
+  (def 'list->string
+    (lambda (lst)
+      (unless (list? lst)
+        (error "list->string needs a list" lst))
+      (for-each (lambda (c) (ensure-char c "list->string")) lst)
+      (list->string lst)))
 
   ;; --- Phase 2-C: 文字比較関数 ---
   (def 'char=
     (lambda (a b)
       (ensure-char a "char=") (ensure-char b "char=")
-      (if (char=? a b) #t #f)))
+      (if (char=? a b) #t '())))
   (def 'char/=
     (lambda (a b)
       (ensure-char a "char/=") (ensure-char b "char/=")
-      (if (char=? a b) #f #t)))
+      (if (char=? a b) '() #t)))
   (def 'char<
     (lambda (a b)
       (ensure-char a "char<") (ensure-char b "char<")
-      (if (char<? a b) #t #f)))
+      (if (char<? a b) #t '())))
   (def 'char>
     (lambda (a b)
       (ensure-char a "char>") (ensure-char b "char>")
-      (if (char>? a b) #t #f)))
+      (if (char>? a b) #t '())))
   (def 'char<=
     (lambda (a b)
       (ensure-char a "char<=") (ensure-char b "char<=")
-      (if (char<=? a b) #t #f)))
+      (if (char<=? a b) #t '())))
   (def 'char>=
     (lambda (a b)
       (ensure-char a "char>=") (ensure-char b "char>=")
-      (if (char>=? a b) #t #f)))
+      (if (char>=? a b) #t '())))
   (def 'char-upcase
     (lambda (c)
       (ensure-char c "char-upcase")
@@ -4239,9 +4316,15 @@
     (lambda args
       (cond
        ((null? args)
-        (read))
+        (let ((obj (read)))
+          (if (eof-object? obj)
+              (eof-stream-error "read")
+              obj)))
        ((= (length args) 1)
-        (read (car args)))
+        (let ((obj (read (car args))))
+          (if (eof-object? obj)
+              (eof-stream-error "read")
+              obj)))
        (else
         (error "read takes zero or one stream argument" args)))))
   (def 'read-line
@@ -5297,10 +5380,17 @@
             (error "format: destination must be t, nil, or an output stream" dest)))))))
   (def 'not
     (lambda (x)
-      (if (truthy? x) #f #t)))
+      (if (truthy? x) '() #t)))
   (def 'apply
-    (lambda (f xs)
-      (apply-islisp f xs)))
+    (lambda (f . rest)
+      (when (null? rest)
+        (error "apply: needs at least a function and a list" f))
+      ;; ISLISP: (apply f arg* list) — last arg must be a list, preceding are prepended
+      (let ((last-arg (car (reverse rest)))
+            (front-args (reverse (cdr (reverse rest)))))
+        (unless (list? last-arg)
+          (error "apply: last argument must be a list" last-arg))
+        (apply-islisp f (append front-args last-arg)))))
   (def 'funcall
     (lambda (f . xs)
       (apply-islisp f xs)))
@@ -5343,10 +5433,94 @@
        ((instance? obj) (instance-class obj))
        ((class? obj) obj)
        (else
-        (error "class-of target must be instance or class" obj)))))
+        (let ((cls (native-value->class-obj obj)))
+          (or cls (error "class-of: cannot determine class" obj)))))))
   (def 'instancep
-    (lambda (obj)
-      (instance? obj)))
+    (lambda args
+      (cond
+       ((= (length args) 1)
+        ;; isl 拡張: 1引数は instance? 相当
+        (instance? (car args)))
+       ((= (length args) 2)
+        ;; ISLISP 標準: (instancep obj class)
+        (let* ((obj       (car args))
+               (class-arg (cadr args))
+               (cname     (cond
+                           ((class? class-arg) (class-name class-arg))
+                           ((symbol? class-arg) class-arg)
+                           (else (error "instancep: second arg must be class or class-name" class-arg)))))
+          (if (isl-instance-of? obj cname) #t '())))
+       (else
+        (error "instancep: expects 1 or 2 arguments" args)))))
+
+  ;; ISLISP §13: convert — type conversion between classes
+  (def 'convert
+    (lambda (obj class-arg)
+      (let* ((raw (cond
+                    ((class? class-arg) (class-name class-arg))
+                    ((symbol? class-arg) class-arg)
+                    (else (error "convert: second arg must be class" class-arg))))
+             ;; Strip package prefix so ISLISP::<integer> == <integer>
+             (cname (string->symbol (symbol-base-name raw))))
+        (cond
+         ((eq? cname '<integer>)
+          (cond ((and (integer? obj) (exact? obj)) obj)
+                ((number? obj) (inexact->exact (truncate obj)))
+                ((char? obj) (char->integer obj))
+                (else (error "convert: cannot convert to <integer>" obj))))
+         ((eq? cname '<float>)
+          (cond ((number? obj) (exact->inexact obj))
+                (else (error "convert: cannot convert to <float>" obj))))
+         ((eq? cname '<string>)
+          (cond ((string? obj)  obj)
+                ((symbol? obj)  (symbol->string obj))
+                ((char? obj)    (string obj))
+                ((list? obj)    (list->string obj))
+                (else (error "convert: cannot convert to <string>" obj))))
+         ((eq? cname '<symbol>)
+          (cond ((symbol? obj) obj)
+                ((string? obj) (string->symbol obj))
+                (else (error "convert: cannot convert to <symbol>" obj))))
+         ((eq? cname '<list>)
+          (cond ((list? obj)   obj)
+                ((string? obj) (string->list obj))
+                ((vector? obj) (vector->list obj))
+                (else (error "convert: cannot convert to <list>" obj))))
+         ((eq? cname '<general-vector>)
+          (cond ((vector? obj) obj)
+                ((list? obj)   (list->vector obj))
+                ((string? obj) (list->vector (string->list obj)))
+                (else (error "convert: cannot convert to <general-vector>" obj))))
+         ((eq? cname '<character>)
+          (cond ((char? obj) obj)
+                ((and (integer? obj) (exact? obj)) (integer->char obj))
+                (else (error "convert: cannot convert to <character>" obj))))
+         (else
+          (error "convert: unsupported target class" cname))))))
+
+  ;; identity
+  (def 'identity (lambda (x) x))
+
+  ;; basic-array-p: #t for vectors and strings
+  (def 'basic-array-p
+    (lambda (x) (if (or (vector? x) (string? x)) #t '())))
+
+  ;; map-into: destructively fill vector from applying fn to lists
+  (def 'map-into
+    (lambda (target fn . lists)
+      (when (null? lists) (error "map-into: needs at least one source list"))
+      (unless (vector? target) (error "map-into: target must be a vector" target))
+      (let loop ((i 0) (tails lists))
+        (if (or (any null? tails) (>= i (vector-length target)))
+            target
+            (begin
+              (vector-set! target i (apply-islisp fn (map car tails)))
+              (loop (+ i 1) (map cdr tails)))))))
+
+  ;; eval: evaluate an ISLISP form in the current global environment
+  (def 'eval
+    (lambda (form)
+      (eval-islisp form env)))
   (def 'slot-value
     (lambda (obj slot)
       (instance-slot-ref obj slot)))
@@ -5488,7 +5662,97 @@
       (macroexpand* form env)))
   (def 'exit
     (lambda args
-      (apply exit args))))
+      (apply exit args)))
+  ;; ---- Modification E: standard naming ----
+  ;; E-1. char-code / code-char (ISLISP standard names for char<->integer)
+  (def 'char-code
+    (lambda (c)
+      (unless (char? c) (error "char-code needs char" c))
+      (char->integer c)))
+  (def 'code-char
+    (lambda (n)
+      (unless (integer? n) (error "code-char needs integer" n))
+      (integer->char n)))
+  ;; E-2. list-length (ISLISP standard name for length on lists)
+  (def 'list-length
+    (lambda (lst)
+      (unless (list? lst) (error "list-length needs a list" lst))
+      (length lst)))
+  ;; E-3. basic-vector-p (ISLISP: true for vectors and strings)
+  (def 'basic-vector-p
+    (lambda (x) (if (or (vector? x) (string? x)) #t '())))
+  ;; E-4. vector-length (ISLISP standard name) - using a local binding to avoid conflict
+  (def 'vector-length
+    (lambda (v)
+      (unless (vector? v) (error "vector-length needs a vector" v))
+      (vector-length v)))
+  ;; E-5. symbol-name (ISLISP standard name)
+  (def 'symbol-name
+    (lambda (s)
+      (unless (symbol? s) (error "symbol-name needs a symbol" s))
+      (symbol->string s)))
+  ;; ---- Modification F: character predicates ----
+  (def 'char-alphabetic-p
+    (lambda (c)
+      (unless (char? c) (error "char-alphabetic-p: char required" c))
+      (if (char-alphabetic? c) #t '())))
+  (def 'char-numeric-p
+    (lambda (c)
+      (unless (char? c) (error "char-numeric-p: char required" c))
+      (if (char-numeric? c) #t '())))
+  (def 'char-whitespace-p
+    (lambda (c)
+      (unless (char? c) (error "char-whitespace-p: char required" c))
+      (if (char-whitespace? c) #t '())))
+  (def 'char-upper-case-p
+    (lambda (c)
+      (unless (char? c) (error "char-upper-case-p: char required" c))
+      (if (char-upper-case? c) #t '())))
+  (def 'char-lower-case-p
+    (lambda (c)
+      (unless (char? c) (error "char-lower-case-p: char required" c))
+      (if (char-lower-case? c) #t '())))
+  ;; ---- Modification G: some/every/notany/notevery ----
+  (def 'some
+    (lambda (pred . lists)
+      (when (null? lists) (error "some: needs at least one list"))
+      (let loop ((tails lists))
+        (if (any null? tails)
+            '()   ; nil = false
+            (let ((result (apply-islisp pred (map car tails))))
+              (if (truthy? result)
+                  result
+                  (loop (map cdr tails))))))))
+  (def 'every
+    (lambda (pred . lists)
+      (when (null? lists) (error "every: needs at least one list"))
+      (let loop ((tails lists) (last #t))
+        (if (any null? tails)
+            last
+            (let ((result (apply-islisp pred (map car tails))))
+              (if (truthy? result)
+                  (loop (map cdr tails) result)
+                  '()))))))
+  (def 'notany
+    (lambda (pred . lists)
+      (when (null? lists) (error "notany: needs at least one list"))
+      (let loop ((tails lists))
+        (if (any null? tails)
+            #t
+            (let ((result (apply-islisp pred (map car tails))))
+              (if (truthy? result)
+                  '()
+                  (loop (map cdr tails))))))))
+  (def 'notevery
+    (lambda (pred . lists)
+      (when (null? lists) (error "notevery: needs at least one list"))
+      (let loop ((tails lists))
+        (if (any null? tails)
+            '()
+            (let ((result (apply-islisp pred (map car tails))))
+              (if (truthy? result)
+                  (loop (map cdr tails))
+                  #t)))))))
 
 (define *extended-primitive-symbols*
   '(debug break getenv setenv system system-timeout
@@ -5543,12 +5807,38 @@
         (package-export! *current-package* '*standard-input*)
         (package-export! *current-package* '*standard-output*)
         (package-export! *current-package* '*error-output*))
-      ;; ---- Phase 7-D: root OOP classes ----
-      (for-each (lambda (form) (eval-islisp form env))
-        '((defclass <standard-object> () ())
-          (defclass <built-in-class>  () ())))
-      (for-each (lambda (name) (package-export! islisp name))
-        '(<standard-object> <built-in-class>))
+      ;; ---- Phase 7-D: root OOP classes + built-in class hierarchy ----
+      ;; Helper: intern name in ISLISP package, create class, register it.
+      (let* ((mk (lambda (raw-name supers)
+                   (let* ((name (resolve-binding-symbol raw-name))
+                          (c    (make-class name supers '())))
+                     (class-table-set! name c)
+                     (frame-define! (global-frame env) name c)
+                     c)))
+             (obj  (mk '<object>         '()))
+             (num  (mk '<number>         (list obj)))
+             (int  (mk '<integer>        (list num)))
+             (flt  (mk '<float>          (list num)))
+             (chr  (mk '<character>      (list obj)))
+             (sym  (mk '<symbol>         (list obj)))
+             (fun  (mk '<function>       (list obj)))
+             (stm  (mk '<stream>         (list obj)))
+             (ba   (mk '<basic-array>    (list obj)))
+             (bv   (mk '<basic-vector>   (list ba)))
+             (gv   (mk '<general-vector> (list bv)))
+             (str  (mk '<string>         (list bv)))
+             (bl   (mk '<basic-list>     (list obj)))
+             (lst  (mk '<list>           (list bl)))
+             (co   (mk '<cons>           (list lst)))
+             (nll  (mk '<null>           (list lst)))
+             (so   (mk '<standard-object>(list obj)))
+             (bic  (mk '<built-in-class> (list obj))))
+        ;; Export all built-in class names from ISLISP package
+        (for-each (lambda (name) (package-export! islisp name))
+                  '(<object> <number> <integer> <float> <character> <symbol>
+                    <function> <stream> <basic-array> <basic-vector> <general-vector>
+                    <string> <basic-list> <list> <cons> <null>
+                    <standard-object> <built-in-class>)))
       ;; ---- Phase 7-E: initialize-object generic function ----
       (for-each (lambda (form) (eval-islisp form env))
         '((defgeneric initialize-object (obj initargs))
@@ -5586,6 +5876,17 @@
           <unbound-variable> <undefined-function>
           <arity-error> <index-out-of-range> <type-error>
           <simple-error> <stream-error> <end-of-stream>))
+      ;; ---- ISLISP §16.3/§16.4: when/unless macros ----
+      (eval-islisp
+       '(defmacro when (condition &rest body)
+          (list 'if condition (cons 'progn body) nil))
+       env)
+      (package-export! *current-package* 'when)
+      (eval-islisp
+       '(defmacro unless (condition &rest body)
+          (list 'if (list 'not condition) (cons 'progn body) nil))
+       env)
+      (package-export! *current-package* 'unless)
       ;; ---- Phase 5-G: ignore-errors macro ----
       (eval-islisp
        '(defmacro ignore-errors (&rest forms)

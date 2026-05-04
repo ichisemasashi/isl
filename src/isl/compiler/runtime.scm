@@ -609,7 +609,39 @@
 (define (score=? a b)
   (equal? a b))
 
-(define (method-applicability-score method args)
+;; Map a native host value to its rt-class object via the runtime env.
+(define (rt-native-value->class-obj val env)
+  (define (lookup name)
+    (let ((p (env-find-pair env name)))
+      (if p (runtime-value->host (cdr p)) #f)))
+  (cond
+   ((and (integer? val) (exact? val)) (lookup '<integer>))
+   ((and (number? val) (inexact? val)) (lookup '<float>))
+   ((number? val)   (lookup '<number>))
+   ((string? val)   (lookup '<string>))
+   ((symbol? val)   (lookup '<symbol>))
+   ((char? val)     (lookup '<character>))
+   ((pair? val)     (lookup '<cons>))
+   ((null? val)     (lookup '<null>))
+   ((vector? val)   (lookup '<general-vector>))
+   ((procedure? val)(lookup '<function>))
+   ((or (input-port? val) (output-port? val)) (lookup '<stream>))
+   (else            (lookup '<object>))))
+
+;; Check if a value is an instance of a named class (including native values).
+(define (rt-isl-instance-of? obj cname env)
+  (let* ((class-pair (env-find-pair env cname))
+         (target-class (if class-pair (runtime-value->host (cdr class-pair)) #f)))
+    (if (not (rt-class? target-class))
+        #f
+        (let ((obj-class (if (rt-instance? obj)
+                             (rt-instance-class obj)
+                             (rt-native-value->class-obj obj env))))
+          (if obj-class
+              (if (rt-class-distance obj-class target-class) #t #f)
+              #f)))))
+
+(define (method-applicability-score method args env)
   (let ((specializers (rt-method-specializers method)))
     (if (< (length args) (length specializers))
         #f
@@ -617,24 +649,27 @@
           (if (null? ss)
               (reverse acc)
               (let ((spec (car ss))
-                    (arg (runtime-value->host (car as))))
+                    (arg  (runtime-value->host (car as))))
                 (if spec
-                    (if (rt-instance? arg)
-                        (let ((d (rt-class-distance (rt-instance-class arg) spec)))
-                          (if d
-                              (loop (cdr ss) (cdr as) (cons d acc))
-                              #f))
-                        #f)
+                    (let ((arg-class (if (rt-instance? arg)
+                                        (rt-instance-class arg)
+                                        (rt-native-value->class-obj arg env))))
+                      (if arg-class
+                          (let ((d (rt-class-distance arg-class spec)))
+                            (if d
+                                (loop (cdr ss) (cdr as) (cons d acc))
+                                #f))
+                          #f))
                     (loop (cdr ss) (cdr as) (cons 1000000 acc)))))))))
 
-(define (select-generic-method generic args)
+(define (select-generic-method generic args env)
   (let loop ((methods (rt-generic-methods generic))
              (best-method #f)
              (best-score #f))
     (if (null? methods)
         best-method
         (let* ((m (car methods))
-               (score (method-applicability-score m args)))
+               (score (method-applicability-score m args env)))
           (cond
            ((not score)
             (loop (cdr methods) best-method best-score))
@@ -696,7 +731,7 @@
     (runtime-raise 'arity (string-append who " expects 2 arguments") args))
   (let ((a (runtime-number (car args) who))
         (b (runtime-number (cadr args) who)))
-    (host->runtime-value (if (pred a b) #t #f))))
+    (host->runtime-value (if (pred a b) #t '()))))
 
 (define (runtime-decode-process-exit-status raw)
   (if (and (integer? raw) (>= raw 0))
@@ -777,45 +812,46 @@
       (let ((a (runtime-integer (car args) "mod"))
             (b (runtime-integer (cadr args) "mod")))
         (host->runtime-value (modulo a b)))))
+  ;; ISLISP §11.10: floor/ceiling/truncate/round return exact integers.
   (def 'floor
     (lambda (args state)
       (cond
        ((= (length args) 1)
-        (host->runtime-value (floor (runtime-number (car args) "floor"))))
+        (host->runtime-value (inexact->exact (floor (runtime-number (car args) "floor")))))
        ((= (length args) 2)
         (let ((x (runtime-number (car args) "floor"))
               (d (runtime-number (cadr args) "floor")))
-          (host->runtime-value (floor (/ x d)))))
+          (host->runtime-value (inexact->exact (floor (/ x d))))))
        (else (runtime-raise 'arity "floor expects 1 or 2 arguments" args)))))
   (def 'ceiling
     (lambda (args state)
       (cond
        ((= (length args) 1)
-        (host->runtime-value (ceiling (runtime-number (car args) "ceiling"))))
+        (host->runtime-value (inexact->exact (ceiling (runtime-number (car args) "ceiling")))))
        ((= (length args) 2)
         (let ((x (runtime-number (car args) "ceiling"))
               (d (runtime-number (cadr args) "ceiling")))
-          (host->runtime-value (ceiling (/ x d)))))
+          (host->runtime-value (inexact->exact (ceiling (/ x d))))))
        (else (runtime-raise 'arity "ceiling expects 1 or 2 arguments" args)))))
   (def 'truncate
     (lambda (args state)
       (cond
        ((= (length args) 1)
-        (host->runtime-value (truncate (runtime-number (car args) "truncate"))))
+        (host->runtime-value (inexact->exact (truncate (runtime-number (car args) "truncate")))))
        ((= (length args) 2)
         (let ((x (runtime-number (car args) "truncate"))
               (d (runtime-number (cadr args) "truncate")))
-          (host->runtime-value (truncate (/ x d)))))
+          (host->runtime-value (inexact->exact (truncate (/ x d))))))
        (else (runtime-raise 'arity "truncate expects 1 or 2 arguments" args)))))
   (def 'round
     (lambda (args state)
       (cond
        ((= (length args) 1)
-        (host->runtime-value (round (runtime-number (car args) "round"))))
+        (host->runtime-value (inexact->exact (round (runtime-number (car args) "round")))))
        ((= (length args) 2)
         (let ((x (runtime-number (car args) "round"))
               (d (runtime-number (cadr args) "round")))
-          (host->runtime-value (round (/ x d)))))
+          (host->runtime-value (inexact->exact (round (/ x d))))))
        (else (runtime-raise 'arity "round expects 1 or 2 arguments" args)))))
   (def 'quotient
     (lambda (args state)
@@ -832,39 +868,39 @@
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "numberp expects 1 argument" args))
-      (host->runtime-value (if (number? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (number? (runtime-value->host (car args))) #t '()))))
   (def 'stringp
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "stringp expects 1 argument" args))
-      (host->runtime-value (if (string? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (string? (runtime-value->host (car args))) #t '()))))
   (def 'zerop
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "zerop expects 1 argument" args))
-      (host->runtime-value (if (zero? (runtime-number (car args) "zerop")) #t #f))))
+      (host->runtime-value (if (zero? (runtime-number (car args) "zerop")) #t '()))))
   (def 'plusp
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "plusp expects 1 argument" args))
-      (host->runtime-value (if (> (runtime-number (car args) "plusp") 0) #t #f))))
+      (host->runtime-value (if (> (runtime-number (car args) "plusp") 0) #t '()))))
   (def 'minusp
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "minusp expects 1 argument" args))
-      (host->runtime-value (if (< (runtime-number (car args) "minusp") 0) #t #f))))
+      (host->runtime-value (if (< (runtime-number (car args) "minusp") 0) #t '()))))
   (def 'evenp
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "evenp expects 1 argument" args))
       (host->runtime-value
-       (if (zero? (modulo (runtime-integer (car args) "evenp") 2)) #t #f))))
+       (if (zero? (modulo (runtime-integer (car args) "evenp") 2)) #t '()))))
   (def 'oddp
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "oddp expects 1 argument" args))
       (host->runtime-value
-       (if (zero? (modulo (runtime-integer (car args) "oddp") 2)) #f #t))))
+       (if (zero? (modulo (runtime-integer (car args) "oddp") 2)) '() #t))))
   (def 'list
     (lambda (args state)
       (host->runtime-value (map runtime-value->host args))))
@@ -872,12 +908,12 @@
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "listp expects 1 argument" args))
-      (host->runtime-value (if (proper-list-host? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (proper-list-host? (runtime-value->host (car args))) #t '()))))
   (def 'null
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "null expects 1 argument" args))
-      (host->runtime-value (if (safe-null? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (safe-null? (runtime-value->host (car args))) #t '()))))
   (def 'car
     (lambda (args state)
       (unless (= (length args) 1)
@@ -958,7 +994,7 @@
       (host->runtime-value
        (if (eq? (runtime-value->host (car args))
                 (runtime-value->host (cadr args)))
-           #t #f))))
+           #t '()))))
   (def 'equal
     (lambda (args state)
       (unless (= (length args) 2)
@@ -966,28 +1002,28 @@
       (host->runtime-value
        (if (equal? (runtime-value->host (car args))
                    (runtime-value->host (cadr args)))
-           #t #f))))
+           #t '()))))
   (def 'string=
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "string= expects 2 arguments" args))
       (let ((a (runtime-string (car args) "string="))
             (b (runtime-string (cadr args) "string=")))
-        (host->runtime-value (if (string=? a b) #t #f)))))
+        (host->runtime-value (if (string=? a b) #t '())))))
   (def 'string<
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "string< expects 2 arguments" args))
       (let ((a (runtime-string (car args) "string<"))
             (b (runtime-string (cadr args) "string<")))
-        (host->runtime-value (if (string<? a b) #t #f)))))
+        (host->runtime-value (if (string<? a b) #t '())))))
   (def 'string>
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "string> expects 2 arguments" args))
       (let ((a (runtime-string (car args) "string>"))
             (b (runtime-string (cadr args) "string>")))
-        (host->runtime-value (if (string>? a b) #t #f)))))
+        (host->runtime-value (if (string>? a b) #t '())))))
   (def 'string-append
     (lambda (args state)
       (host->runtime-value
@@ -1078,7 +1114,7 @@
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "not expects 1 argument" args))
-      (host->runtime-value (if (runtime-truthy? (car args)) #f #t))))
+      (host->runtime-value (if (runtime-truthy? (car args)) '() #t))))
   ;; ---- 4-B: print (stream-aware), write, terpri ----
   (def 'print
     (lambda (args state)
@@ -1457,12 +1493,24 @@
          ((rt-instance? obj) (host->runtime-value (rt-instance-class obj)))
          ((rt-class? obj) (car args))
          (else
-          (runtime-raise 'type-error "class-of target must be instance or class" obj))))))
+          (let ((cls (rt-native-value->class-obj obj (state-global-env state))))
+            (if cls
+                (host->runtime-value cls)
+                (runtime-raise 'type-error "class-of: cannot determine class" obj))))))))
   (def 'instancep
     (lambda (args state)
-      (unless (= (length args) 1)
-        (runtime-raise 'arity "instancep expects 1 argument" args))
-      (host->runtime-value (if (rt-instance? (runtime-value->host (car args))) #t #f))))
+      (cond
+       ((= (length args) 1)
+        (host->runtime-value (if (rt-instance? (runtime-value->host (car args))) #t '())))
+       ((= (length args) 2)
+        (let* ((obj       (runtime-value->host (car args)))
+               (class-arg (runtime-value->host (cadr args)))
+               (cname     (cond ((rt-class? class-arg) (rt-class-name class-arg))
+                                ((symbol? class-arg) class-arg)
+                                (else (runtime-raise 'type-error "instancep: second arg must be class" class-arg)))))
+          (host->runtime-value (if (rt-isl-instance-of? obj cname (state-global-env state)) #t '()))))
+       (else
+        (runtime-raise 'arity "instancep expects 1 or 2 arguments" args)))))
   (def 'slot-value
     (lambda (args state)
       (unless (= (length args) 2)
@@ -2086,23 +2134,23 @@
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "consp expects 1 argument" args))
-      (host->runtime-value (if (pair? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (pair? (runtime-value->host (car args))) #t '()))))
   (def 'characterp
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "characterp expects 1 argument" args))
-      (host->runtime-value (if (char? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (char? (runtime-value->host (car args))) #t '()))))
   (def 'integerp
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "integerp expects 1 argument" args))
       (let ((v (runtime-value->host (car args))))
-        (host->runtime-value (if (and (integer? v) (exact? v)) #t #f)))))
+        (host->runtime-value (if (and (integer? v) (exact? v)) #t '())))))
   (def 'floatp
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "floatp expects 1 argument" args))
-      (host->runtime-value (if (inexact? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (inexact? (runtime-value->host (car args))) #t '()))))
   (def 'functionp
     (lambda (args state)
       (unless (= (length args) 1)
@@ -2110,17 +2158,17 @@
       ;; コンパイラ runtime では関数は (rt-value 'function ...) として表現される
       (let ((rv (car args)))
         (host->runtime-value
-         (if (and (rt-value? rv) (eq? (rt-tag rv) 'function)) #t #f)))))
+         (if (and (rt-value? rv) (eq? (rt-tag rv) 'function)) #t '())))))
   (def 'general-vector-p
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "general-vector-p expects 1 argument" args))
-      (host->runtime-value (if (vector? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (vector? (runtime-value->host (car args))) #t '()))))
   (def 'general-array*-p
     (lambda (args state)
       (unless (= (length args) 1)
         (runtime-raise 'arity "general-array*-p expects 1 argument" args))
-      (host->runtime-value (if (vector? (runtime-value->host (car args))) #t #f))))
+      (host->runtime-value (if (vector? (runtime-value->host (car args))) #t '()))))
 
   ;; ---- Phase 1-D: 三角関数・超越関数 ----
   (def 'exp
@@ -2282,7 +2330,7 @@
                   (host->runtime-value (car rest))
                   (loop (cdr rest)))))
            (else
-            (if (eqv? (runtime-value->host key) (caar rest))
+            (if (equal? (runtime-value->host key) (caar rest))
                 (host->runtime-value (car rest))
                 (loop (cdr rest)))))))))
   (def 'remove
@@ -2425,38 +2473,53 @@
       (unless (= (length args) 1)
         (runtime-raise 'arity "string-downcase expects 1 argument" args))
       (host->runtime-value (string-map char-downcase (runtime-string (car args) "string-downcase")))))
+  ;; ISLISP standard: string->list and list->string
+  (def 'string->list
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "string->list expects 1 argument" args))
+      (let ((s (runtime-string (car args) "string->list")))
+        (host->runtime-value (string->list s)))))
+  (def 'list->string
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "list->string expects 1 argument" args))
+      (let ((lst (runtime-list (car args) "list->string")))
+        (unless (every char? lst)
+          (runtime-raise 'type-error "list->string: all elements must be characters" (car args)))
+        (host->runtime-value (list->string lst)))))
 
   ;; ---- Phase 2-C: 文字比較関数 ----
   (def 'char=
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "char= expects 2 arguments" args))
-      (host->runtime-value (if (char=? (rt-char (car args) "char=") (rt-char (cadr args) "char=")) #t #f))))
+      (host->runtime-value (if (char=? (rt-char (car args) "char=") (rt-char (cadr args) "char=")) #t '()))))
   (def 'char/=
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "char/= expects 2 arguments" args))
-      (host->runtime-value (if (char=? (rt-char (car args) "char/=") (rt-char (cadr args) "char/=")) #f #t))))
+      (host->runtime-value (if (char=? (rt-char (car args) "char/=") (rt-char (cadr args) "char/=")) '() #t))))
   (def 'char<
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "char< expects 2 arguments" args))
-      (host->runtime-value (if (char<? (rt-char (car args) "char<") (rt-char (cadr args) "char<")) #t #f))))
+      (host->runtime-value (if (char<? (rt-char (car args) "char<") (rt-char (cadr args) "char<")) #t '()))))
   (def 'char>
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "char> expects 2 arguments" args))
-      (host->runtime-value (if (char>? (rt-char (car args) "char>") (rt-char (cadr args) "char>")) #t #f))))
+      (host->runtime-value (if (char>? (rt-char (car args) "char>") (rt-char (cadr args) "char>")) #t '()))))
   (def 'char<=
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "char<= expects 2 arguments" args))
-      (host->runtime-value (if (char<=? (rt-char (car args) "char<=") (rt-char (cadr args) "char<=")) #t #f))))
+      (host->runtime-value (if (char<=? (rt-char (car args) "char<=") (rt-char (cadr args) "char<=")) #t '()))))
   (def 'char>=
     (lambda (args state)
       (unless (= (length args) 2)
         (runtime-raise 'arity "char>= expects 2 arguments" args))
-      (host->runtime-value (if (char>=? (rt-char (car args) "char>=") (rt-char (cadr args) "char>=")) #t #f))))
+      (host->runtime-value (if (char>=? (rt-char (car args) "char>=") (rt-char (cadr args) "char>=")) #t '()))))
   (def 'char-upcase
     (lambda (args state)
       (unless (= (length args) 1)
@@ -2502,6 +2565,237 @@
         (runtime-raise 'arity "array-dimensions expects 1 argument" args))
       (let ((v (runtime-vector (car args) "array-dimensions")))
         (host->runtime-value (list (vector-length v))))))
+  ;; ---- Missing ISLISP standard primitives ----
+  (def 'apply
+    (lambda (args state)
+      (unless (>= (length args) 2)
+        (runtime-raise 'arity "apply expects at least 2 arguments" args))
+      (let* ((f        (car args))
+             (rest     (cdr args))
+             (last-arg (runtime-value->host (car (reverse rest))))
+             (fronts   (reverse (cdr (reverse rest)))))
+        (unless (list? last-arg)
+          (runtime-raise 'type-error "apply: last argument must be a list" last-arg))
+        (runtime-apply f (append fronts (map host->runtime-value last-arg)) state))))
+  (def 'identity
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "identity expects 1 argument" args))
+      (car args)))
+  (def 'basic-array-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "basic-array-p expects 1 argument" args))
+      (let ((v (runtime-value->host (car args))))
+        (host->runtime-value (if (or (vector? v) (string? v)) #t '())))))
+  (def 'basic-vector-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "basic-vector-p expects 1 argument" args))
+      (let ((v (runtime-value->host (car args))))
+        (host->runtime-value (if (or (vector? v) (string? v)) #t '())))))
+  (def 'list-length
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "list-length expects 1 argument" args))
+      (let ((lst (runtime-value->host (car args))))
+        (unless (list? lst)
+          (runtime-raise 'type-error "list-length: argument must be a list" lst))
+        (host->runtime-value (length lst)))))
+  (def 'vector-length
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "vector-length expects 1 argument" args))
+      (let ((v (runtime-value->host (car args))))
+        (unless (vector? v)
+          (runtime-raise 'type-error "vector-length: argument must be a vector" v))
+        (host->runtime-value (vector-length v)))))
+  (def 'symbol-name
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "symbol-name expects 1 argument" args))
+      (let ((s (runtime-value->host (car args))))
+        (unless (symbol? s)
+          (runtime-raise 'type-error "symbol-name: argument must be a symbol" s))
+        (host->runtime-value (symbol->string s)))))
+  (def 'char-code
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "char-code expects 1 argument" args))
+      (let ((c (runtime-value->host (car args))))
+        (unless (char? c)
+          (runtime-raise 'type-error "char-code: argument must be a character" c))
+        (host->runtime-value (char->integer c)))))
+  (def 'code-char
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "code-char expects 1 argument" args))
+      (let ((n (runtime-value->host (car args))))
+        (unless (and (integer? n) (exact? n))
+          (runtime-raise 'type-error "code-char: argument must be an integer" n))
+        (host->runtime-value (integer->char n)))))
+  (def 'char-alphabetic-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "char-alphabetic-p expects 1 argument" args))
+      (let ((c (runtime-value->host (car args))))
+        (unless (char? c)
+          (runtime-raise 'type-error "char-alphabetic-p: char required" c))
+        (host->runtime-value (if (char-alphabetic? c) #t '())))))
+  (def 'char-numeric-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "char-numeric-p expects 1 argument" args))
+      (let ((c (runtime-value->host (car args))))
+        (unless (char? c)
+          (runtime-raise 'type-error "char-numeric-p: char required" c))
+        (host->runtime-value (if (char-numeric? c) #t '())))))
+  (def 'char-whitespace-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "char-whitespace-p expects 1 argument" args))
+      (let ((c (runtime-value->host (car args))))
+        (unless (char? c)
+          (runtime-raise 'type-error "char-whitespace-p: char required" c))
+        (host->runtime-value (if (char-whitespace? c) #t '())))))
+  (def 'char-upper-case-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "char-upper-case-p expects 1 argument" args))
+      (let ((c (runtime-value->host (car args))))
+        (unless (char? c)
+          (runtime-raise 'type-error "char-upper-case-p: char required" c))
+        (host->runtime-value (if (char-upper-case? c) #t '())))))
+  (def 'char-lower-case-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "char-lower-case-p expects 1 argument" args))
+      (let ((c (runtime-value->host (car args))))
+        (unless (char? c)
+          (runtime-raise 'type-error "char-lower-case-p: char required" c))
+        (host->runtime-value (if (char-lower-case? c) #t '())))))
+  (def 'some
+    (lambda (args state)
+      (unless (>= (length args) 2)
+        (runtime-raise 'arity "some: needs at least 2 arguments" args))
+      (let ((pred  (car args))
+            (lists (map (lambda (a) (runtime-list a "some")) (cdr args))))
+        (let loop ((tails lists))
+          (if (any null? tails)
+              (host->runtime-value '())
+              (let ((result (runtime-apply pred (map (lambda (t) (host->runtime-value (car t))) tails) state)))
+                (if (runtime-truthy? result)
+                    result
+                    (loop (map cdr tails)))))))))
+  (def 'every
+    (lambda (args state)
+      (unless (>= (length args) 2)
+        (runtime-raise 'arity "every: needs at least 2 arguments" args))
+      (let ((pred  (car args))
+            (lists (map (lambda (a) (runtime-list a "every")) (cdr args))))
+        (let loop ((tails lists) (last (host->runtime-value #t)))
+          (if (any null? tails)
+              last
+              (let ((result (runtime-apply pred (map (lambda (t) (host->runtime-value (car t))) tails) state)))
+                (if (runtime-truthy? result)
+                    (loop (map cdr tails) result)
+                    (host->runtime-value '()))))))))
+  (def 'notany
+    (lambda (args state)
+      (unless (>= (length args) 2)
+        (runtime-raise 'arity "notany: needs at least 2 arguments" args))
+      (let ((pred  (car args))
+            (lists (map (lambda (a) (runtime-list a "notany")) (cdr args))))
+        (let loop ((tails lists))
+          (if (any null? tails)
+              (host->runtime-value #t)
+              (let ((result (runtime-apply pred (map (lambda (t) (host->runtime-value (car t))) tails) state)))
+                (if (runtime-truthy? result)
+                    (host->runtime-value '())
+                    (loop (map cdr tails)))))))))
+  (def 'notevery
+    (lambda (args state)
+      (unless (>= (length args) 2)
+        (runtime-raise 'arity "notevery: needs at least 2 arguments" args))
+      (let ((pred  (car args))
+            (lists (map (lambda (a) (runtime-list a "notevery")) (cdr args))))
+        (let loop ((tails lists))
+          (if (any null? tails)
+              (host->runtime-value '())
+              (let ((result (runtime-apply pred (map (lambda (t) (host->runtime-value (car t))) tails) state)))
+                (if (runtime-truthy? result)
+                    (host->runtime-value #t)
+                    (loop (map cdr tails)))))))))
+  (def 'map-into
+    (lambda (args state)
+      (unless (>= (length args) 3)
+        (runtime-raise 'arity "map-into: needs target, fn, and at least one list" args))
+      (let* ((target (runtime-value->host (car args)))
+             (fn     (cadr args))
+             (lists  (map (lambda (a) (runtime-list a "map-into")) (cddr args))))
+        (unless (vector? target)
+          (runtime-raise 'type-error "map-into: target must be a vector" target))
+        (let loop ((i 0) (tails lists))
+          (if (or (any null? tails) (>= i (vector-length target)))
+              (host->runtime-value target)
+              (begin
+                (vector-set! target i
+                             (runtime-value->host
+                              (runtime-apply fn (map (lambda (t) (host->runtime-value (car t))) tails) state)))
+                (loop (+ i 1) (map cdr tails))))))))
+  (def 'convert
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "convert expects 2 arguments" args))
+      (let* ((obj      (runtime-value->host (car args)))
+             (class-arg (runtime-value->host (cadr args)))
+             (cname    (cond ((rt-class? class-arg) (rt-class-name class-arg))
+                             ((symbol? class-arg) class-arg)
+                             (else (runtime-raise 'type-error "convert: second arg must be class" class-arg)))))
+        (host->runtime-value
+         (cond
+          ((eq? cname '<integer>)
+           (cond ((and (integer? obj) (exact? obj)) obj)
+                 ((number? obj) (inexact->exact (truncate obj)))
+                 ((char? obj) (char->integer obj))
+                 (else (runtime-raise 'type-error "convert: cannot convert to <integer>" obj))))
+          ((eq? cname '<float>)
+           (cond ((number? obj) (exact->inexact obj))
+                 (else (runtime-raise 'type-error "convert: cannot convert to <float>" obj))))
+          ((eq? cname '<string>)
+           (cond ((string? obj) obj)
+                 ((symbol? obj) (symbol->string obj))
+                 ((char? obj)   (string obj))
+                 ((list? obj)   (list->string obj))
+                 (else (runtime-raise 'type-error "convert: cannot convert to <string>" obj))))
+          ((eq? cname '<symbol>)
+           (cond ((symbol? obj) obj)
+                 ((string? obj) (string->symbol obj))
+                 (else (runtime-raise 'type-error "convert: cannot convert to <symbol>" obj))))
+          ((eq? cname '<list>)
+           (cond ((list? obj)   obj)
+                 ((string? obj) (string->list obj))
+                 ((vector? obj) (vector->list obj))
+                 (else (runtime-raise 'type-error "convert: cannot convert to <list>" obj))))
+          ((eq? cname '<general-vector>)
+           (cond ((vector? obj) obj)
+                 ((list? obj)   (list->vector obj))
+                 ((string? obj) (list->vector (string->list obj)))
+                 (else (runtime-raise 'type-error "convert: cannot convert to <general-vector>" obj))))
+          ((eq? cname '<character>)
+           (cond ((char? obj) obj)
+                 ((and (integer? obj) (exact? obj)) (integer->char obj))
+                 (else (runtime-raise 'type-error "convert: cannot convert to <character>" obj))))
+          (else
+           (runtime-raise 'type-error "convert: unsupported target class" cname)))))))
+  (def 'eval
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "eval expects 1 argument" args))
+      (let* ((form  (runtime-value->host (car args)))
+             (units (frontend-compile-forms (list form) (state-frontend-env state))))
+        (runtime-load-units! state units)
+        (state-last-value state))))
   )
 
 (define (runtime-eval-special op payload env state)
@@ -2924,10 +3218,15 @@
                       (resolve-class-designator s env))
                     super-forms))
               ;; Phase 7-D: default to <standard-object> if supers is empty
+              ;; Built-in class names must not get <standard-object> as default super.
               (supers
                (if (and (null? supers)
-                        (not (eq? name '<standard-object>))
-                        (not (eq? name '<built-in-class>)))
+                        (not (memq name '(<object> <number> <integer> <float>
+                                          <string> <symbol> <character> <cons>
+                                          <null> <list> <basic-list> <function>
+                                          <stream> <basic-array> <basic-vector>
+                                          <general-vector> <standard-object>
+                                          <built-in-class>))))
                    (let ((so-pair (env-find-pair env '<standard-object>)))
                      (if (and so-pair
                               (rt-value? (cdr so-pair))
@@ -3104,10 +3403,10 @@
 (define *rt-next-methods* (make-parameter '()))
 (define *rt-current-method-args* (make-parameter '()))
 
-(define (rt-sort-applicable methods args)
+(define (rt-sort-applicable methods args env)
   (let* ((scored (filter-map
                    (lambda (m)
-                     (let ((score (method-applicability-score m args)))
+                     (let ((score (method-applicability-score m args env)))
                        (and score (cons score m))))
                    methods))
          (sorted (sort scored (lambda (a b) (score<? (car a) (car b))))))
@@ -3145,14 +3444,29 @@
     (env-define! global-env '*standard-input*  (host->runtime-value (current-input-port)))
     (env-define! global-env '*standard-output* (host->runtime-value (current-output-port)))
     (env-define! global-env '*error-output*    (host->runtime-value (current-error-port)))
-    ;; ---- Phase 7-D: root OOP classes ----
-    (let ((boot-state (vector 'runtime-state profile global-env (host->runtime-value '()) frontend-env)))
-      (runtime-load-units!
-       boot-state
-       (frontend-compile-forms
-        '((defclass <standard-object> () ())
-          (defclass <built-in-class>  () ()))
-        frontend-env)))
+    ;; ---- Phase 7-D: root OOP classes + built-in class hierarchy ----
+    ;; Register built-in classes directly (bypassing defclass default-super logic).
+    (let* ((obj  (make-rt-class '<object>          '()            '()))
+           (num  (make-rt-class '<number>          (list obj)     '()))
+           (int  (make-rt-class '<integer>         (list num)     '()))
+           (flt  (make-rt-class '<float>           (list num)     '()))
+           (chr  (make-rt-class '<character>       (list obj)     '()))
+           (sym  (make-rt-class '<symbol>          (list obj)     '()))
+           (fun  (make-rt-class '<function>        (list obj)     '()))
+           (stm  (make-rt-class '<stream>          (list obj)     '()))
+           (ba   (make-rt-class '<basic-array>     (list obj)     '()))
+           (bv   (make-rt-class '<basic-vector>    (list ba)      '()))
+           (gv   (make-rt-class '<general-vector>  (list bv)      '()))
+           (str  (make-rt-class '<string>          (list bv)      '()))
+           (bl   (make-rt-class '<basic-list>      (list obj)     '()))
+           (lst  (make-rt-class '<list>            (list bl)      '()))
+           (co   (make-rt-class '<cons>            (list lst)     '()))
+           (nll  (make-rt-class '<null>            (list lst)     '()))
+           (so   (make-rt-class '<standard-object> (list obj)     '()))
+           (bic  (make-rt-class '<built-in-class>  (list obj)     '())))
+      (for-each (lambda (c)
+                  (env-define! global-env (rt-class-name c) (host->runtime-value c)))
+                (list obj num int flt chr sym fun stm ba bv gv str bl lst co nll so bic)))
     ;; ---- Phase 7-E: initialize-object generic ----
     (let ((boot-state (vector 'runtime-state profile global-env (host->runtime-value '()) frontend-env)))
       (runtime-load-units!
@@ -3305,19 +3619,20 @@
      ((primitive? fn)
       ((primitive-proc fn) arg-vals state))
      ((rt-generic? fn)
-      (let* ((all-methods (rt-generic-methods fn))
-             (app-around  (rt-sort-applicable
-                           (filter (lambda (m) (eq? (rt-method-qualifier m) ':around)) all-methods)
-                           arg-vals))
-             (app-before  (rt-sort-applicable
-                           (filter (lambda (m) (eq? (rt-method-qualifier m) ':before)) all-methods)
-                           arg-vals))
-             (app-primary (rt-sort-applicable
-                           (filter (lambda (m) (not (rt-method-qualifier m))) all-methods)
-                           arg-vals))
-             (app-after   (reverse (rt-sort-applicable
-                                    (filter (lambda (m) (eq? (rt-method-qualifier m) ':after)) all-methods)
-                                    arg-vals))))
+      (let* ((genv         (state-global-env state))
+             (all-methods  (rt-generic-methods fn))
+             (app-around   (rt-sort-applicable
+                            (filter (lambda (m) (eq? (rt-method-qualifier m) ':around)) all-methods)
+                            arg-vals genv))
+             (app-before   (rt-sort-applicable
+                            (filter (lambda (m) (eq? (rt-method-qualifier m) ':before)) all-methods)
+                            arg-vals genv))
+             (app-primary  (rt-sort-applicable
+                            (filter (lambda (m) (not (rt-method-qualifier m))) all-methods)
+                            arg-vals genv))
+             (app-after    (reverse (rt-sort-applicable
+                                     (filter (lambda (m) (eq? (rt-method-qualifier m) ':after)) all-methods)
+                                     arg-vals genv))))
         (when (null? app-primary)
           (runtime-raise 'invalid-ir "No applicable primary method for generic function"
                          (rt-generic-name fn)))

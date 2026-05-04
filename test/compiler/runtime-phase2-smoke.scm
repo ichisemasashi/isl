@@ -53,10 +53,10 @@
 
 ;; ---- 2-C: 文字比較関数 ----
 (assert-equal #t (run-forms '((char= #\a #\a)))   "char= eq")
-(assert-equal #f (run-forms '((char= #\a #\b)))   "char= neq")
+(assert-equal '() (run-forms '((char= #\a #\b)))   "char= neq")
 (assert-equal #t (run-forms '((char/= #\a #\b)))  "char/=")
 (assert-equal #t (run-forms '((char< #\a #\b)))   "char<")
-(assert-equal #f (run-forms '((char< #\b #\a)))   "char< false")
+(assert-equal '() (run-forms '((char< #\b #\a)))   "char< false")
 (assert-equal #t (run-forms '((char> #\b #\a)))   "char>")
 (assert-equal #t (run-forms '((char<= #\a #\a)))  "char<=")
 (assert-equal #t (run-forms '((char>= #\b #\a)))  "char>=")

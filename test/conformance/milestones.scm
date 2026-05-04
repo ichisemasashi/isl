@@ -13,7 +13,7 @@
   (list
    (list 'value '(progn (defmacro m1-id (x) x) (macroexpand-1 '(m1-id (+ 1 2)))) '(+ 1 2))
    (list 'value '(progn (defmacro m1-inc (x) (list '+ x 1)) (m1-inc 4)) 5)
-   (list 'value '(macroexpand '(when #t 1 2)) '(when #t 1 2))
+   (list 'value '(macroexpand '(when #t 1 2)) '(if #t (progn 1 2) ()))
    (list 'value '(progn (defmacro m1-nest (x) (list 'if x 1 0)) (macroexpand '(m1-nest #t))) '(if #t 1 0))
    (list 'value '(progn (defmacro m1-q (x) (list 'quote x)) (m1-q abc)) 'abc)))
 
@@ -280,20 +280,20 @@
    (list 'value '(string->number "1000" 2) 8)
    (list 'value '(string->number "42")     42)
    (list 'value '(string->number "xyz")    '())   ; 変換失敗 → nil
-   ;; 1-C: 型述語 (predicates return #t / #f at Gauche level)
+   ;; 1-C: 型述語 (ISLISP predicates return t / nil)
    (list 'value '(consp (cons 1 2))          #t)
-   (list 'value '(consp '())                 #f)
-   (list 'value '(consp 3)                   #f)
+   (list 'value '(consp '())                 '())
+   (list 'value '(consp 3)                   '())
    (list 'value '(characterp #\a)            #t)
-   (list 'value '(characterp "a")            #f)
+   (list 'value '(characterp "a")            '())
    (list 'value '(integerp 3)                #t)
-   (list 'value '(integerp 3.0)              #f)
+   (list 'value '(integerp 3.0)              '())
    (list 'value '(floatp 1.5)                #t)
-   (list 'value '(floatp 1)                  #f)
+   (list 'value '(floatp 1)                  '())
    (list 'value '(functionp (lambda (x) x))  #t)
-   (list 'value '(functionp 42)              #f)
+   (list 'value '(functionp 42)              '())
    (list 'value '(general-vector-p (vector 1 2)) #t)
-   (list 'value '(general-vector-p '(1 2))       #f)
+   (list 'value '(general-vector-p '(1 2))       '())
    (list 'value '(general-array*-p (vector 1 2)) #t)
    ;; 1-D: 三角・超越関数 (結果は inexact float)
    (list 'value '(exp 0)    1.0)
@@ -392,11 +392,11 @@
 (define phase2-char-cases
   (list
    (list 'value '(char= #\a #\a)              #t)
-   (list 'value '(char= #\a #\b)              #f)
+   (list 'value '(char= #\a #\b)              '())
    (list 'value '(char/= #\a #\b)             #t)
-   (list 'value '(char/= #\a #\a)             #f)
+   (list 'value '(char/= #\a #\a)             '())
    (list 'value '(char< #\a #\b)              #t)
-   (list 'value '(char< #\b #\a)              #f)
+   (list 'value '(char< #\b #\a)              '())
    (list 'value '(char> #\b #\a)              #t)
    (list 'value '(char<= #\a #\a)             #t)
    (list 'value '(char>= #\b #\a)             #t)
@@ -938,6 +938,191 @@
          '(format 42 "~a" 1)
          'error)))
 
+;; ---- std-A: class-of and built-in class specializers ----
+(define std-builtin-class-cases
+  (list
+   ;; class-of returns object with correct name
+   (list 'value '(eq (class-of 42) (class <integer>))       #t)
+   (list 'value '(eq (class-of 1.5) (class <float>))        #t)
+   (list 'value '(eq (class-of "hi") (class <string>))      #t)
+   (list 'value '(eq (class-of #\a) (class <character>))    #t)
+   (list 'value '(eq (class-of 'foo) (class <symbol>))      #t)
+   (list 'value '(eq (class-of '()) (class <null>))         #t)
+   (list 'value '(eq (class-of '(1 2)) (class <cons>))      #t)
+   ;; defmethod with built-in specializer
+   (list 'value
+         '(progn
+            (defgeneric std-type-name (x))
+            (defmethod std-type-name ((x <integer>)) "integer")
+            (defmethod std-type-name ((x <string>))  "string")
+            (defmethod std-type-name ((x <cons>))    "cons")
+            (list (std-type-name 42) (std-type-name "hi") (std-type-name '(1 2))))
+         '("integer" "string" "cons"))
+   ;; subclassp with built-in classes
+   (list 'value '(subclassp (class <integer>) (class <number>))  #t)
+   (list 'value '(subclassp (class <float>)   (class <number>))  #t)
+   (list 'value '(subclassp (class <cons>)    (class <list>))    #t)
+   (list 'value '(subclassp (class <null>)    (class <list>))    #t)))
+
+;; ---- std-B: apply variadic form ----
+(define std-apply-cases
+  (list
+   (list 'value '(apply + '(1 2 3))         6)
+   (list 'value '(apply + 1 '(2 3))         6)
+   (list 'value '(apply + 1 2 '(3 4))       10)
+   (list 'value '(apply list 1 2 '(3 4))    '(1 2 3 4))
+   (list 'error '(apply + 1 2)              'error)))  ; last arg not a list
+
+;; ---- std-C: assoc with equal test ----
+(define std-assoc-equal-cases
+  (list
+   (list 'value '(assoc "b" '(("a" 1) ("b" 2) ("c" 3)))  '("b" 2))
+   (list 'value '(assoc "x" '(("a" 1) ("b" 2)))          '())
+   (list 'value '(assoc '(1) '(((1) a) ((2) b)))          '((1) a))
+   (list 'value '(assoc 'b '((a 1) (b 2)))                '(b 2))))
+
+;; ---- std-D: setf places ----
+(define std-setf-place-cases
+  (list
+   ;; setf string-ref
+   (list 'value
+         '(let ((s (create-string 3 #\x)))
+            (setf (string-ref s 1) #\y)
+            s)
+         "xyx")
+   ;; setf general-vector-ref
+   (list 'value
+         '(let ((v (create-vector 3 0)))
+            (setf (general-vector-ref v 1) 99)
+            (general-vector-ref v 1))
+         99)
+   ;; setf dynamic
+   (list 'value
+         '(progn
+            (defvar *dv-setf* 1)
+            (setf (dynamic *dv-setf*) 42)
+            (dynamic *dv-setf*))
+         42)))
+
+;; ---- std-E: standard naming ----
+(define std-naming-cases
+  (list
+   (list 'value '(char-code #\A)                65)
+   (list 'value '(code-char 65)                 #\A)
+   (list 'value '(list-length '(a b c))         3)
+   (list 'value '(basic-vector-p (vector 1 2))  #t)
+   (list 'value '(basic-vector-p "hello")       #t)
+   (list 'value '(basic-vector-p '(1 2))        '())
+   (list 'value '(vector-length (vector 1 2 3)) 3)
+   (list 'value '(symbol-name 'hello)           "hello")))
+
+;; ---- std-F: character predicates ----
+(define std-char-pred-cases
+  (list
+   (list 'value '(char-alphabetic-p #\a)    #t)
+   (list 'value '(char-alphabetic-p #\1)    '())
+   (list 'value '(char-numeric-p #\5)       #t)
+   (list 'value '(char-numeric-p #\a)       '())
+   (list 'value '(char-whitespace-p #\space) #t)
+   (list 'value '(char-whitespace-p #\a)    '())
+   (list 'value '(char-upper-case-p #\A)    #t)
+   (list 'value '(char-upper-case-p #\a)    '())
+   (list 'value '(char-lower-case-p #\a)    #t)
+   (list 'value '(char-lower-case-p #\A)    '())))
+
+;; ---- std-G: some/every/notany/notevery ----
+(define std-higher-order-cases
+  (list
+   ;; some returns the pred result (oddp returns #t), not the element
+   (list 'value '(some oddp '(2 4 5 6))     #t)
+   (list 'value '(some oddp '(2 4 6))       '())
+   (list 'value '(every oddp '(1 3 5))      #t)
+   (list 'value '(every oddp '(1 2 5))      '())
+   (list 'value '(notany oddp '(2 4 6))     #t)
+   (list 'value '(notany oddp '(2 3 6))     '())
+   (list 'value '(notevery oddp '(1 2 3))   #t)
+   (list 'value '(notevery oddp '(1 3 5))   '())))
+
+;; ---- std-H: read EOF raises <end-of-stream> ----
+(define std-eof-cases
+  (list
+   (list 'value
+         '(handler-case
+            (let ((s (open-input-stream "/dev/null")))
+              (read s))
+            (<end-of-stream> (c) "caught"))
+         "caught")))
+
+;; std-Loop: ISLISP infinite (loop body*) terminated by return-from/block
+(define std-loop-cases
+  (list
+   ;; basic counted loop via block+return-from
+   (list 'value
+         '(progn
+            (defglobal std-loop-n 0)
+            (block done
+              (loop
+                (setq std-loop-n (+ std-loop-n 1))
+                (when (= std-loop-n 3) (return-from done std-loop-n))))
+            std-loop-n)
+         3)
+   ;; loop with accumulator
+   (list 'value
+         '(let ((acc 0) (i 0))
+            (block done
+              (loop
+                (setq i (+ i 1))
+                (setq acc (+ acc i))
+                (when (= i 5) (return-from done acc)))))
+         15)
+   ;; return-from returns the value
+   (list 'value
+         '(block b (loop (return-from b 42)))
+         42)))
+
+;; std-Instancep: (instancep obj class) 2-argument form
+(define std-instancep-cases
+  (list
+   (list 'value '(instancep 42 <integer>) #t)
+   (list 'value '(instancep 3.14 <float>) #t)
+   (list 'value '(instancep "hi" <string>) #t)
+   (list 'value '(instancep 'foo <symbol>) #t)
+   (list 'value '(instancep #\a <character>) #t)
+   (list 'value '(instancep '(1 2) <cons>) #t)
+   (list 'value '(instancep '() <null>) #t)
+   (list 'value '(instancep 42 <number>) #t)   ; integer is-a number
+   (list 'value '(instancep 42 <string>) '())  ; false
+   (list 'value '(instancep "x" <integer>) '())))
+
+;; std-Convert: type conversion between built-in types
+(define std-convert-cases
+  (list
+   (list 'value '(convert 3.7 <integer>) 3)
+   (list 'value '(convert 5 <float>) 5.0)
+   (list 'value '(convert "hello" <symbol>) 'hello)
+   (list 'value '(convert 'world <string>) "world")
+   (list 'value '(convert #\A <integer>) 65)
+   (list 'value '(convert 65 <character>) #\A)
+   (list 'value '(convert '(#\a #\b #\c) <string>) "abc")
+   (list 'value '(convert "abc" <list>) '(#\a #\b #\c))
+   (list 'error '(convert "x" <integer>) 'error)))
+
+;; std-Misc: apply, identity, eval, convert, symbol-name, vector-length, list-length
+(define std-misc-cases
+  (list
+   (list 'value '(apply + '(1 2 3)) 6)
+   (list 'value '(apply + 1 2 '(3 4)) 10)
+   (list 'value '(identity 42) 42)
+   (list 'value '(identity "hello") "hello")
+   (list 'value '(symbol-name 'foo) "foo")
+   (list 'value '(list-length '(a b c)) 3)
+   (list 'value '(vector-length (vector 1 2 3)) 3)
+   (list 'value '(char-code #\A) 65)
+   (list 'value '(code-char 65) #\A)
+   (list 'value '(basic-array-p (vector 1 2)) #t)
+   (list 'value '(basic-array-p "str") #t)
+   (list 'value '(basic-array-p 42) '())))
+
 (define all-milestones
   (list
    (list "M0" m0-cases)
@@ -978,7 +1163,19 @@
    (list "Phase7-Subclassp"  phase7-subclassp-cases)
    (list "Phase7-StdObject"  phase7-standard-object-cases)
    (list "Phase7-Slots"      phase7-slot-cases)
-   (list "Phase8-Format"     phase8-format-cases)))
+   (list "Phase8-Format"     phase8-format-cases)
+   (list "std-BuiltinClass"  std-builtin-class-cases)
+   (list "std-Apply"         std-apply-cases)
+   (list "std-AssocEqual"    std-assoc-equal-cases)
+   (list "std-SetfPlace"     std-setf-place-cases)
+   (list "std-Naming"        std-naming-cases)
+   (list "std-CharPred"      std-char-pred-cases)
+   (list "std-HigherOrder"   std-higher-order-cases)
+   (list "std-EofCondition"  std-eof-cases)
+   (list "std-Loop"          std-loop-cases)
+   (list "std-Instancep"     std-instancep-cases)
+   (list "std-Convert"       std-convert-cases)
+   (list "std-Misc"          std-misc-cases)))
 
 (define strict-milestones
   (list
@@ -1020,6 +1217,18 @@
    (list "Phase7-Subclassp"  phase7-subclassp-cases)
    (list "Phase7-StdObject"  phase7-standard-object-cases)
    (list "Phase7-Slots"      phase7-slot-cases)
-   (list "Phase8-Format"     phase8-format-cases)))
+   (list "Phase8-Format"     phase8-format-cases)
+   (list "std-BuiltinClass"  std-builtin-class-cases)
+   (list "std-Apply"         std-apply-cases)
+   (list "std-AssocEqual"    std-assoc-equal-cases)
+   (list "std-SetfPlace"     std-setf-place-cases)
+   (list "std-Naming"        std-naming-cases)
+   (list "std-CharPred"      std-char-pred-cases)
+   (list "std-HigherOrder"   std-higher-order-cases)
+   (list "std-EofCondition"  std-eof-cases)
+   (list "std-Loop"          std-loop-cases)
+   (list "std-Instancep"     std-instancep-cases)
+   (list "std-Convert"       std-convert-cases)
+   (list "std-Misc"          std-misc-cases)))
 
 (define extended-milestones all-milestones)

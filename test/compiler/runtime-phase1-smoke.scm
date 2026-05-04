@@ -55,18 +55,18 @@
 
 ;; ---- 1-C: 型述語 ----
 (assert-equal #t (run-forms '((consp (cons 1 2))))          "consp pair")
-(assert-equal #f (run-forms '((consp '())))                 "consp nil")
-(assert-equal #f (run-forms '((consp 3)))                   "consp number")
+(assert-equal '() (run-forms '((consp '())))                 "consp nil")
+(assert-equal '() (run-forms '((consp 3)))                   "consp number")
 (assert-equal #t (run-forms '((characterp #\a)))            "characterp char")
-(assert-equal #f (run-forms '((characterp "a")))            "characterp string")
+(assert-equal '() (run-forms '((characterp "a")))            "characterp string")
 (assert-equal #t (run-forms '((integerp 3)))                "integerp int")
-(assert-equal #f (run-forms '((integerp 3.0)))              "integerp float")
+(assert-equal '() (run-forms '((integerp 3.0)))              "integerp float")
 (assert-equal #t (run-forms '((floatp 1.5)))                "floatp float")
-(assert-equal #f (run-forms '((floatp 1)))                  "floatp int")
+(assert-equal '() (run-forms '((floatp 1)))                  "floatp int")
 (assert-equal #t (run-forms '((functionp (lambda (x) x))))  "functionp lambda")
-(assert-equal #f (run-forms '((functionp 42)))              "functionp number")
+(assert-equal '() (run-forms '((functionp 42)))              "functionp number")
 (assert-equal #t (run-forms '((general-vector-p (vector 1 2)))) "general-vector-p vec")
-(assert-equal #f (run-forms '((general-vector-p '(1 2))))       "general-vector-p list")
+(assert-equal '() (run-forms '((general-vector-p '(1 2))))       "general-vector-p list")
 (assert-equal #t (run-forms '((general-array*-p (vector 1 2)))) "general-array*-p")
 
 ;; ---- 1-D: 三角・超越関数 ----
