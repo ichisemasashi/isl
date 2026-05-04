@@ -1105,6 +1105,7 @@
    (list 'value '(convert 65 <character>) #\A)
    (list 'value '(convert '(#\a #\b #\c) <string>) "abc")
    (list 'value '(convert "abc" <list>) '(#\a #\b #\c))
+   (list 'value '(convert 42 <string>) "42")
    (list 'error '(convert "x" <integer>) 'error)))
 
 ;; std-Misc: apply, identity, eval, convert, symbol-name, vector-length, list-length
@@ -1121,7 +1122,338 @@
    (list 'value '(code-char 65) #\A)
    (list 'value '(basic-array-p (vector 1 2)) #t)
    (list 'value '(basic-array-p "str") #t)
-   (list 'value '(basic-array-p 42) '())))
+   (list 'value '(basic-array-p 42) '())
+   ;; basic-array*-p: multi-dim basic arrays (not in this impl)
+   (list 'value '(basic-array*-p (vector 1 2)) '())
+   (list 'value '(basic-array*-p "str") '())))
+
+;; std-MapcarMulti: mapcar with multiple lists (ISLISP §15)
+(define std-mapcar-multi-cases
+  (list
+   (list 'value '(mapcar + '(1 2 3) '(4 5 6)) '(5 7 9))
+   (list 'value '(mapcar * '(1 2 3) '(4 5 6)) '(4 10 18))
+   (list 'value '(mapcar + '(1 2) '(10 20) '(100 200)) '(111 222))
+   (list 'value '(mapcar + '()) '())
+   (list 'value '(mapcar cons '(1 2 3) '(a b c)) '((1 . a) (2 . b) (3 . c)))))
+
+;; std-SymbolpNil: symbolp on nil (ISLISP §14: nil IS a symbol)
+(define std-symbolp-nil-cases
+  (list
+   (list 'value '(symbolp nil) #t)
+   (list 'value '(symbolp 'foo) #t)
+   (list 'value '(symbolp 42) '())
+   (list 'value '(symbolp "str") '())
+   (list 'value '(atom nil) #t)
+   (list 'value '(atom 42) #t)
+   (list 'value '(atom '(1 2)) '())
+   (list 'value '(eql 42 42) #t)
+   (list 'value '(eql 'a 'a) #t)
+   (list 'value '(eql 42 43) '())))
+
+;; std-NewPredicates: gensym, create-string, aref, string comparisons
+(define std-new-predicates-cases
+  (list
+   (list 'value '(symbolp (gensym)) #t)
+   (list 'value '(create-string 4 #\z) "zzzz")
+   (list 'value '(create-string 0 #\x) "")
+   (list 'value '(aref (vector 10 20 30) 1) 20)
+   (list 'value '(aref "hello" 0) #\h)
+   (list 'value '(string/= "abc" "abd") #t)
+   (list 'value '(string/= "abc" "abc") '())
+   (list 'value '(string<= "abc" "abc") #t)
+   (list 'value '(string<= "abc" "abd") #t)
+   (list 'value '(string<= "abd" "abc") '())
+   (list 'value '(string>= "abc" "abc") #t)
+   (list 'value '(string>= "abd" "abc") #t)
+   (list 'value '(string>= "abc" "abd") '())))
+
+;; std-SetfCarCdr: setf on car/cdr places
+(define std-setf-car-cdr-cases
+  (list
+   (list 'value
+         '(let ((x (list 1 2 3)))
+            (setf (car x) 99)
+            x)
+         '(99 2 3))
+   (list 'value
+         '(let ((x (list 1 2 3)))
+            (setf (cdr x) (list 9 8))
+            x)
+         '(1 9 8))
+   (list 'value
+         '(let ((x (list 1 2 3)))
+            (setf (car x) 10)
+            (setf (cdr x) '(20 30))
+            x)
+         '(10 20 30))))
+
+;; std-For: ISLISP §10.8 for special form
+(define std-for-cases
+  (list
+   (list 'value '(for ((i 0 (+ i 1))) ((= i 3) i)) 3)
+   (list 'value '(for ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) s)) 10)
+   (list 'value '(let ((acc '())) (for ((x '(1 2 3) (cdr x))) ((null x) (reverse acc)) (setq acc (cons (* (car x) 2) acc)))) '(2 4 6))
+   (list 'value '(for () (#t 42)) 42)))
+
+;; std-Defdynamic: ISLISP §23.1 defdynamic
+(define std-defdynamic-cases
+  (list
+   (list 'value
+         '(progn (defdynamic *dyn-x* 10) (dynamic *dyn-x*))
+         10)
+   (list 'value
+         '(progn (defdynamic *dyn-y* 0)
+                 (dynamic-let ((*dyn-y* 99)) (dynamic *dyn-y*)))
+         99)
+   (list 'value
+         '(progn (defdynamic *dyn-z* 1) (defdynamic *dyn-z* 2) (dynamic *dyn-z*))
+         2)))
+
+;; std-CaseElse: ISLISP §10.2 case with else/otherwise/t
+(define std-case-else-cases
+  (list
+   (list 'value '(case 5 ((1) "one") (else "other")) "other")
+   (list 'value '(case 5 ((1) "one") (otherwise "other")) "other")
+   (list 'value '(case 5 ((1) "one") (t "other")) "other")
+   (list 'value '(case 1 ((1) "one") (else "other")) "one")
+   (list 'value '(case 99 ((1 2 3) "low") (else "high")) "high")))
+
+;; std-SymbolpT: ISLISP §9.6 symbolp of t and symbol-name
+(define std-symbolp-t-cases
+  (list
+   (list 'value '(symbolp t) #t)
+   (list 'value '(symbolp nil) #t)
+   (list 'value '(symbol-name nil) "nil")
+   (list 'value '(symbol-name t) "t")
+   (list 'value '(symbol-name 'foo) "foo")))
+
+;; std-ConditionHandling: ISL condition classes catchable by handler-case
+(define std-condition-handling-cases
+  (list
+   ;; division by zero signals <division-by-zero> which is-a <error>
+   (list 'value '(handler-case (/ 1 0) (<error> (c) 'caught)) 'caught)
+   (list 'value '(handler-case (/ 1 0) (<arithmetic-error> (c) 'caught)) 'caught)
+   (list 'value '(handler-case (/ 1 0) (<division-by-zero> (c) 'caught)) 'caught)
+   ;; car/cdr of non-list signals <domain-error>
+   (list 'value '(handler-case (car 42) (<error> (c) 'caught)) 'caught)
+   (list 'value '(handler-case (cdr 42) (<domain-error> (c) 'caught)) 'caught)
+   ;; car/cdr of nil returns nil per ISLISP §15.1
+   (list 'value '(car nil) '())
+   (list 'value '(cdr nil) '())
+   ;; no-applicable-method signals condition
+   (list 'value
+         '(progn
+            (defgeneric std-gen-nomethod (x))
+            (handler-case (std-gen-nomethod 42) (<program-error> (c) 'no-method)))
+         'no-method)))
+
+;; std-MakeCondition: make-condition and condition-class (§22)
+(define std-make-condition-cases
+  (list
+   (list 'value
+         '(let ((c (make-condition '<simple-error> "test error")))
+            (condition-message c))
+         "test error")
+   (list 'value
+         '(handler-case
+            (signal-condition (make-condition '<simple-error> "sig") nil)
+            (<error> (c) (condition-message c)))
+         "sig")
+   (list 'value
+         '(instancep (handler-case (error "x") (<error> (c) c)) <error>)
+         #t)
+   (list 'value
+         '(instancep (handler-case (error "x") (<error> (c) c)) <serious-condition>)
+         #t)))
+
+;; std-SetfArfString: setf aref on strings (§16.3)
+(define std-setf-aref-string-cases
+  (list
+   (list 'value
+         '(let ((s (create-string 5 #\a)))
+            (setf (aref s 0) #\H)
+            s)
+         "Haaaa")
+   (list 'value
+         '(let ((s (string #\h #\e #\l #\l #\o)))
+            (setf (aref s 4) #\!)
+            s)
+         "hell!")))
+
+;; std-Expt: expt with negative exponent returns float (§11.8)
+(define std-expt-cases
+  (list
+   (list 'value '(expt 2 10) 1024)
+   (list 'value '(expt 3 0)  1)
+   (list 'value '(expt 2 -1) 0.5)
+   (list 'value '(expt 4 -1) 0.25)
+   (list 'value '(floatp (expt 2 -1)) #t)))
+
+;; std-CharIndex: char-index and out-of-range (§17.4)
+(define std-char-index-cases
+  (list
+   (list 'value '(char-index #\o "hello") 4)
+   (list 'value '(char-index #\x "hello") '())
+   (list 'value '(char-index #\l "hello" 3) 3)
+   (list 'value '(char-index #\l "hello" 10) '())  ;; out-of-range → nil
+   (list 'value '(char-index #\h "hello" 0) 0)))
+
+;; std-Substring: substring 2-arg form (§17.3)
+(define std-substring-cases
+  (list
+   (list 'value '(substring "hello" 1 3) "el")
+   (list 'value '(substring "hello" 1)   "ello")  ;; 2-arg form
+   (list 'value '(substring "hello" 0)   "hello")
+   (list 'value '(substring "hello" 5)   "")))
+
+;; std-StreamFunctions: standard-input/output as zero-arg functions (§18.1)
+(define std-stream-fn-cases
+  (list
+   (list 'value '(input-stream-p  (standard-input))  #t)
+   (list 'value '(output-stream-p (standard-output)) #t)
+   (list 'value '(functionp (function standard-input))  #t)
+   (list 'value '(functionp (function standard-output)) #t)))
+
+;; std-IOFunctions: fresh-line, write-string, prin1, princ, stream-ready-p (§18.5/7)
+(define std-io-fn-cases
+  (list
+   (list 'value '(with-open-output-file (s "/tmp/isl-io-fn-test.txt")
+                    (write-string "hello" s)
+                    nil)
+         '())
+   (list 'value '(with-open-input-file (s "/tmp/isl-io-fn-test.txt")
+                    (read-line s))
+         "hello")
+   (list 'value '(with-open-output-file (s "/tmp/isl-io-fn-test2.txt")
+                    (prin1 "hello" s)
+                    nil)
+         '())
+   (list 'value '(stream-ready-p (standard-input)) #t)))
+
+;; std-VectorSet: vector-set! (§16)
+(define std-vector-set-cases
+  (list
+   (list 'value '(let ((v (make-vector 3 0)))
+                    (vector-set! v 1 42)
+                    (vector-ref v 1))
+         42)
+   (list 'value '(let ((v (vector 1 2 3)))
+                    (vector-set! v 0 99)
+                    v)
+         #(99 2 3))))
+
+;; std-Mapc: mapc returns first list (§15.8)
+(define std-mapc-cases
+  (list
+   (list 'value
+         '(let* ((result '())
+                 (first-list '(1 2 3))
+                 (ret (mapc (lambda (x) (setq result (cons x result))) first-list)))
+            (eq ret first-list))
+         #t)
+   (list 'value
+         '(let ((acc '()))
+            (mapc (lambda (x) (setq acc (cons x acc))) '(1 2 3))
+            acc)
+         '(3 2 1))))
+
+;; std-Macrolet: macrolet defines local macros (§22)
+(define std-macrolet-cases
+  (list
+   (list 'value
+         '(macrolet ((double (x) (list '+ x x)))
+            (double 5))
+         10)
+   (list 'value
+         '(macrolet ((swap! (a b)
+                      (list 'let (list (list 'tmp a))
+                            (list 'setq a b)
+                            (list 'setq b 'tmp)
+                            'tmp)))
+            (let ((x 1) (y 2))
+              (swap! x y)
+              (list x y)))
+         '(2 1))
+   (list 'value
+         '(macrolet ((my-and (a b) (list 'if a b 'nil)))
+            (my-and #t 42))
+         42)))
+
+;; std-CharConvert: char-to-integer, integer-to-char canonical ISLISP names (§12.3)
+(define std-char-convert-cases
+  (list
+   (list 'value '(char-to-integer #\A) 65)
+   (list 'value '(char-to-integer #\a) 97)
+   (list 'value '(integer-to-char 65) #\A)
+   (list 'value '(integer-to-char 97) #\a)
+   (list 'value '(= (char-to-integer (integer-to-char 42)) 42) #t)))
+
+;; std-StringList: string-to-list, list-to-string (§17.4)
+(define std-string-list-cases
+  (list
+   (list 'value '(string-to-list "abc") '(#\a #\b #\c))
+   (list 'value '(list-to-string '(#\x #\y #\z)) "xyz")
+   (list 'value '(string-to-list "") '())
+   (list 'value '(list-to-string (string-to-list "hello")) "hello")))
+
+;; std-Elt: elt sequence accessor (§15.3)
+(define std-elt-cases
+  (list
+   (list 'value '(elt '(10 20 30) 0) 10)
+   (list 'value '(elt '(10 20 30) 2) 30)
+   (list 'value '(elt (vector 7 8 9) 1) 8)
+   (list 'value '(elt "hello" 1) #\e)
+   (list 'error '(elt '(1 2 3) 5) 'error)))
+
+;; std-Subseq: subseq — extract subsequence (§15.3)
+(define std-subseq-cases
+  (list
+   (list 'value '(subseq '(1 2 3 4 5) 1 3) '(2 3))
+   (list 'value '(subseq "hello" 1 4) "ell")
+   (list 'value '(subseq (vector 10 20 30 40) 0 2) (vector 10 20))
+   (list 'value '(subseq '(1 2 3) 0 0) '())))
+
+;; std-IntegerLength: integer-length (§11.2)
+(define std-integer-length-cases
+  (list
+   (list 'value '(integer-length 0) 0)
+   (list 'value '(integer-length 1) 1)
+   (list 'value '(integer-length 7) 3)
+   (list 'value '(integer-length 255) 8)
+   (list 'value '(integer-length -1) 0)))
+
+;; std-SetCarCdr: set-car, set-cdr callable functions (§15.1)
+(define std-set-car-cdr-cases
+  (list
+   (list 'value '(let ((p (cons 1 2))) (set-car p 99) (car p)) 99)
+   (list 'value '(let ((p (cons 1 2))) (set-cdr p 88) (cdr p)) 88)
+   (list 'error '(set-car 42 1) 'error)))
+
+;; std-AppendBang: append! destructive append (§15.8)
+(define std-append-bang-cases
+  (list
+   (list 'value '(let ((a (list 1 2)) (b (list 3 4))) (append! a b) a) '(1 2 3 4))
+   (list 'value '(append! '() '(1 2)) '(1 2))))
+
+;; std-GeneralVectorSet: general-vector-set (standard name without !) (§16)
+(define std-general-vector-set-cases
+  (list
+   (list 'value '(let ((v (vector 1 2 3))) (general-vector-set 99 v 0) (general-vector-ref v 0)) 99)
+   (list 'value '(let ((v (vector 10 20 30))) (general-vector-set 55 v 2) v) #(10 20 55))))
+
+;; std-SetAref: set-aref (§16)
+(define std-set-aref-cases
+  (list
+   (list 'value '(let ((v (vector 1 2 3))) (set-aref 77 v 1) (aref v 1)) 77)
+   (list 'error '(set-aref 1 "hello" 0) 'error)))  ; string char required
+
+;; std-FormatRadix: ~nR format directive (§20)
+(define std-format-radix-cases
+  (list
+   (list 'value '(format nil "~2R" 10) "1010")
+   (list 'value '(format nil "~8R" 255) "377")
+   (list 'value '(format nil "~16R" 255) "ff")
+   (list 'value '(format nil "~10R" 42) "42")))
 
 (define all-milestones
   (list
@@ -1175,7 +1507,36 @@
    (list "std-Loop"          std-loop-cases)
    (list "std-Instancep"     std-instancep-cases)
    (list "std-Convert"       std-convert-cases)
-   (list "std-Misc"          std-misc-cases)))
+   (list "std-Misc"          std-misc-cases)
+   (list "std-MapcarMulti"   std-mapcar-multi-cases)
+   (list "std-SymbolpNil"    std-symbolp-nil-cases)
+   (list "std-NewPredicates" std-new-predicates-cases)
+   (list "std-SetfCarCdr"    std-setf-car-cdr-cases)
+   (list "std-For"           std-for-cases)
+   (list "std-Defdynamic"    std-defdynamic-cases)
+   (list "std-CaseElse"      std-case-else-cases)
+   (list "std-SymbolpT"      std-symbolp-t-cases)
+   (list "std-ConditionHandling" std-condition-handling-cases)
+   (list "std-MakeCondition" std-make-condition-cases)
+   (list "std-SetfArfString" std-setf-aref-string-cases)
+   (list "std-Expt"          std-expt-cases)
+   (list "std-CharIndex"     std-char-index-cases)
+   (list "std-Substring"     std-substring-cases)
+   (list "std-StreamFn"      std-stream-fn-cases)
+   (list "std-IOFn"          std-io-fn-cases)
+   (list "std-VectorSet"     std-vector-set-cases)
+   (list "std-Mapc"          std-mapc-cases)
+   (list "std-Macrolet"      std-macrolet-cases)
+   (list "std-CharConvert"   std-char-convert-cases)
+   (list "std-StringList"    std-string-list-cases)
+   (list "std-Elt"           std-elt-cases)
+   (list "std-Subseq"        std-subseq-cases)
+   (list "std-IntegerLength" std-integer-length-cases)
+   (list "std-SetCarCdr"     std-set-car-cdr-cases)
+   (list "std-AppendBang"    std-append-bang-cases)
+   (list "std-GenVecSet"     std-general-vector-set-cases)
+   (list "std-SetAref"       std-set-aref-cases)
+   (list "std-FormatRadix"   std-format-radix-cases)))
 
 (define strict-milestones
   (list
@@ -1229,6 +1590,35 @@
    (list "std-Loop"          std-loop-cases)
    (list "std-Instancep"     std-instancep-cases)
    (list "std-Convert"       std-convert-cases)
-   (list "std-Misc"          std-misc-cases)))
+   (list "std-Misc"          std-misc-cases)
+   (list "std-MapcarMulti"   std-mapcar-multi-cases)
+   (list "std-SymbolpNil"    std-symbolp-nil-cases)
+   (list "std-NewPredicates" std-new-predicates-cases)
+   (list "std-SetfCarCdr"    std-setf-car-cdr-cases)
+   (list "std-For"           std-for-cases)
+   (list "std-Defdynamic"    std-defdynamic-cases)
+   (list "std-CaseElse"      std-case-else-cases)
+   (list "std-SymbolpT"      std-symbolp-t-cases)
+   (list "std-ConditionHandling" std-condition-handling-cases)
+   (list "std-MakeCondition" std-make-condition-cases)
+   (list "std-SetfArfString" std-setf-aref-string-cases)
+   (list "std-Expt"          std-expt-cases)
+   (list "std-CharIndex"     std-char-index-cases)
+   (list "std-Substring"     std-substring-cases)
+   (list "std-StreamFn"      std-stream-fn-cases)
+   (list "std-IOFn"          std-io-fn-cases)
+   (list "std-VectorSet"     std-vector-set-cases)
+   (list "std-Mapc"          std-mapc-cases)
+   (list "std-Macrolet"      std-macrolet-cases)
+   (list "std-CharConvert"   std-char-convert-cases)
+   (list "std-StringList"    std-string-list-cases)
+   (list "std-Elt"           std-elt-cases)
+   (list "std-Subseq"        std-subseq-cases)
+   (list "std-IntegerLength" std-integer-length-cases)
+   (list "std-SetCarCdr"     std-set-car-cdr-cases)
+   (list "std-AppendBang"    std-append-bang-cases)
+   (list "std-GenVecSet"     std-general-vector-set-cases)
+   (list "std-SetAref"       std-set-aref-cases)
+   (list "std-FormatRadix"   std-format-radix-cases)))
 
 (define extended-milestones all-milestones)

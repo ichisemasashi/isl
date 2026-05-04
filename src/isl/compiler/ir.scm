@@ -49,14 +49,32 @@
          (else #f)))))
 
 (define (normalize-place place)
-  (if (and (pair? place)
-           (symbol? (car place))
-           (eq? (car place) 'vector-ref)
-           (= (length place) 3))
-      (list 'place-vector-ref
-            (normalize-expr (cadr place))
-            (normalize-expr (caddr place)))
-      #f))
+  (cond
+   ((not (pair? place)) #f)
+   ((not (symbol? (car place))) #f)
+   ((and (eq? (car place) 'vector-ref) (= (length place) 3))
+    (list 'place-vector-ref
+          (normalize-expr (cadr place))
+          (normalize-expr (caddr place))))
+   ((and (eq? (car place) 'general-vector-ref) (= (length place) 3))
+    (list 'place-general-vector-ref
+          (normalize-expr (cadr place))
+          (normalize-expr (caddr place))))
+   ((and (eq? (car place) 'aref) (= (length place) 3))
+    (list 'place-aref
+          (normalize-expr (cadr place))
+          (normalize-expr (caddr place))))
+   ((and (eq? (car place) 'car) (= (length place) 2))
+    (list 'place-car
+          (normalize-expr (cadr place))))
+   ((and (eq? (car place) 'cdr) (= (length place) 2))
+    (list 'place-cdr
+          (normalize-expr (cadr place))))
+   ((and (eq? (car place) 'string-ref) (= (length place) 3))
+    (list 'place-string-ref
+          (normalize-expr (cadr place))
+          (normalize-expr (caddr place))))
+   (else #f)))
 
 (define (normalize-tagbody-items items)
   (let loop ((xs items) (acc '()))
@@ -420,6 +438,22 @@
                (list 'invalid-special op args)
                (list 'special op (list norm-bindings (normalize-body body)))))
          (list 'invalid-special op args)))
+    ((macrolet)
+     ;; (macrolet ((name params body...) ...) body...)
+     ;; Treated like flet but macros are local — expand at runtime as closures
+     (if (and (>= (length args) 2) (list? (car args)))
+         (let* ((raw-bindings (car args))
+                (body (cdr args))
+                (norm-bindings
+                 (map (lambda (b)
+                        (if (and (list? b) (>= (length b) 3) (symbol? (car b)) (list? (cadr b)))
+                            (list (car b) (cadr b) (normalize-body (cddr b)))
+                            #f))
+                      raw-bindings)))
+           (if (any not norm-bindings)
+               (list 'invalid-special op args)
+               (list 'special 'macrolet (list norm-bindings (normalize-body body)))))
+         (list 'invalid-special op args)))
     ((the)
      ;; (the class-name form)
      (if (= (length args) 2)
@@ -477,6 +511,85 @@
      (if (and (= (length args) 1) (symbol? (car args)))
          (list 'special 'class (list (car args)))
          (list 'invalid-special op args)))
+    ;; ---- case (§10.4) ----
+    ((case)
+     ;; (case keyform ((key...) body...)... [(otherwise|t|else body...)])
+     (if (< (length args) 1)
+         (list 'invalid-special op args)
+         (let* ((keyform (normalize-expr (car args)))
+                (clauses-raw (cdr args))
+                (norm-clauses
+                 (let loop ((cs clauses-raw) (acc '()))
+                   (if (null? cs)
+                       (reverse acc)
+                       (let ((c (car cs)))
+                         (if (and (list? c) (>= (length c) 1))
+                             (let ((keys (car c))
+                                   (body (cdr c)))
+                               (cond
+                                ((or (eq? keys 'otherwise) (eq? keys 't) (eq? keys 'else))
+                                 (loop (cdr cs)
+                                       (cons (list 'else (normalize-body body)) acc)))
+                                ((list? keys)
+                                 (loop (cdr cs)
+                                       (cons (list keys (normalize-body body)) acc)))
+                                (else #f)))
+                             #f))))))
+           (if (or (not norm-clauses) (any not norm-clauses))
+               (list 'invalid-special op args)
+               (list 'special 'case (list keyform norm-clauses))))))
+    ;; ---- dotimes (§10.6) ----
+    ((dotimes)
+     ;; (dotimes (var count [result]) body...)
+     (if (null? args)
+         (list 'invalid-special op args)
+         (let ((spec (car args))
+               (body (cdr args)))
+           (if (and (list? spec)
+                    (or (= (length spec) 2) (= (length spec) 3))
+                    (symbol? (car spec)))
+               (list 'special 'dotimes
+                     (list (car spec)
+                           (normalize-expr (cadr spec))
+                           (if (= (length spec) 3)
+                               (normalize-expr (caddr spec))
+                               #f)
+                           (normalize-body body)))
+               (list 'invalid-special op args)))))
+    ;; ---- for / do (§10.8) ----
+    ((for do)
+     ;; (for ((var init [step]) ...) (end-test result...) body...)
+     (if (< (length args) 2)
+         (list 'invalid-special op args)
+         (let* ((var-specs-raw (car args))
+                (end-clause    (cadr args))
+                (body-forms    (cddr args)))
+           (if (and (list? var-specs-raw)
+                    (list? end-clause)
+                    (>= (length end-clause) 1))
+               (let* ((norm-specs
+                       (map (lambda (vs)
+                              (if (and (list? vs)
+                                       (or (= (length vs) 2) (= (length vs) 3))
+                                       (symbol? (car vs)))
+                                  (list (car vs)
+                                        (normalize-expr (cadr vs))
+                                        (if (= (length vs) 3)
+                                            (normalize-expr (caddr vs))
+                                            #f))
+                                  #f))
+                            var-specs-raw))
+                      (end-test (normalize-expr (car end-clause)))
+                      (result-forms (cdr end-clause))
+                      (result-ir (if (null? result-forms)
+                                     '(const ())
+                                     (normalize-body result-forms)))
+                      (body-ir (normalize-body body-forms)))
+                 (if (any not norm-specs)
+                     (list 'invalid-special op args)
+                     (list 'special 'for
+                           (list norm-specs end-test result-ir body-ir))))
+               (list 'invalid-special op args)))))
     (else
      (list 'special op (map normalize-expr args)))))
 
@@ -499,9 +612,10 @@
             ((quote if cond and or progn lambda setq let let* setf block return-from catch throw go tagbody with-open-file dolist while handler-case
                     defpackage in-package
                     defclass defgeneric defmethod
-                    flet labels the unwind-protect function
+                    flet labels macrolet the unwind-protect function
                     with-handler
-                    dynamic dynamic-let class)
+                    dynamic dynamic-let class
+                    case dotimes for do)
              (normalize-special op args))
             (else (normalize-call op args)))
           (normalize-call op args))))
@@ -528,6 +642,10 @@
           ((defvar)
            (if (= (length args) 2)
                (list 'define-var (car args) (normalize-expr (cadr args)))
+               (list 'invalid-top form)))
+          ((defdynamic)
+           (if (= (length args) 2)
+               (list 'define-dynamic (car args) (normalize-expr (cadr args)))
                (list 'invalid-top form)))
           (else
            (list 'expr (normalize-expr form)))))
