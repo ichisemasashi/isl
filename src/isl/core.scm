@@ -20,6 +20,7 @@
           *isl-handler-stack* isl-signal-condition isl-subclassp?
           ;; Phase 6: dynamic variables + strict sanitization
           *dynamic-var-table* resolve-binding-symbol sanitize-for-strict
+          strict-profile?
           ;; Phase 7-A: next-method support
           *next-methods* *current-method-args*
           ;; Phase 8: format engine (used by compiler runtime)

@@ -24,6 +24,8 @@
     (setq r (dbms-exec-sql catalog sql))
     (worker-assert-ok "insert" r 'count)
     ;; COMMIT may be interrupted by external kill in durability tests.
+    ;; The engine failpoint (dbms-test-commit-failpoint) writes the marker file
+    ;; and sleeps for DBMS_TEST_COMMIT_DELAY_SEC seconds after WAL commit.
     (setq r (dbms-exec-sql catalog "COMMIT;"))
     (if (and (dbms-result-p r) (eq (second r) 'ok))
         (format t "worker commit completed.~%")

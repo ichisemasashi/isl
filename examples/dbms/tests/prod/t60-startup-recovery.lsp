@@ -28,6 +28,7 @@
       (setq suffix (+ suffix 1))
       (setq root (string-append root-base "-" (format nil "~A" suffix))))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
 
     (setq catalog (dbms-engine-init))
     (setq r (dbms-exec-sql catalog "CREATE TABLE IF NOT EXISTS pages (id INT PRIMARY KEY, title TEXT NOT NULL);"))

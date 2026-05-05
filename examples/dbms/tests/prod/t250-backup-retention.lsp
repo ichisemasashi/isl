@@ -52,6 +52,7 @@
       (setq suffix (+ suffix 1))
       (setq root (string-append root-base "-" (format nil "~A" suffix))))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
     (setenv "DBMS_BACKUP_KEEP_COUNT" "2")
     (setenv "DBMS_BACKUP_KEEP_DAYS" "0")
 

@@ -36,6 +36,7 @@
       (setq suffix (+ suffix 1))
       (setq root (string-append root-base "-" (format nil "~A" suffix))))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
 
     (setq saved (dbms-storage-save-table-rows "pages" big-rows))
     (assert-true "initial save rows" (dbms-table-state-p saved))

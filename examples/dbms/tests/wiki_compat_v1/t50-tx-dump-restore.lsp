@@ -18,6 +18,7 @@
          (rows '())
          (wk '()))
     (setenv "DBMS_STORAGE_ROOT" root-a)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
     (setq catalog (dbms-engine-init))
 
     ;; BEGIN/COMMIT executable

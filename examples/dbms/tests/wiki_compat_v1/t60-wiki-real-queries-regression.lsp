@@ -24,8 +24,9 @@
 
 (defun run-tests ()
   (let* ((root (string-append "/tmp/dbms-wiki-real-q-" (format nil "~A" (get-universal-time))))
-         (catalog (dbms-engine-init)))
+         (catalog '()))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
     (setq catalog (dbms-engine-init))
 
     ;; list/index

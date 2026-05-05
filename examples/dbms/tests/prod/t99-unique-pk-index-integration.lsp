@@ -27,6 +27,7 @@
                     '()
                     '()))))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
     (setq catalog (dbms-engine-init))
 
     ;; SQL path: PK table + duplicate check
