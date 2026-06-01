@@ -5,8 +5,19 @@
 ## 前提
 
 - 実装言語: ISL
-- ポートは固定 `8080` ではなく、設定ファイルの `listen_port` を使用します。
-- 既定設定ファイル: `examples/webserver/conf/webserver.conf.lsp`
+- ポートは設定ファイルの `listen_port` を使用します（既定: HTTPS は `18443`、HTTP は `18080`）
+- 既定設定ファイル: `examples/webserver/conf/webserver.conf.lsp`（HTTPS、ポート 18443）
+- HTTP 専用設定ファイル: `examples/webserver/conf/webserver-http.conf.lsp`（ポート 18080）
+- TLS 証明書・秘密鍵: `examples/webserver/runtime/tls/server.crt` / `server.key`
+  - 自己署名証明書（CN=localhost）。有効期限は 2027-02-16 まで。
+
+## TLS 証明書の再生成
+
+```sh
+openssl req -x509 -newkey rsa:2048 -keyout examples/webserver/runtime/tls/server.key \
+  -out examples/webserver/runtime/tls/server.crt \
+  -days 365 -nodes -subj "/CN=localhost"
+```
 
 ## 共通
 
@@ -19,30 +30,26 @@ export WEBSERVER_CONFIG="$WEBSERVER_ROOT/conf/webserver.conf.lsp"
 
 ## 起動コマンド
 
-デーモン起動（既定）:
+HTTPS デーモン起動（既定）:
 
 ```sh
 WEBSERVER_CMD=start \
-WEBSERVER_TRANSPORT=http \
-WEBSERVER_PID_FILE=/tmp/webserver.pid \
-WEBSERVER_SERVER_LOG=/tmp/webserver.log \
 ./bin/isl examples/webserver/app/ctl.lsp
 ```
 
-HTTPS 起動:
-
-```sh
-WEBSERVER_CMD=start \
-WEBSERVER_TRANSPORT=https \
-./bin/isl examples/webserver/app/ctl.lsp
-```
-
-前面起動（デバッグ）:
+HTTPS 前面起動（デバッグ）:
 
 ```sh
 WEBSERVER_CMD=start \
 WEBSERVER_DAEMON=0 \
-WEBSERVER_TRANSPORT=http \
+./bin/isl examples/webserver/app/ctl.lsp
+```
+
+HTTP デーモン起動（TLS なし）:
+
+```sh
+WEBSERVER_CMD=start \
+WEBSERVER_CONFIG="$(pwd)/examples/webserver/conf/webserver-http.conf.lsp" \
 ./bin/isl examples/webserver/app/ctl.lsp
 ```
 

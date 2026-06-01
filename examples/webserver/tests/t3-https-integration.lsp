@@ -86,6 +86,12 @@
          (out-bad "/tmp/webserver-t3-bad.txt")
          (cert "./examples/webserver/runtime/tls/server.crt")
          (key "./examples/webserver/runtime/tls/server.key"))
+    ;; Kill any stale server on this port from a previous run.
+    (ws-stop-server-if-running pid)
+    (system (string-append "sh -c 'lsof -ti :" (format nil "~A" port)
+                           " | xargs kill -9 2>/dev/null; true'"))
+    (system "sh -c 'sleep 1'")
+
     (ws-write-file-text
      cfg
      (string-append

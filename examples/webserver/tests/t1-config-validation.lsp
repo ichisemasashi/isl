@@ -31,7 +31,7 @@
          (tmp-bad-port (string-append root "/tests/tmp-bad-port.lsp"))
          (tmp-missing-key (string-append root "/tests/tmp-missing-key.lsp")))
     (let ((cfg (ws-validate-config-file cfg-ok)))
-      (assert-true "valid config listen_port=18080" (= (ws-config-get cfg 'listen_port) 18080))
+      (assert-true "valid config listen_port=18443" (= (ws-config-get cfg 'listen_port) 18443))
       (assert-true "document_root is absolute path"
                    (ws-starts-with (ws-config-get cfg 'document_root) "/")))
 

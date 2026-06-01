@@ -154,7 +154,7 @@
                  " > " (ws-shell-quote-local out-test) " 2>&1\""))
         0))
     (assert-true "ctl test output"
-                 (ws-contains (ws-read-file-text-local out-test) "config check passed"))
+                 (ws-contains (ws-read-file-text-local out-test) "state check passed"))
 
     ;; start command (daemon mode default)
     (assert-true

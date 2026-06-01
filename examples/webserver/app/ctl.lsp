@@ -20,6 +20,7 @@
   (format t "  WEBSERVER_CMD=test     ./bin/isl examples/webserver/app/ctl.lsp\n")
   (format t "  WEBSERVER_CMD=-t       ./bin/isl examples/webserver/app/ctl.lsp\n")
   (format t "  WEBSERVER_CMD=logs     ./bin/isl examples/webserver/app/ctl.lsp\n")
+  (format t "  Default transport is read from config (transport key); override with WEBSERVER_TRANSPORT=https|http\n")
   (format t "  (export WEBSERVER_ROOT and WEBSERVER_CONFIG first; see examples/webserver/README.md)\n"))
 
 (defun ws-ctl-bin-path (root)
