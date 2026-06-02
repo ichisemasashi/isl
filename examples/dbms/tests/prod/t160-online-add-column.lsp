@@ -44,13 +44,14 @@
       (setq suffix (+ suffix 1))
       (setq root (string-append root-base "-" (format nil "~A" suffix))))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
 
     (setq catalog (dbms-engine-init))
     (setq r (dbms-exec-sql catalog "CREATE TABLE pages (id INT PRIMARY KEY, title TEXT);"))
     (assert-true "create table ok" (and (dbms-result-p r) (eq (second r) 'ok)))
 
     ;; Seed a larger table state so we can check ALTER itself does not rewrite data pages.
-    (setq saved (dbms-storage-save-table-rows "pages" (make-rows-range 1 120)))
+    (setq saved (dbms-engine-save-table-rows "pages" (make-rows-range 1 120)))
     (assert-true "seed rows save ok" (dbms-table-state-p saved))
     ;; Keep PK index in sync because we bypassed SQL INSERT path.
     (setq rebuild (dbms-engine-rebuild-table-indexes-from-def

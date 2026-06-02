@@ -23,6 +23,7 @@
          (idx '())
          (hits '()))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
     (setq catalog (dbms-engine-init))
 
     (setq r (dbms-exec-sql catalog "CREATE TABLE items (id INT PRIMARY KEY, name TEXT NOT NULL);"))

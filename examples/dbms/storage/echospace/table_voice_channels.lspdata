@@ -1,0 +1,1 @@
+(dbms-table-state "voice_channels" ((dbms-row 1 (("workspace_id" 1) ("slug" "lounge") ("name" "Lounge") ("topic" "Drop in voice room") ("display_order" 10) ("created_at" "3985691501") ("id" 1)))) 2)

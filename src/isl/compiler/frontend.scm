@@ -23,7 +23,27 @@
 
 (define (frontend-macroexpand form env)
   ;; Reuse interpreter macro expansion to keep semantics aligned.
-  (eval-islisp (list 'macroexpand (list 'quote form)) env))
+  ;; Handle macrolet specially: expand body with local macro bindings.
+  (if (and (pair? form) (eq? (car form) 'macrolet) (>= (length form) 2))
+      (let ((bindings (cadr form))
+            (body     (cddr form)))
+        ;; Install local macros in a fresh child env, then expand each body form.
+        (let ((menv (make-frame env)))
+          (for-each
+           (lambda (binding)
+             (when (and (list? binding) (>= (length binding) 3) (symbol? (car binding)))
+               (let* ((mname  (resolve-binding-symbol (car binding)))
+                      (params (cadr binding))
+                      (mbody  (cddr binding))
+                      (m      (make-macro params mbody menv mname)))
+                 (frame-define! menv mname m))))
+           bindings)
+          ;; Expand body using macroexpand* with the local env (direct call, not eval)
+          (let ((expanded (map (lambda (f) (macroexpand* f menv)) body)))
+            (if (= (length expanded) 1)
+                (car expanded)
+                (cons 'progn expanded)))))
+      (eval-islisp (list 'macroexpand (list 'quote form)) env)))
 
 (define (frontend-normalize expanded-form)
   (normalize-top-level-form expanded-form))

@@ -173,10 +173,10 @@
                         (if (or (dbms-error-p r)
                                 (not (null (dbms-parser-ok-rest r))))
                             (setq failed (dbms-parser-error "invalid function arguments" g))
-                            (setq args (cons (dbms-parser-ok-value r) args)))))))
+                            (setq args (cons (dbms-parser-ok-value r) args))))))
                 (if (dbms-error-p failed)
                     failed
-                    (dbms-parser-ok (list 'dbms-expr 'function name (dbms-reverse args)) rest)))))))
+                    (dbms-parser-ok (list 'dbms-expr 'function name (dbms-reverse args)) rest))))))))
 
 (defun dbms-parse-expr (tokens)
   (if (null tokens)

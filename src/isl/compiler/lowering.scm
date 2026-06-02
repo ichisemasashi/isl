@@ -173,6 +173,16 @@
      (list 'll-define-global
            (cadr top)
            (lower-expr-to-cfg (caddr top))))
+    ((define-var)
+     ;; Phase 6-B: defvar — lower initializer to CFG, keep as ll-define-var
+     (list 'll-define-var
+           (cadr top)
+           (lower-expr-to-cfg (caddr top))))
+    ((define-dynamic)
+     ;; §23.1: defdynamic — always defines and registers dynamic variable
+     (list 'll-define-dynamic
+           (cadr top)
+           (lower-expr-to-cfg (caddr top))))
     ((define-macro)
      (list 'll-define-macro (cadr top) (caddr top) (cadddr top)))
     ((expr)

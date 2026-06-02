@@ -1151,10 +1151,7 @@
          (saved (dbms-storage-save-checkpoint-meta checkpoint)))
     (if (dbms-error-p saved)
         saved
-        (let ((trimmed (dbms-storage-wal-trim-through-lsn last-lsn)))
-          (if (dbms-error-p trimmed)
-              trimmed
-              checkpoint)))))
+        checkpoint)))
 
 (defun dbms-storage-save-table-state (table-name table-state)
   (if (or (null table-name) (string= table-name ""))
@@ -1344,15 +1341,24 @@
   (dbms-storage-next-tmp-path (string-append (dbms-storage-root) "/" prefix)))
 
 (defun dbms-storage-openssl-bin ()
-  (cond
-   ((os-file-executable-p "/opt/homebrew/opt/openssl@3/bin/openssl")
-    "/opt/homebrew/opt/openssl@3/bin/openssl")
-   ((os-file-executable-p "/opt/homebrew/bin/openssl")
-    "/opt/homebrew/bin/openssl")
-   ((os-file-executable-p "/usr/local/bin/openssl")
-    "/usr/local/bin/openssl")
-   (t
-    "openssl")))
+  (let ((env-path (getenv "ISL_OPENSSL_BIN")))
+    (cond
+     ((and (not (null env-path)) (> (length env-path) 0) (os-file-executable-p env-path))
+      env-path)
+     ((os-file-executable-p "/opt/homebrew/opt/openssl@3/bin/openssl")
+      "/opt/homebrew/opt/openssl@3/bin/openssl")
+     ((os-file-executable-p "/opt/homebrew/bin/openssl")
+      "/opt/homebrew/bin/openssl")
+     ((os-file-executable-p "/Volumes/ONE/homebrew/opt/openssl@3/bin/openssl")
+      "/Volumes/ONE/homebrew/opt/openssl@3/bin/openssl")
+     ((os-file-executable-p "/Volumes/ONE/homebrew/bin/openssl")
+      "/Volumes/ONE/homebrew/bin/openssl")
+     ((os-file-executable-p "/usr/local/opt/openssl@3/bin/openssl")
+      "/usr/local/opt/openssl@3/bin/openssl")
+     ((os-file-executable-p "/usr/local/bin/openssl")
+      "/usr/local/bin/openssl")
+     (t
+      "openssl"))))
 
 (defun dbms-storage-openssl-pbkdf2-sha256 (password salt iterations)
   (let ((out ""))
@@ -1888,55 +1894,56 @@
       (cons (dbms-page-pair-page-id (car pages))
             (dbms-page-file-page-id-list (cdr pages)))))
 
+;; Helper: take first n elements from list
+(defun dbms-list-take (xs n)
+  (if (or (null xs) (<= n 0))
+      '()
+      (cons (car xs) (dbms-list-take (cdr xs) (- n 1)))))
+
+;; Helper: drop first n elements from list
+(defun dbms-list-drop (xs n)
+  (if (or (null xs) (<= n 0))
+      xs
+      (dbms-list-drop (cdr xs) (- n 1))))
+
+;; Build a data page directly from a list of rows (O(capacity) per page).
+(defun dbms-make-full-page (pid rows)
+  (let* ((capacity *dbms-data-page-slot-capacity*)
+         (row-count (length rows))
+         (free-count (- capacity row-count))
+         (slots (append rows (dbms-empty-slot-list free-count)))
+         (flags (if (= row-count 0) '(free) '()))
+         (header (dbms-make-data-page-header pid 0 (dbms-page-checksum slots) free-count flags)))
+    (dbms-make-data-page header slots)))
+
+;; Repack a page file with the given rows.  Reuses existing page IDs
+;; before allocating new ones.  O(n) in number of rows.
 (defun dbms-data-page-file-repack-with-rows (page-file rows)
-  (let ((pages (dbms-data-page-file-pages page-file))
-        (free-pages '())
+  (let ((capacity *dbms-data-page-slot-capacity*)
+        (existing-pairs (dbms-data-page-file-pages page-file))
         (next-id (dbms-data-page-file-next-page-id page-file))
+        (pages '())
+        (free-pages '())
         (rest rows))
-    ;; Clear existing pages.
-    (dolist (pair pages)
-      (let* ((page-id (dbms-page-pair-page-id pair))
-             (cleared (dbms-data-page-empty page-id)))
-        (setq pages (dbms-put-page-pair pages page-id cleared))
-        (setq free-pages (dbms-list-add-number-unique free-pages page-id))))
-    ;; Place rows, reusing free pages before allocating new pages.
+    ;; Build pages in bulk: one page per capacity-sized chunk of rows.
     (while (not (null rest))
-      (let ((placed nil)
-            (candidates free-pages))
-        (while (and (not placed) (not (null candidates)))
-          (let* ((pid (car candidates))
-                 (pair (dbms-find-page-pair pages pid))
-                 (page (if (null pair) '() (dbms-page-pair-page pair)))
-                 (next-page (if (null page) '() (dbms-page-put-row page (car rest)))))
-            (if (null next-page)
-                nil
-                (progn
-                  (setq pages (dbms-put-page-pair pages pid next-page))
-                  (setq placed t)
-                  (if (= (dbms-count-free-slots (third next-page)) 0)
-                      (setq free-pages (dbms-list-remove-number free-pages pid))
-                      (setq free-pages (dbms-list-add-number-unique free-pages pid))))))
-          (setq candidates (cdr candidates)))
-        (if (not placed)
-            (let* ((pid next-id)
-                   (fresh (dbms-data-page-empty pid))
-                   (used (dbms-page-put-row fresh (car rest))))
-              (setq pages (dbms-put-page-pair pages pid used))
-              (setq next-id (+ next-id 1))
-              (if (= (dbms-count-free-slots (third used)) 0)
-                  nil
-                  (setq free-pages (dbms-list-add-number-unique free-pages pid))))
-            nil))
-      (setq rest (cdr rest)))
-    ;; Recompute free page set from actual pages.
-    (setq free-pages '())
-    (dolist (pair pages)
-      (let* ((pid (dbms-page-pair-page-id pair))
-             (page (dbms-page-pair-page pair))
-             (free-count (dbms-count-free-slots (third page))))
+      (let* ((chunk (dbms-list-take rest capacity))
+             ;; Reuse an existing page ID if available, else allocate new.
+             (pid (if (null existing-pairs)
+                      (let ((new-id next-id))
+                        (setq next-id (+ next-id 1))
+                        new-id)
+                      (let ((eid (dbms-page-pair-page-id (car existing-pairs))))
+                        (setq existing-pairs (cdr existing-pairs))
+                        eid)))
+             (page (dbms-make-full-page pid chunk))
+             (row-count (length chunk))
+             (free-count (- capacity row-count)))
+        (setq pages (append pages (list (list pid page))))
         (if (> free-count 0)
             (setq free-pages (dbms-list-add-number-unique free-pages pid))
-            nil)))
+            nil)
+        (setq rest (dbms-list-drop rest capacity))))
     (dbms-make-data-page-file 1
                               *dbms-data-page-size*
                               *dbms-data-page-slot-capacity*
@@ -2788,17 +2795,91 @@
   (let ((pad (- (length index-columns) (length prefix-values))))
     (append prefix-values (dbms-storage-repeat-value pad '__dbms-key-max__))))
 
+;; Collect (key . rid) pairs from rows for bulk index building.
+(defun dbms-btree-collect-row-pairs (rows index-columns)
+  (if (null rows)
+      '()
+      (cons (list (dbms-storage-index-key-from-row (car rows) index-columns)
+                  (dbms-row-id (car rows)))
+            (dbms-btree-collect-row-pairs (cdr rows) index-columns))))
+
+;; Sorted insert of one (key rid) pair into an already-sorted list.
+;; Sorts by key first, then by rid for equal keys.
+;; O(1) for pre-sorted (ascending) input.
+(defun dbms-btree-pair-insert-sorted (e sorted)
+  (if (null sorted)
+      (list e)
+      (let* ((key-cmp (dbms-btree-key-compare (first e) (first (car sorted))))
+             (before-p (if (= key-cmp 0)
+                           (< (second e) (second (car sorted)))
+                           (< key-cmp 0))))
+        (if before-p
+            (cons e sorted)
+            (cons (car sorted) (dbms-btree-pair-insert-sorted e (cdr sorted)))))))
+
+;; Insertion sort of (key rid) pairs by key.  O(n) for pre-sorted input.
+(defun dbms-btree-sort-pairs (pairs)
+  (if (null pairs)
+      '()
+      (dbms-btree-pair-insert-sorted (car pairs) (dbms-btree-sort-pairs (cdr pairs)))))
+
+;; Split a list into chunks of at most n elements each.
+(defun dbms-list-into-chunks (xs n)
+  (if (null xs)
+      '()
+      (cons (dbms-list-take xs n) (dbms-list-into-chunks (dbms-list-drop xs n) n))))
+
+;; Build btree index from sorted (key rid) pairs in O(n) without per-element insertion.
+(defun dbms-btree-bulk-build-sorted (table-name index-name index-columns sorted-pairs)
+  (let* ((leaf-cap (dbms-btree-page-capacity-estimate 'leaf))
+         (chunks (dbms-list-into-chunks sorted-pairs leaf-cap))
+         (n-leaves (if (null chunks) 0 (length chunks))))
+    (if (<= n-leaves 1)
+        ;; Zero or one leaf page - it is the root.
+        (let* ((entries (if (null chunks)
+                            '()
+                            (mapcar (lambda (p) (dbms-make-btree-leaf-entry (first p) (second p)))
+                                    (car chunks))))
+               (root-page (dbms-make-btree-page
+                           (dbms-btree-header-with-flags 1 '(root))
+                           'leaf entries '() '())))
+          (dbms-make-btree-index table-name index-name index-columns 1 2
+                                 (list (list 1 root-page))))
+        ;; Multiple leaf pages - build leaves + one internal root.
+        (let* ((pages '())
+               (int-entries '())
+               (pid 1)
+               (remaining chunks))
+          (while (not (null remaining))
+            (let* ((chunk (car remaining))
+                   (right-sib (if (null (cdr remaining)) '() (+ pid 1)))
+                   (leaf-entries (mapcar
+                                  (lambda (p) (dbms-make-btree-leaf-entry (first p) (second p)))
+                                  chunk))
+                   (page (dbms-make-btree-page (dbms-btree-header-with-flags pid '())
+                                               'leaf leaf-entries '() right-sib)))
+              (setq pages (append pages (list (list pid page))))
+              (if (> pid 1)
+                  (setq int-entries
+                        (append int-entries
+                                (list (dbms-make-btree-internal-entry
+                                       (dbms-btree-entry-key (car leaf-entries))
+                                       pid))))
+                  nil)
+              (setq pid (+ pid 1))
+              (setq remaining (cdr remaining))))
+          (let* ((root-id pid)
+                 (root-page (dbms-make-btree-page
+                             (dbms-btree-header-with-flags root-id '(root))
+                             'internal int-entries 1 '())))
+            (setq pages (append pages (list (list root-id root-page))))
+            (dbms-make-btree-index table-name index-name index-columns root-id (+ root-id 1)
+                                   pages))))))
+
+;; Bulk-build a btree index from rows.  Collects all keys, sorts once, builds pages
+;; directly.  O(n) for pre-sorted input; O(n^2) worst-case sort but avoids the
+;; O(n^2) per-page-slot scanning of the old one-by-one insert approach.
 (defun dbms-storage-build-btree-index (table-name index-name index-columns rows)
-  (let ((idx (dbms-storage-btree-new-index table-name index-name index-columns))
-        (rest rows)
-        (failed '()))
-    (while (and (null failed) (not (null rest)))
-      (let* ((row (car rest))
-             (rid (dbms-row-id row))
-             (key (dbms-storage-index-key-from-row row index-columns))
-             (next (dbms-storage-btree-insert idx key rid)))
-        (if (dbms-error-p next)
-            (setq failed next)
-            (setq idx next)))
-      (setq rest (cdr rest)))
-    (if (dbms-error-p failed) failed idx)))
+  (let* ((pairs (dbms-btree-collect-row-pairs rows index-columns))
+         (sorted (dbms-btree-sort-pairs pairs)))
+    (dbms-btree-bulk-build-sorted table-name index-name index-columns sorted)))

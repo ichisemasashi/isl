@@ -21,6 +21,7 @@
          (catalog '())
          (r '()))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
     (setq catalog (dbms-engine-init))
 
     ;; 正常系5文: CREATE/INSERT/SELECT/UPDATE/DELETE

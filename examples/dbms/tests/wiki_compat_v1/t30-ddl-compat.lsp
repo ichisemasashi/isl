@@ -16,6 +16,7 @@
          (r '())
          (rows '()))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
     (setq catalog (dbms-engine-init))
 
     ;; CREATE TABLE IF NOT EXISTS

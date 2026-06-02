@@ -36,6 +36,7 @@
       (setq suffix (+ suffix 1))
       (setq root (string-append root-base "-" (format nil "~A" suffix))))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
 
     ;; Build a recoverable WAL record so startup reports non-zero recovery lag.
     (setq table-def (dbms-make-table-def "seed"

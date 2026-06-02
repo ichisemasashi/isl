@@ -1,1 +1,1 @@
-stream-format
+This is a test

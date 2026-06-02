@@ -38,15 +38,17 @@
       (setq suffix (+ suffix 1))
       (setq root (string-append root-base "-" (format nil "~A" suffix))))
     (setenv "DBMS_STORAGE_ROOT" root)
+    (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
 
     (setq catalog (dbms-engine-init))
     (setq r (dbms-exec-sql catalog "CREATE TABLE pages (id INT PRIMARY KEY);"))
     (assert-true "create table ok" (and (dbms-result-p r) (eq (second r) 'ok)))
 
     ;; Build fragmentation by shrinking after a larger persisted state.
+    ;; Use delta save so old pages are not repacked away, leaving empty page slots.
     (setq saved (dbms-storage-save-table-rows "pages" (make-rows-range 1 130)))
     (assert-true "seed rows save ok" (dbms-table-state-p saved))
-    (setq saved (dbms-storage-save-table-rows "pages" (make-rows-range 1 5)))
+    (setq saved (dbms-storage-save-table-rows-delta "pages" (make-rows-range 1 130) (make-rows-range 1 5)))
     (assert-true "shrink rows save ok" (dbms-table-state-p saved))
 
     (setq before (dbms-storage-table-pages-stats "pages"))

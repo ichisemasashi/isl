@@ -695,12 +695,23 @@
             (string-append (ws-example-root)
                            "/examples/webserver/runtime/cgi-bin/wiki.cgi"))))
 
+(defun ws-example-echospace-cgi-p (script-path)
+  (string= script-path
+           (ws-normalize-path
+            (string-append (ws-example-root)
+                           "/examples/webserver/runtime/cgi-bin/echospace.cgi"))))
+
 (defglobal *ws-wiki-embed-loaded* nil)
 (defglobal *ws-wiki-embed-load-mutex* (mutex-open))
+(defglobal *ws-echospace-embed-loaded* nil)
+(defglobal *ws-echospace-embed-load-mutex* (mutex-open))
 (defglobal *ws-cgi-env-mutex* (mutex-open))
 
 (defun ws-wiki-app-path ()
   (string-append (ws-example-root) "/examples/wiki/app/wiki.lsp"))
+
+(defun ws-echospace-app-path ()
+  (string-append (ws-example-root) "/examples/echospace/app/echospace.lsp"))
 
 (defun ws-ensure-wiki-embed-loaded! ()
   (ws-with-mutex
@@ -712,6 +723,18 @@
            (setenv "WIKI_EMBED_MODE" "1")
            (load (ws-wiki-app-path))
            (setq *ws-wiki-embed-loaded* t)
+           t)))))
+
+(defun ws-ensure-echospace-embed-loaded! ()
+  (ws-with-mutex
+   *ws-echospace-embed-load-mutex*
+   (lambda ()
+     (if *ws-echospace-embed-loaded*
+         t
+         (progn
+           (setenv "ECHOSPACE_EMBED_MODE" "1")
+           (load (ws-echospace-app-path))
+           (setq *ws-echospace-embed-loaded* t)
            t)))))
 
 (defun ws-gosh-bin ()
@@ -732,10 +755,20 @@
          " " (ws-shell-quote (string-append root "/examples/wiki/app/wiki.lsp"))
          " < " (ws-shell-quote stdin-path)
          " > " (ws-shell-quote stdout-path)))
-      (string-append
-       (ws-shell-quote script-path)
-       " < " (ws-shell-quote stdin-path)
-       " > " (ws-shell-quote stdout-path))))
+      (if (ws-example-echospace-cgi-p script-path)
+          (let ((root (ws-example-root)))
+            (string-append
+             "cd " (ws-shell-quote root)
+             " && exec env ISL_ROOT=" (ws-shell-quote root)
+             " " (ws-shell-quote (ws-gosh-bin))
+             " " (ws-shell-quote (string-append root "/bin/isl"))
+             " " (ws-shell-quote (string-append root "/examples/echospace/app/echospace.lsp"))
+             " < " (ws-shell-quote stdin-path)
+             " > " (ws-shell-quote stdout-path)))
+          (string-append
+           (ws-shell-quote script-path)
+           " < " (ws-shell-quote stdin-path)
+           " > " (ws-shell-quote stdout-path)))))
 
 (defun ws-timeout-wrapper-command (cmd timeout-sec)
   (string-append
@@ -771,6 +804,31 @@
                     method script-path resp-status (ws-byte-length resp-body)))
     (list 'ok resp-status resp-headers resp-body)))
 
+(defun ws-run-embedded-echospace-script (cfg req script-path script-name path-info)
+  (ws-ensure-echospace-embed-loaded!)
+  (let* ((target (ws-request-get req 'target))
+         (method (ws-request-get req 'method))
+         (version (ws-request-get req 'version))
+         (headers (ws-request-get req 'headers))
+         (body (ws-request-get req 'body))
+         (raw (echospace-handle-request-embedded
+               method
+               target
+               version
+               headers
+               body
+               script-name
+               path-info
+               (format nil "~A" (ws-config-get cfg 'listen_port))))
+         (parts (ws-cgi-split-header-body raw))
+         (hdr-text (car parts))
+         (resp-body (second parts))
+         (resp-headers (ws-parse-cgi-headers hdr-text))
+         (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
+    (ws-log (format nil "cgi done method=~A script=~A status=~A bytes=~A mode=embedded"
+                    method script-path resp-status (ws-byte-length resp-body)))
+    (list 'ok resp-status resp-headers resp-body)))
+
 (defun ws-run-cgi-script (cfg req script-path script-name path-info)
   (let* ((target (ws-request-get req 'target))
          (method (ws-request-get req 'method))
@@ -785,59 +843,62 @@
          (cmd (ws-cgi-command script-path stdin-path stdout-path)))
     (ws-log (format nil "cgi start method=~A target=~A script=~A path_info=~A timeout_sec=~A"
                     method target script-path path-info timeout-sec))
-    (if (ws-example-wiki-cgi-p script-path)
-        (ws-run-embedded-wiki-script cfg req script-path script-name path-info)
-        (progn
-          (ws-write-file-raw stdin-path body)
-          (ws-with-mutex
-           *ws-cgi-env-mutex*
-           (lambda ()
-             (ws-with-env-vars
-              (list
-               (list "REQUEST_METHOD" method)
-               (list "QUERY_STRING" query)
-               (list "CONTENT_LENGTH" (format nil "~A" (ws-byte-length body)))
-               (list "CONTENT_TYPE" (if (null content-type) "" content-type))
-               (list "SCRIPT_NAME" script-name)
-               (list "PATH_INFO" path-info)
-               (list "SERVER_PROTOCOL" version)
-               (list "SERVER_PORT" (format nil "~A" (ws-config-get cfg 'listen_port)))
-               (list "GATEWAY_INTERFACE" "CGI/1.1")
-               (list "HTTP_COOKIE" (let ((cookie (ws-header-get headers "cookie")))
-                                     (if (null cookie) "" cookie)))
-               (list "HTTP_HOST" (let ((host (ws-header-get headers "host")))
-                                   (if (null host) "" host)))
-               (list "HTTP_USER_AGENT" (let ((ua (ws-header-get headers "user-agent")))
-                                         (if (null ua) "" ua))))
-              (lambda ()
-                (let* ((exec-result (system-timeout cmd timeout-sec))
-                       (status (car exec-result))
-                       (timedout (or (second exec-result) (= status 142))))
-                  (if timedout
-                      (progn
-                        (ws-log-error (format nil "cgi timeout method=~A script=~A timeout_sec=~A"
-                                              method script-path timeout-sec))
-                        (ws-delete-file-if-exists stdin-path)
-                        (ws-delete-file-if-exists stdout-path)
-                        (list 'error 504 "cgi timeout\n"))
-                      (if (not (= status 0))
-                          (progn
-                            (ws-log-error (format nil "cgi failed method=~A script=~A exit_status=~A"
-                                                  method script-path status))
-                            (ws-delete-file-if-exists stdin-path)
-                            (ws-delete-file-if-exists stdout-path)
-                            (list 'error 500 "cgi execution failed\n"))
-                          (let* ((raw (ws-read-file-text stdout-path))
-                                 (parts (ws-cgi-split-header-body raw))
-                                 (hdr-text (car parts))
-                                 (resp-body (second parts))
-                                 (resp-headers (ws-parse-cgi-headers hdr-text))
-                                 (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
-                            (ws-log (format nil "cgi done method=~A script=~A status=~A bytes=~A"
-                                            method script-path resp-status (ws-byte-length resp-body)))
-                            (ws-delete-file-if-exists stdin-path)
-                            (ws-delete-file-if-exists stdout-path)
-                            (list 'ok resp-status resp-headers resp-body)))))))))))))
+    (cond
+     ((ws-example-wiki-cgi-p script-path)
+      (ws-run-embedded-wiki-script cfg req script-path script-name path-info))
+     ((ws-example-echospace-cgi-p script-path)
+      (ws-run-embedded-echospace-script cfg req script-path script-name path-info))
+     (t
+      (ws-write-file-raw stdin-path body)
+      (ws-with-mutex
+       *ws-cgi-env-mutex*
+       (lambda ()
+         (ws-with-env-vars
+          (list
+           (list "REQUEST_METHOD" method)
+           (list "QUERY_STRING" query)
+           (list "CONTENT_LENGTH" (format nil "~A" (ws-byte-length body)))
+           (list "CONTENT_TYPE" (if (null content-type) "" content-type))
+           (list "SCRIPT_NAME" script-name)
+           (list "PATH_INFO" path-info)
+           (list "SERVER_PROTOCOL" version)
+           (list "SERVER_PORT" (format nil "~A" (ws-config-get cfg 'listen_port)))
+           (list "GATEWAY_INTERFACE" "CGI/1.1")
+           (list "HTTP_COOKIE" (let ((cookie (ws-header-get headers "cookie")))
+                                 (if (null cookie) "" cookie)))
+           (list "HTTP_HOST" (let ((host (ws-header-get headers "host")))
+                               (if (null host) "" host)))
+           (list "HTTP_USER_AGENT" (let ((ua (ws-header-get headers "user-agent")))
+                                     (if (null ua) "" ua))))
+          (lambda ()
+            (let* ((exec-result (system-timeout cmd timeout-sec))
+                   (status (car exec-result))
+                   (timedout (or (second exec-result) (= status 142))))
+              (cond
+               (timedout
+                (ws-log-error (format nil "cgi timeout method=~A script=~A timeout_sec=~A"
+                                      method script-path timeout-sec))
+                (ws-delete-file-if-exists stdin-path)
+                (ws-delete-file-if-exists stdout-path)
+                (list 'error 504 "cgi timeout\n"))
+               ((not (= status 0))
+                (ws-log-error (format nil "cgi failed method=~A script=~A exit_status=~A"
+                                      method script-path status))
+                (ws-delete-file-if-exists stdin-path)
+                (ws-delete-file-if-exists stdout-path)
+                (list 'error 500 "cgi execution failed\n"))
+               (t
+                (let* ((raw (ws-read-file-text stdout-path))
+                       (parts (ws-cgi-split-header-body raw))
+                       (hdr-text (car parts))
+                       (resp-body (second parts))
+                       (resp-headers (ws-parse-cgi-headers hdr-text))
+                       (resp-status (ws-cgi-parse-status (ws-cgi-header-get resp-headers "status"))))
+                  (ws-log (format nil "cgi done method=~A script=~A status=~A bytes=~A"
+                                  method script-path resp-status (ws-byte-length resp-body)))
+                  (ws-delete-file-if-exists stdin-path)
+                  (ws-delete-file-if-exists stdout-path)
+                  (list 'ok resp-status resp-headers resp-body)))))))))))))
 
 (defun ws-handle-cgi-request (conn cfg req)
   (let* ((method (ws-request-get req 'method))

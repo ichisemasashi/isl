@@ -30,6 +30,14 @@
     dbms/tls-required
     dbms/audit-tamper-detected))
 
+(defun dbms-reverse (xs)
+  (let ((rest xs)
+        (out '()))
+    (while (not (null rest))
+      (setq out (cons (car rest) out))
+      (setq rest (cdr rest)))
+    out))
+
 (defun dbms-member-eq (x xs)
   (if (null xs)
       nil

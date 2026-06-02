@@ -1168,7 +1168,7 @@
 (defun dbms-engine-save-table-rows (table-name rows)
   (if (dbms-tx-active-p)
       (let* ((pair (dbms-find-staged-table-state-pair table-name *dbms-tx-staged-table-states*))
-             (base-rows (if (and (listp pair) (dbms-table-state-p (second pair)))
+             (base-rows (if (and (listp pair) (not (null pair)) (dbms-table-state-p (second pair)))
                             (third (second pair))
                             '()))
              (step-ops (dbms-engine-compute-row-ops base-rows rows))
@@ -1542,7 +1542,7 @@
 
 (defun dbms-engine-table-state-rows-or-empty (table-name staged-states)
   (let ((entry (dbms-find-staged-table-state-pair table-name staged-states)))
-    (if (and (listp entry)
+    (if (and (listp entry) (not (null entry))
              (dbms-table-state-p (second entry)))
         (third (second entry))
         '())))
@@ -2345,6 +2345,13 @@
             (setq i (+ i 1)))
           ok))))
 
+(defun dbms-parse-digits-string (s)
+  (let ((i 0) (n (length s)) (acc 0))
+    (while (< i n)
+      (setq acc (+ (* acc 10) (string-index (substring s i (+ i 1)) "0123456789")))
+      (setq i (+ i 1)))
+    acc))
+
 (defun dbms-test-commit-failpoint (tx-id)
   (let ((marker-path (getenv "DBMS_TEST_COMMIT_MARKER_PATH"))
         (delay-sec (getenv "DBMS_TEST_COMMIT_DELAY_SEC")))
@@ -2355,7 +2362,7 @@
     (if (and (not (null delay-sec))
              (not (string= delay-sec ""))
              (dbms-digits-only-p delay-sec))
-        (if (os-sleep-sec (convert delay-sec <integer>)) 0 1)
+        (if (os-sleep-sec (dbms-parse-digits-string delay-sec)) 0 1)
         0)))
 
 (defun dbms-find-column-def (columns name)
@@ -3112,11 +3119,11 @@
             (setq null-count (+ null-count 1))
             (if (dbms-value-in-list-p v distinct)
                 nil
-                (setq distinct (cons v distinct))))))
+                (setq distinct (cons v distinct)))))
       (setq rest (cdr rest)))
     (list (list "name" col-name)
           (list "ndv" (length distinct))
-          (list "null-fraction" (if (= row-count 0) 0 (/ null-count row-count)))))
+          (list "null-fraction" (if (= row-count 0) 0 (/ null-count row-count))))))
 
 (defun dbms-table-stats (rows columns)
   (let ((col-rest columns)

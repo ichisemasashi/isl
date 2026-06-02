@@ -1,0 +1,23 @@
+(load "./examples/dbms/app/repr.lsp")
+(load "./examples/dbms/app/engine.lsp")
+(load "./examples/dbms/app/storage.lsp")
+
+(defun make-rows-range (start end)
+  (if (> start end)
+      '()
+      (cons (dbms-make-row start (list (list "id" start)
+                                       (list "title" (string-append "t" (format nil "~A" start)))))
+            (make-rows-range (+ start 1) end))))
+
+;; EXACTLY the test that worked before
+(let* ((root (string-append "/tmp/dbms-direct-" (format nil "~A" (get-universal-time)))))
+  (setenv "DBMS_STORAGE_ROOT" root)
+  (setenv "DBMS_ALLOW_IMPLICIT_ADMIN" "1")
+  (let* ((catalog (dbms-engine-init))
+         (r (dbms-exec-sql catalog "CREATE TABLE pages (id INT PRIMARY KEY, title TEXT);")))
+    (format t "create: ~A~%" (second r))
+    (let* ((rows (make-rows-range 1 120)))
+      (format t "rows: ~A~%" (length rows))
+      (format t "calling dbms-storage-save-table-rows directly...~%")
+      (let* ((result (dbms-storage-save-table-rows "pages" rows)))
+        (format t "done: ~A~%" (if (dbms-error-p result) 'error 'ok))))))

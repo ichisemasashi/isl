@@ -55,6 +55,7 @@
     (setq launch-cmd
           (string-append
            "DBMS_STORAGE_ROOT=" (shell-quote root)
+           " DBMS_ALLOW_IMPLICIT_ADMIN=1"
            " DBMS_DURABILITY_ID=" (shell-quote id-s)
            " DBMS_TEST_COMMIT_DELAY_SEC='20'"
            " DBMS_TEST_COMMIT_MARKER_PATH=" (shell-quote marker)
@@ -77,6 +78,7 @@
     (setq check-cmd
           (string-append
            "DBMS_STORAGE_ROOT=" (shell-quote root)
+           " DBMS_ALLOW_IMPLICIT_ADMIN=1"
            " DBMS_DURABILITY_ID=" (shell-quote id-s)
            " " (shell-quote runner)
            " " (shell-quote checker)
