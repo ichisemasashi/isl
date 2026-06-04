@@ -181,26 +181,37 @@
                                         arr
                                         ")"))))))))
 
+(define (emit-const-build dst v cg-ref)
+  ;; Build the runtime value for a quoted constant, leaving it in `dst`.
+  ;; Lists/pairs are constructed recursively via isl_rt_cons.
+  (cond
+   ((integer? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_int(i64 " (number->string v) ")"))))
+   ((eq? v #t)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
+   ((eq? v #f)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_false()"))))
+   ((null? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_nil()"))))
+   ((symbol? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string v)) ")"))))
+   ((string? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_string(ptr " (str-ptr v) ")"))))
+   ((pair? v)
+    (let ((carn (cg-next-name! cg-ref))
+          (cdrn (cg-next-name! cg-ref)))
+      (append
+       (emit-const-build carn (car v) cg-ref)
+       (emit-const-build cdrn (cdr v) cg-ref)
+       (list (indent 2 (string-append dst " = call ptr @isl_rt_cons(ptr " carn ", ptr " cdrn ")"))))))
+   (else
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")"))))))
+
 (define (emit-rhs dst rhs params cg-ref)
   (let ((op (car rhs)))
     (cond
      ((eq? op 'const)
-      (let ((v (cadr rhs)))
-        (cond
-         ((integer? v)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_int(i64 " (number->string v) ")"))))
-         ((eq? v #t)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
-         ((eq? v #f)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_false()"))))
-         ((null? v)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_nil()"))))
-         ((symbol? v)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string v)) ")"))))
-         ((string? v)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_string(ptr " (str-ptr v) ")"))))
-         (else
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")")))))))
+      (emit-const-build dst (cadr rhs) cg-ref))
      ((eq? op 'var)
       (let ((idx (param-index params (cadr rhs))))
         (if idx
@@ -389,7 +400,8 @@
    ;; needed by closures (lambda lifting) and per-call param name-binding,
    ;; in both module and aot modes
    "declare ptr @isl_rt_make_closure(ptr, i32, ptr)"
-   "declare void @isl_rt_define(ptr, ptr, ptr)"))
+   "declare void @isl_rt_define(ptr, ptr, ptr)"
+   "declare ptr @isl_rt_cons(ptr, ptr)"))
 
 (define (aot-extra-decls)
   (list
