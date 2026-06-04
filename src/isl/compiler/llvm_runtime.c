@@ -18,6 +18,7 @@ void *isl_rt_make_int(int64_t x);
 
 typedef enum {
   ISL_V_INT,
+  ISL_V_RATIO,
   ISL_V_BOOL,
   ISL_V_NIL,
   ISL_V_SYMBOL,
@@ -55,6 +56,10 @@ struct IslValue {
       IslValue *car;
       IslValue *cdr;
     } cons;
+    struct {
+      int64_t num;
+      int64_t den;  /* always > 0 and reduced; never 1 (those are ISL_V_INT) */
+    } ratio;
   } as;
 };
 
@@ -112,11 +117,44 @@ static int isl_truthy(IslValue *v) {
 }
 
 static IslValue *isl_expect_number(IslValue *v, const char *who) {
-  if (!v || v->tag != ISL_V_INT) {
+  if (!v || (v->tag != ISL_V_INT && v->tag != ISL_V_RATIO)) {
     char buf[128];
     snprintf(buf, sizeof(buf), "%s: expected number", who);
     return isl_make_error(buf);
   }
+  return v;
+}
+
+/* ---- exact rational arithmetic (int64 numerator/denominator) ---- */
+
+static int64_t isl_gcd(int64_t a, int64_t b) {
+  if (a < 0) a = -a;
+  if (b < 0) b = -b;
+  while (b) { int64_t t = a % b; a = b; b = t; }
+  return a ? a : 1;
+}
+
+/* Decompose any number value into a fraction num/den (den > 0). */
+static void isl_as_fraction(IslValue *v, int64_t *num, int64_t *den) {
+  if (v->tag == ISL_V_RATIO) { *num = v->as.ratio.num; *den = v->as.ratio.den; }
+  else { *num = v->as.i64; *den = 1; }
+}
+
+/* Build a normalized number: reduced, den > 0, collapsing den==1 to an int. */
+static IslValue *isl_make_rational(int64_t num, int64_t den) {
+  if (den == 0) return isl_make_error("/: division by zero");
+  if (den < 0) { num = -num; den = -den; }
+  int64_t g = isl_gcd(num, den);
+  num /= g;
+  den /= g;
+  if (den == 1) {
+    IslValue *v = isl_alloc_value(ISL_V_INT);
+    v->as.i64 = num;
+    return v;
+  }
+  IslValue *v = isl_alloc_value(ISL_V_RATIO);
+  v->as.ratio.num = num;
+  v->as.ratio.den = den;
   return v;
 }
 
@@ -160,33 +198,34 @@ static IslValue *isl_make_primitive(const char *name, IslPrimitiveFn fn) {
 
 static IslValue *prim_plus(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
-  int64_t acc = 0;
+  int64_t an = 0, ad = 1;
   for (int32_t i = 0; i < argc; i++) {
     IslValue *n = isl_expect_number(argv[i], "+");
     if (n->tag == ISL_V_ERROR) return n;
-    acc += n->as.i64;
+    int64_t bn, bd;
+    isl_as_fraction(n, &bn, &bd);
+    an = an * bd + bn * ad;
+    ad = ad * bd;
+    int64_t g = isl_gcd(an, ad);
+    an /= g; ad /= g;
   }
-  IslValue *out = isl_alloc_value(ISL_V_INT);
-  out->as.i64 = acc;
-  return out;
+  return isl_make_rational(an, ad);
 }
 
 static IslValue *prim_mul(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
-  int64_t acc = 1;
-  if (argc == 0) {
-    IslValue *out = isl_alloc_value(ISL_V_INT);
-    out->as.i64 = 1;
-    return out;
-  }
+  int64_t an = 1, ad = 1;
   for (int32_t i = 0; i < argc; i++) {
     IslValue *n = isl_expect_number(argv[i], "*");
     if (n->tag == ISL_V_ERROR) return n;
-    acc *= n->as.i64;
+    int64_t bn, bd;
+    isl_as_fraction(n, &bn, &bd);
+    an = an * bn;
+    ad = ad * bd;
+    int64_t g = isl_gcd(an, ad);
+    an /= g; ad /= g;
   }
-  IslValue *out = isl_alloc_value(ISL_V_INT);
-  out->as.i64 = acc;
-  return out;
+  return isl_make_rational(an, ad);
 }
 
 static IslValue *prim_minus(IslEnv *env, int32_t argc, IslValue **argv) {
@@ -194,16 +233,20 @@ static IslValue *prim_minus(IslEnv *env, int32_t argc, IslValue **argv) {
   if (argc <= 0) return isl_make_error("-: arity");
   IslValue *n0 = isl_expect_number(argv[0], "-");
   if (n0->tag == ISL_V_ERROR) return n0;
-  int64_t acc = n0->as.i64;
-  if (argc == 1) acc = -acc;
+  int64_t an, ad;
+  isl_as_fraction(n0, &an, &ad);
+  if (argc == 1) return isl_make_rational(-an, ad);
   for (int32_t i = 1; i < argc; i++) {
     IslValue *n = isl_expect_number(argv[i], "-");
     if (n->tag == ISL_V_ERROR) return n;
-    acc -= n->as.i64;
+    int64_t bn, bd;
+    isl_as_fraction(n, &bn, &bd);
+    an = an * bd - bn * ad;
+    ad = ad * bd;
+    int64_t g = isl_gcd(an, ad);
+    an /= g; ad /= g;
   }
-  IslValue *out = isl_alloc_value(ISL_V_INT);
-  out->as.i64 = acc;
-  return out;
+  return isl_make_rational(an, ad);
 }
 
 static IslValue *prim_div(IslEnv *env, int32_t argc, IslValue **argv) {
@@ -211,16 +254,25 @@ static IslValue *prim_div(IslEnv *env, int32_t argc, IslValue **argv) {
   if (argc <= 0) return isl_make_error("/: arity");
   IslValue *n0 = isl_expect_number(argv[0], "/");
   if (n0->tag == ISL_V_ERROR) return n0;
-  int64_t acc = n0->as.i64;
+  int64_t an, ad;
+  isl_as_fraction(n0, &an, &ad);
+  if (argc == 1) {
+    /* (/ x) == 1/x */
+    if (an == 0) return isl_make_error("/: division by zero");
+    return isl_make_rational(ad, an);
+  }
   for (int32_t i = 1; i < argc; i++) {
     IslValue *n = isl_expect_number(argv[i], "/");
     if (n->tag == ISL_V_ERROR) return n;
-    if (n->as.i64 == 0) return isl_make_error("/: division by zero");
-    acc /= n->as.i64;
+    int64_t bn, bd;
+    isl_as_fraction(n, &bn, &bd);
+    if (bn == 0) return isl_make_error("/: division by zero");
+    an = an * bd;
+    ad = ad * bn;
+    int64_t g = isl_gcd(an, ad);
+    an /= g; ad /= g;
   }
-  IslValue *out = isl_alloc_value(ISL_V_INT);
-  out->as.i64 = acc;
-  return out;
+  return isl_make_rational(an, ad);
 }
 
 static IslValue *prim_cmp(const char *name, int32_t argc, IslValue **argv, int mode) {
@@ -229,13 +281,19 @@ static IslValue *prim_cmp(const char *name, int32_t argc, IslValue **argv, int m
   if (a->tag == ISL_V_ERROR) return a;
   IslValue *b = isl_expect_number(argv[1], name);
   if (b->tag == ISL_V_ERROR) return b;
+  int64_t an, ad, bn, bd;
+  isl_as_fraction(a, &an, &ad);
+  isl_as_fraction(b, &bn, &bd);
+  /* denominators are positive, so compare an/ad ? bn/bd via cross-multiply */
+  int64_t lhs = an * bd;
+  int64_t rhs = bn * ad;
   int ok = 0;
   switch (mode) {
-    case 0: ok = (a->as.i64 == b->as.i64); break;
-    case 1: ok = (a->as.i64 < b->as.i64); break;
-    case 2: ok = (a->as.i64 > b->as.i64); break;
-    case 3: ok = (a->as.i64 <= b->as.i64); break;
-    case 4: ok = (a->as.i64 >= b->as.i64); break;
+    case 0: ok = (lhs == rhs); break;
+    case 1: ok = (lhs < rhs); break;
+    case 2: ok = (lhs > rhs); break;
+    case 3: ok = (lhs <= rhs); break;
+    case 4: ok = (lhs >= rhs); break;
     default: ok = 0; break;
   }
   return ok ? g_true : g_false;
@@ -481,6 +539,8 @@ static int isl_eq(IslValue *a, IslValue *b) {
   if (!a || !b || a->tag != b->tag) return 0;
   switch (a->tag) {
     case ISL_V_INT:    return a->as.i64 == b->as.i64;
+    case ISL_V_RATIO:  return a->as.ratio.num == b->as.ratio.num &&
+                              a->as.ratio.den == b->as.ratio.den;
     case ISL_V_BOOL:   return a->as.b == b->as.b;
     case ISL_V_NIL:    return 1;
     case ISL_V_SYMBOL: return strcmp(a->as.str, b->as.str) == 0;
@@ -549,6 +609,9 @@ static void isl_write_value(IslValue *v, int readable) {
   switch (v->tag) {
     case ISL_V_INT:
       printf("%lld", (long long)v->as.i64);
+      break;
+    case ISL_V_RATIO:
+      printf("%lld/%lld", (long long)v->as.ratio.num, (long long)v->as.ratio.den);
       break;
     case ISL_V_BOOL:
       printf(v->as.b ? "#t" : "#f");
