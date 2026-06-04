@@ -46,8 +46,9 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 ## 2. ネイティブ AOT バックエンド（最優先領域）
 
 `native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
-P0（誤出力是正）+ P1（and/or/case・数値・非局所制御）実施後: **25 SAME / 24 未対応
-/ 0 誤出力**。
+P0（誤出力是正）+ P1（and/or/case・数値・非局所制御・float・setq/ループ/unwind-protect）
+実施後: **32 SAME / 17 未対応 / 0 誤出力**。残る未対応は flet/labels、文字列・文字・
+ベクタ・配列、CLOS、dynamic/the/convert。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
@@ -97,9 +98,15 @@ frontend は認識するが codegen が "unsupported operation" を出す:
   `llvm_runtime.c` に `setjmp/longjmp` の統合 exit スタックを実装（throw が中間の
   block フレームを飛び越えても正しく破棄）。同じ lowered CFG を使う IR インタプリタ
   （runtime.scm）側にも同名プリミティブを追加。
-- ⬜ `for`, `flet`, `labels` … `flet`/`labels` はローカル関数を closure 化して対応。
-  `for`/`while`/`dotimes`/`dolist` は `setq`（ミューテーション）とループ lowering が
-  前提。**未着手**。
+- ✅ `setq` と反復（`while`/`dotimes`/`dolist`/`for`/`tagbody`/`go`）、`unwind-protect`
+  … **対応済み**。setq は `(set name val)` 命令へ lowering し、変数読みを名前参照に
+  統一（パラメータは entry で名前束縛済み）＋ `isl_rt_set` で可変化。ループは CFG の
+  後方エッジへ lowering（値は可変 env 経由なので phi 不要）。dotimes/dolist/for は
+  let+while+setq へ縮約。tagbody は各ラベルを CFG ブロックにし `go` を jmp 化。
+  unwind-protect は exit スタックを段階的に巻き戻して各 cleanup を実行。
+- ⬜ `flet`, `labels` … ローカル関数を closure 化して対応。**未着手**。
+  （`go` がネスト lambda を越える/`unwind-protect` を `go` で抜ける場合の cleanup は
+  現状未対応。lexically-direct なケースは動作する。）
 
 ### P1 — 数値・型の拡充
 

@@ -1292,6 +1292,15 @@
         (if (runtime-catch-active? tag)
             (raise (make-throw-signal tag value))
             (runtime-raise 'control-error "No enclosing catch for throw" tag)))))
+  (def '%unwind-protect
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%unwind-protect expects 2 arguments" args))
+      (let ((protected (car args)) (cleanup (cadr args)))
+        (dynamic-wind
+          (lambda () #f)
+          (lambda () (runtime-apply protected '() state))
+          (lambda () (runtime-apply cleanup '() state))))))
   (def 'not
     (lambda (args state)
       (unless (= (length args) 1)
@@ -4661,6 +4670,14 @@
      (if (= (length rhs) 2)
          (env-ref env (cadr rhs))
          (runtime-raise 'invalid-ir "var rhs expects one symbol" rhs)))
+    ((set)
+     ;; (set name value-temp): setq lowered into the CFG.  Mutate the nearest
+     ;; binding (env-set! defines it when absent); the result is the value.
+     (if (and (= (length rhs) 3) (symbol? (cadr rhs)) (symbol? (caddr rhs)))
+         (let ((v (env-ref env (caddr rhs))))
+           (env-set! env (cadr rhs) v)
+           v)
+         (runtime-raise 'invalid-ir "set rhs expects (name value)" rhs)))
     ((call)
      (let ((fn (env-ref env (cadr rhs)))
            (args (map (lambda (s) (env-ref env s)) (caddr rhs))))

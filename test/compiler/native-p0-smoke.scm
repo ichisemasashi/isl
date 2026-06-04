@@ -63,15 +63,14 @@
 (check-output "format-mix" "(format (standard-output) \"~A=~X~%\" 255 255)"
               "255=ff")
 
-;; 2. 未対応特殊形式は黙って誤らず失敗する
-(check-fails-loudly "while-not-silent"
-  "(let ((i 0) (s 0)) (while (< i 4) (setq s (+ s i)) (setq i (+ i 1))) (print s))")
-(check-fails-loudly "dotimes-not-silent"
-  "(let ((s 0)) (dotimes (i 4) (setq s (+ s i))) (print s))")
-(check-fails-loudly "dolist-not-silent"
-  "(let ((s 0)) (dolist (x '(1 2 3)) (setq s (+ s x))) (print s))")
-(check-fails-loudly "unwind-protect-not-silent"
-  "(let ((s 0)) (block b (unwind-protect (return-from b 1) (setq s 9))) (print s))")
+;; 2. まだネイティブ未対応の特殊形式は「黙って誤った値」を返さず、必ず
+;;    非 0 終了で失敗する（誤出力を error へ格下げする P0 の原則を維持）。
+;;    while/dotimes/dolist/unwind-protect は実装済みのため
+;;    test/compiler/native-loop-smoke.scm / native-nonlocal-smoke.scm で検証する。
+(check-fails-loudly "flet-not-silent"
+  "(print (flet ((f (x) (* x 2))) (f 21)))")
+(check-fails-loudly "defclass-not-silent"
+  "(defclass <p> () ((x :initarg :x :accessor px))) (print (px (make-instance '<p> :x 1)))")
 
 (when (file-exists? *tmp*) (sys-unlink *tmp*))
 

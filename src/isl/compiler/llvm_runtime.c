@@ -766,10 +766,26 @@ typedef struct ExitFrame {
   struct ExitFrame *next;
 } ExitFrame;
 
+/* kind: 0 = catch (eql tag), 1 = block (eql name), 2 = unwind-protect. */
 static ExitFrame *g_exit_stack = NULL;
+/* A non-local exit in flight: the target frame to reach and the value to
+   deliver.  Unwinding proceeds one unwind-protect frame at a time so each
+   cleanup runs before control reaches the target. */
+static ExitFrame *g_unwind_target = NULL;
+static IslValue *g_unwind_value = NULL;
 
-/* Establish an exit point, run the zero-argument thunk, and return its value;
-   if a matching throw/return-from fires, return the supplied non-local value. */
+/* longjmp toward the pending target, stopping first at the nearest
+   unwind-protect (kind 2) frame strictly above it so its cleanup can run. */
+static void continue_unwind(void) {
+  ExitFrame *jmp_to = g_unwind_target;
+  for (ExitFrame *f = g_exit_stack; f && f != g_unwind_target; f = f->next) {
+    if (f->kind == 2) { jmp_to = f; break; }
+  }
+  longjmp(jmp_to->buf, 1);
+}
+
+/* Establish a catch/block exit point, run the thunk, return its value; a
+   matching throw/return-from delivers the non-local value here. */
 static IslValue *exit_enter(IslEnv *env, int kind, IslValue *key, IslValue *thunk) {
   ExitFrame frame;
   frame.kind = kind;
@@ -782,20 +798,26 @@ static IslValue *exit_enter(IslEnv *env, int kind, IslValue *key, IslValue *thun
     g_exit_stack = frame.next; /* normal exit: pop */
     return r;
   }
-  /* longjmp landed here: restore the stack to this frame's saved top. */
+  /* We are the unwind target (catch/block frames are only landed on as the
+     final destination). */
   g_exit_stack = frame.next;
-  return frame.result;
+  IslValue *v = g_unwind_value;
+  g_unwind_target = NULL;
+  g_unwind_value = NULL;
+  return v;
 }
 
 static IslValue *exit_unwind(int kind, IslValue *key, IslValue *value,
                              const char *err) {
+  ExitFrame *target = NULL;
   for (ExitFrame *f = g_exit_stack; f; f = f->next) {
-    if (f->kind == kind && isl_eq(f->key, key)) {
-      f->result = value;
-      longjmp(f->buf, 1);
-    }
+    if (f->kind == kind && isl_eq(f->key, key)) { target = f; break; }
   }
-  return isl_make_error(err);
+  if (!target) return isl_make_error(err);
+  g_unwind_target = target;
+  g_unwind_value = value;
+  continue_unwind();
+  return NULL; /* unreachable */
 }
 
 static IslValue *prim_catch(IslEnv *env, int32_t argc, IslValue **argv) {
@@ -815,6 +837,29 @@ static IslValue *prim_return_from(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
   if (argc != 2) return isl_make_error("return-from: arity");
   return exit_unwind(1, argv[0], argv[1], "return-from: no matching block");
+}
+
+/* (%unwind-protect protected-thunk cleanup-thunk): the cleanup always runs,
+   whether protected returns normally or a non-local exit unwinds through it. */
+static IslValue *prim_unwind_protect(IslEnv *env, int32_t argc, IslValue **argv) {
+  if (argc != 2) return isl_make_error("unwind-protect: arity");
+  ExitFrame frame;
+  frame.kind = 2;
+  frame.key = NULL;
+  frame.result = NULL;
+  frame.next = g_exit_stack;
+  if (setjmp(frame.buf) == 0) {
+    g_exit_stack = &frame;
+    IslValue *r = (IslValue *)isl_rt_call(env, argv[0], 0, NULL);
+    g_exit_stack = frame.next;
+    (void)isl_rt_call(env, argv[1], 0, NULL); /* normal cleanup */
+    return r;
+  }
+  /* An exit is unwinding through us: pop, run cleanup, then continue. */
+  g_exit_stack = frame.next;
+  (void)isl_rt_call(env, argv[1], 0, NULL);
+  continue_unwind();
+  return NULL; /* unreachable */
 }
 
 static IslValue *prim_standard_output(IslEnv *env, int32_t argc, IslValue **argv) {
@@ -1044,6 +1089,24 @@ void *isl_rt_lookup(void *envp, void *keyp) {
   return b->value;
 }
 
+/* setq: update the nearest existing binding of `sym`, or define it in `env`
+   when none exists.  Returns the assigned value. */
+void *isl_rt_set(void *envp, void *symp, void *valp) {
+  IslEnv *env = (IslEnv *)envp;
+  IslValue *sym = (IslValue *)symp;
+  IslValue *val = (IslValue *)valp;
+  if (!sym || sym->tag != ISL_V_SYMBOL) {
+    return isl_make_error("set: key must be symbol");
+  }
+  IslBinding *b = isl_find_binding(env, sym->as.str);
+  if (b) {
+    b->value = val;
+  } else {
+    isl_define_raw(env, sym->as.str, val);
+  }
+  return val;
+}
+
 void *isl_rt_lookup_param(void *envp, int32_t index) {
   IslEnv *env = (IslEnv *)envp;
   if (!env || index < 0 || index >= env->argc || !env->argv) {
@@ -1164,6 +1227,8 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "%throw", isl_make_primitive("%throw", prim_throw));
   isl_define_raw(env, "%block", isl_make_primitive("%block", prim_block));
   isl_define_raw(env, "%return-from", isl_make_primitive("%return-from", prim_return_from));
+  isl_define_raw(env, "%unwind-protect",
+                 isl_make_primitive("%unwind-protect", prim_unwind_protect));
   isl_define_raw(env, "format", isl_make_primitive("format", prim_format));
   isl_define_raw(env, "standard-output", isl_make_primitive("standard-output", prim_standard_output));
   isl_define_raw(env, "error-output", isl_make_primitive("error-output", prim_error_output));

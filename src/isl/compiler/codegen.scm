@@ -218,13 +218,19 @@
      ((eq? op 'const)
       (emit-const-build dst (cadr rhs) cg-ref))
      ((eq? op 'var)
-      (let ((idx (param-index params (cadr rhs))))
-        (if idx
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_lookup_param(ptr %env, i32 " (number->string idx) ")")))
-            (let ((key (cg-next-name! cg-ref)))
-              (list
-               (indent 2 (string-append key " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string (cadr rhs))) ")"))
-               (indent 2 (string-append dst " = call ptr @isl_rt_lookup(ptr %env, ptr " key ")")))))))
+      ;; Read variables by name from the (mutable) environment.  Parameters are
+      ;; name-bound at function entry (emit-param-bindings), so this sees both
+      ;; lexical bindings and any subsequent setq mutation.
+      (let ((key (cg-next-name! cg-ref)))
+        (list
+         (indent 2 (string-append key " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string (cadr rhs))) ")"))
+         (indent 2 (string-append dst " = call ptr @isl_rt_lookup(ptr %env, ptr " key ")")))))
+     ((eq? op 'set)
+      ;; (set name value-temp): mutate the named binding, result is the value.
+      (let ((key (cg-next-name! cg-ref)))
+        (list
+         (indent 2 (string-append key " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string (cadr rhs))) ")"))
+         (indent 2 (string-append dst " = call ptr @isl_rt_set(ptr %env, ptr " key ", ptr " (llvm-val (caddr rhs)) ")")))))
      ((eq? op 'call)
       (emit-call-rhs dst rhs cg-ref))
      ((eq? op 'phi)
@@ -410,6 +416,7 @@
    "declare ptr @isl_rt_false()"
    "declare ptr @isl_rt_lookup(ptr, ptr)"
    "declare ptr @isl_rt_lookup_param(ptr, i32)"
+   "declare ptr @isl_rt_set(ptr, ptr, ptr)"
    "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
    "declare i1 @isl_rt_truthy(ptr)"
    "declare ptr @isl_rt_unsupported(ptr)"

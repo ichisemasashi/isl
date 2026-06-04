@@ -154,6 +154,18 @@
         ;; Malformed binding lists fall through to the generic `special` node so
         ;; the IR interpreter still reports the precise validation error.
         ((eq? sop 'cond) (lower-cond payload st label))
+        ((eq? sop 'setq) (lower-setq payload st label))
+        ((eq? sop 'while) (lower-while payload st label))
+        ((eq? sop 'dotimes) (lower-dotimes payload st label))
+        ((eq? sop 'dolist) (lower-dolist payload st label))
+        ((eq? sop 'for) (lower-for payload st label))
+        ((eq? sop 'tagbody) (lower-tagbody payload st label))
+        ((eq? sop 'go) (lower-go payload st label))
+        ((eq? sop 'unwind-protect)
+         (lower-expr (list 'call (list 'var '%unwind-protect)
+                           (list 'lambda '() (car payload))
+                           (list 'lambda '() (cons 'seq (cadr payload))))
+                     st label))
         ((eq? sop 'and) (lower-and payload st label))
         ((eq? sop 'or) (lower-or payload st label))
         ((eq? sop 'case) (lower-case payload st label))
@@ -349,6 +361,171 @@
              (list 'lambda (list g) (list 'special 'cond cond-clauses))
              keyform)
        st label))))
+
+;; (setq (name val)...): assign each variable in turn via a `set` instruction
+;; that both backends implement against the mutable runtime environment.  The
+;; result is the value of the last assignment (nil if no pairs).
+(define (lower-setq payload st label)
+  (let loop ((xs payload) (cur label) (last #f))
+    (cond
+     ((null? xs)
+      (if last
+          (list cur last)
+          (let ((d (fresh-temp st)))
+            (emit! st cur (list 'assign d (list 'const '())))
+            (list cur d))))
+     (else
+      (let* ((entry (car xs)))
+        (unless (and (pair? entry) (= (length entry) 2) (symbol? (car entry)))
+          (error "setq entry must be (symbol expr)" entry))
+        (let* ((name (car entry))
+               (r (lower-expr (cadr entry) st cur))
+               (vlbl (car r))
+               (vt (cadr r))
+               (d (fresh-temp st)))
+          (emit! st vlbl (list 'assign d (list 'set name vt)))
+          (loop (cdr xs) vlbl d)))))))
+
+;; ---- iteration: while / dotimes / dolist / for ----
+;; Loops compile to a CFG with a back-edge.  Variables live in the mutable
+;; runtime environment (read by name, written by `set`), so no phi nodes are
+;; needed across the back-edge — each block recomputes its values from the env.
+
+(define (fresh-loop-sym st base)
+  (let ((n (state-next-temp st)))
+    (set-state-next-temp! st (+ n 1))
+    ;; leading space => cannot collide with a user-written symbol
+    (string->symbol (string-append " " base "-" (number->string n)))))
+
+(define (mk-call op . args) (cons 'call (cons (list 'var op) args)))
+(define (mk-seq . forms) (cons 'seq forms))
+(define (mk-setq name val) (list 'special 'setq (list (list name val))))
+
+;; (while test body): test in a loop header, body then back-edge, nil after.
+(define (lower-while payload st label)
+  (unless (and (list? payload) (= (length payload) 2))
+    (error "while payload must be (test body)" payload))
+  (let ((test (car payload))
+        (body (cadr payload))
+        (header (fresh-label st))
+        (body-lbl (fresh-label st))
+        (after (fresh-label st)))
+    (terminate! st label (list 'jmp header))
+    (let* ((tr (lower-expr test st header)) (h-end (car tr)) (tv (cadr tr)))
+      (terminate! st h-end (list 'br tv body-lbl after)))
+    (let* ((bres (lower-expr body st body-lbl)) (b-end (car bres)))
+      (unless (terminated? st b-end) (terminate! st b-end (list 'jmp header))))
+    (let ((d (fresh-temp st)))
+      (emit! st after (list 'assign d (list 'const '())))
+      (list after d))))
+
+;; (dotimes (var count result? body)) -> let + while + setq.
+(define (lower-dotimes payload st label)
+  (let* ((var (list-ref payload 0))
+         (count (list-ref payload 1))
+         (result (list-ref payload 2))
+         (body (list-ref payload 3))
+         (limit (fresh-loop-sym st "limit"))
+         (loop (list 'special 'while
+                     (list (mk-call '< (list 'var var) (list 'var limit))
+                           (mk-seq body (mk-setq var (mk-call '+ (list 'var var) (list 'const 1)))))))
+         (res (if result result (list 'const '())))
+         (form (list 'special 'let
+                     (list (list (list var (list 'const 0)) (list limit count))
+                           (mk-seq loop res)))))
+    (lower-expr form st label)))
+
+;; (dolist (var list result? body)) -> let + while + setq.
+(define (lower-dolist payload st label)
+  (let* ((var (list-ref payload 0))
+         (lst (list-ref payload 1))
+         (result (list-ref payload 2))
+         (body (list-ref payload 3))
+         (rest (fresh-loop-sym st "rest"))
+         (loopbody (mk-seq (mk-setq var (mk-call 'car (list 'var rest)))
+                           body
+                           (mk-setq rest (mk-call 'cdr (list 'var rest)))))
+         (loop (list 'special 'while
+                     (list (mk-call 'consp (list 'var rest)) loopbody)))
+         (res (if result result (list 'const '())))
+         (form (list 'special 'let
+                     (list (list (list rest lst) (list var (list 'const '())))
+                           (mk-seq loop res)))))
+    (lower-expr form st label)))
+
+;; (for (specs end-test result body)) with specs = ((sym init step?) ...).
+;; Parallel step: bind each step value to a temp, then assign all.
+(define (lower-for payload st label)
+  (let* ((specs (list-ref payload 0))
+         (end-test (list-ref payload 1))
+         (result (list-ref payload 2))
+         (body (list-ref payload 3))
+         (inits (map (lambda (s) (list (car s) (cadr s))) specs))
+         (stepped (let loop ((xs specs) (acc '()))
+                    (cond ((null? xs) (reverse acc))
+                          ((caddr (car xs)) (loop (cdr xs) (cons (car xs) acc)))
+                          (else (loop (cdr xs) acc)))))
+         (temps (map (lambda (s) (cons (car s) (fresh-loop-sym st "step"))) stepped))
+         (pstep
+          (if (null? stepped)
+              (list 'const '())
+              (list 'special 'let
+                    (list (map (lambda (s) (list (cdr (assq (car s) temps)) (caddr s))) stepped)
+                          (apply mk-seq
+                                 (map (lambda (s) (mk-setq (car s) (list 'var (cdr (assq (car s) temps)))))
+                                      stepped))))))
+         (loop (list 'special 'while
+                     (list (mk-call 'not end-test) (mk-seq body pstep))))
+         (form (list 'special 'let (list inits (mk-seq loop result)))))
+    (lower-expr form st label)))
+
+;; ---- tagbody / go ----
+;; Each tag becomes a CFG block; `go` is an intra-procedural jmp.  A stack of
+;; tag->label maps (innermost first) is kept during lowering so a (possibly
+;; nested) `go` can resolve its target lexically.
+(define *tagbody-labels* (make-parameter '()))
+
+(define (tagbody-lookup tag)
+  (let loop ((frames (*tagbody-labels*)))
+    (cond ((null? frames) #f)
+          ((assq tag (car frames)) => cdr)
+          (else (loop (cdr frames))))))
+
+(define (lower-go payload st label)
+  (let* ((tag (car payload))
+         (target (tagbody-lookup tag)))
+    (unless target (error "go: no enclosing tagbody label" tag))
+    (unless (terminated? st label) (terminate! st label (list 'jmp target)))
+    ;; code textually following a `go` is unreachable; give it a fresh block
+    (let ((dead (fresh-label st)) (d (fresh-temp st)))
+      (emit! st dead (list 'assign d (list 'const '())))
+      (list dead d))))
+
+(define (lower-tagbody payload st label)
+  (let* ((label-map
+          (let loop ((xs payload) (acc '()))
+            (cond ((null? xs) (reverse acc))
+                  ((and (pair? (car xs)) (eq? (caar xs) 'label))
+                   (loop (cdr xs) (cons (cons (cadr (car xs)) (fresh-label st)) acc)))
+                  (else (loop (cdr xs) acc)))))
+         (after (fresh-label st)))
+    (parameterize ((*tagbody-labels* (cons label-map (*tagbody-labels*))))
+      (let loop ((xs payload) (cur label))
+        (if (null? xs)
+            (unless (terminated? st cur) (terminate! st cur (list 'jmp after)))
+            (let ((item (car xs)))
+              (cond
+               ((and (pair? item) (eq? (car item) 'label))
+                (let ((llbl (cdr (assq (cadr item) label-map))))
+                  (unless (terminated? st cur) (terminate! st cur (list 'jmp llbl)))
+                  (loop (cdr xs) llbl)))
+               ((and (pair? item) (eq? (car item) 'form))
+                (loop (cdr xs) (car (lower-expr (cadr item) st cur))))
+               (else (error "tagbody item must be (label name) or (form expr)" item)))))))
+    ;; tagbody evaluates to nil
+    (let ((d (fresh-temp st)))
+      (emit! st after (list 'assign d (list 'const '())))
+      (list after d))))
 
 (define (lower-expr-to-cfg expr)
   (let* ((st (make-state))
