@@ -326,6 +326,7 @@ static IslValue *prim_ge(IslEnv *env, int32_t argc, IslValue **argv) {
 
 static void isl_print_value(IslValue *v);
 static void isl_write_value(IslValue *v, int readable);
+static void isl_format_radix(IslValue *v, int radix);
 
 static IslValue *prim_print(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
@@ -580,6 +581,7 @@ static IslValue *prim_format(IslEnv *env, int32_t argc, IslValue **argv) {
     if (!*p) break;
     switch (*p) {
       case '%': putchar('\n'); break;
+      case '&': putchar('\n'); break;  /* ~& fresh-line (single stream: approximate) */
       case '~': putchar('~'); break;
       case 'A': case 'a':
         if (argi < argc) isl_write_value(argv[argi++], 0);
@@ -590,13 +592,46 @@ static IslValue *prim_format(IslEnv *env, int32_t argc, IslValue **argv) {
       case 'D': case 'd':
         if (argi < argc) isl_write_value(argv[argi++], 0);
         break;
-      default:
-        putchar('~');
-        putchar(*p);
+      case 'X': case 'x':
+        if (argi < argc) isl_format_radix(argv[argi++], 16);
         break;
+      case 'O': case 'o':
+        if (argi < argc) isl_format_radix(argv[argi++], 8);
+        break;
+      case 'B': case 'b':
+        if (argi < argc) isl_format_radix(argv[argi++], 2);
+        break;
+      default:
+        /* Unknown directive: emitting it literally produces silently-wrong
+           output, so fail loudly instead. */
+        fflush(stdout);
+        fprintf(stderr, "isl_rt: format: unsupported directive ~%c\n", *p);
+        exit(70);
     }
   }
   return (IslValue *)isl_rt_nil();
+}
+
+/* Print an integer value in the given radix (2/8/16) for ~B/~O/~X.
+   Non-integers fail loudly rather than print a wrong representation. */
+static void isl_format_radix(IslValue *v, int radix) {
+  if (!v || v->tag != ISL_V_INT) {
+    fflush(stdout);
+    fprintf(stderr, "isl_rt: format: ~B/~O/~X expects an integer\n");
+    exit(70);
+  }
+  int64_t n = v->as.i64;
+  if (n == 0) { putchar('0'); return; }
+  uint64_t mag = (n < 0) ? (uint64_t)(-(n + 1)) + 1u : (uint64_t)n;
+  char buf[65];
+  int i = 0;
+  const char *digits = "0123456789abcdef";
+  while (mag > 0) {
+    buf[i++] = digits[mag % (uint64_t)radix];
+    mag /= (uint64_t)radix;
+  }
+  if (n < 0) putchar('-');
+  while (i > 0) putchar(buf[--i]);
 }
 
 /* Write a value to stdout.  readable!=0 selects S-style (strings quoted),
@@ -764,11 +799,18 @@ _Bool isl_rt_truthy(void *v) {
 }
 
 void *isl_rt_unsupported(void *msgp) {
-  IslValue *msg = (IslValue *)msgp;
-  if (msg && msg->tag == ISL_V_STRING) {
-    return isl_make_error(msg->as.str);
-  }
-  return isl_make_error("unsupported operation");
+  /* An unsupported construct cannot be honored correctly.  Returning an error
+     sentinel here is dangerous: when its result is discarded (e.g. a `while`
+     in a `seq` whose value is unused) the program silently keeps running with
+     stale state and prints a *wrong* answer.  To never return a wrong value we
+     fail loudly and stop the process instead.
+
+     codegen passes a raw C string pointer here (the same `str-ptr` ABI used by
+     isl_rt_make_string / isl_rt_make_symbol), not an IslValue*. */
+  const char *text = (const char *)msgp;
+  fflush(stdout);
+  fprintf(stderr, "isl_rt: %s\n", text ? text : "unsupported operation");
+  exit(70); /* EX_SOFTWARE: this program uses a feature the native backend lacks */
 }
 
 void *isl_rt_create_env(void) {
