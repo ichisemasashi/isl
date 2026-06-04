@@ -31,6 +31,7 @@ typedef struct {
   IslFnKind kind;
   int32_t arity;
   const char *name;
+  IslEnv *env;            /* captured lexical environment (NULL for primitives) */
   union {
     IslCompiledFn compiled;
     IslPrimitiveFn primitive;
@@ -393,7 +394,9 @@ void *isl_rt_call(void *envp, void *fnp, int32_t argc, void *argvp) {
     fprintf(stderr, "isl_rt: out of memory\n");
     exit(2);
   }
-  child->parent = env;
+  /* Lexical scoping: a compiled function runs in the environment where it was
+     defined (captured at closure-creation time), not where it is called. */
+  child->parent = (fn->env != NULL) ? fn->env : env;
   child->bindings = NULL;
   child->argc = argc;
   child->argv = argv;
@@ -448,7 +451,9 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "funcall", isl_make_primitive("funcall", prim_funcall));
 }
 
-void *isl_rt_make_compiled_fun(void *entryp, int32_t arity) {
+/* Create a compiled-function value capturing its defining environment.
+   envp is the lexical environment in effect where the closure is created. */
+void *isl_rt_make_closure(void *entryp, int32_t arity, void *envp) {
   IslValue *v = isl_alloc_value(ISL_V_FUNCTION);
   IslFunction *f = (IslFunction *)calloc(1, sizeof(IslFunction));
   if (!f) {
@@ -457,7 +462,8 @@ void *isl_rt_make_compiled_fun(void *entryp, int32_t arity) {
   }
   f->kind = ISL_FN_COMPILED;
   f->arity = arity;
-  f->name = "compiled";
+  f->name = "closure";
+  f->env = (IslEnv *)envp;
   f->impl.compiled = (IslCompiledFn)entryp;
   v->as.fn = f;
   return v;

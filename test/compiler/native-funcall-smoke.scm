@@ -47,7 +47,7 @@
 
 ;; lambdas in value position must be outlined into @isl_lambda_N functions
 (assert-contains aot-text "@isl_lambda_0" "lambda-outlined")
-(assert-contains aot-text "@isl_rt_make_compiled_fun" "lambda-materialized")
+(assert-contains aot-text "@isl_rt_make_closure" "lambda-materialized")
 ;; funcall is a plain call through isl_rt_call; the lambda body must NOT fall
 ;; back to the unsupported stub.
 (assert-not-contains aot-text "lowering pending" "no-unsupported-lambda")
@@ -77,7 +77,13 @@
             (cons "(print ((lambda (x) (* x x)) 7))" "49")
             (cons "(defun sq (x) (* x x)) (print (funcall #'sq 7))" "49")
             (cons "(print (funcall #'+ 3 4))" "7")
-            (cons "(print (funcall (lambda (a b) (+ a (* b b))) 3 4))" "19"))))
+            (cons "(print (funcall (lambda (a b) (+ a (* b b))) 3 4))" "19")
+            ;; true lexical closures: inner lambda captures an outer local
+            (cons "(print ((lambda (x) (funcall (lambda (y) (+ x y)) 10)) 5))" "15")
+            ;; upward funarg: a returned closure keeps its captured variable
+            (cons "(defun adder (n) (lambda (x) (+ x n))) (print (funcall (adder 100) 5))" "105")
+            ;; curried closures
+            (cons "(print (funcall (funcall (lambda (a) (lambda (b) (+ a b))) 3) 4))" "7"))))
       (for-each
        (lambda (c)
          (let ((got (run-native (car c))))

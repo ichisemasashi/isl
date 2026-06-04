@@ -222,11 +222,11 @@
       ;; and materialize a compiled-function value here.
       (receive (fname arity) (cg-enqueue-lambda! (cadr rhs) (caddr rhs))
         (list (indent 2 (string-append dst
-                                       " = call ptr @isl_rt_make_compiled_fun(ptr @"
+                                       " = call ptr @isl_rt_make_closure(ptr @"
                                        fname
                                        ", i32 "
                                        (number->string arity)
-                                       ")")))))
+                                       ", ptr %env)")))))
      (else
       (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "lowering pending") ")")))))))
 
@@ -244,8 +244,27 @@
     (else
      (list (indent 2 "ret ptr null")))))
 
+(define (emit-param-bindings params cg-ref)
+  ;; Bind each (non-&rest) parameter by name into %env at function entry, so
+  ;; that inner lambdas capturing this scope can resolve them by name.  The
+  ;; function body itself still reads its own params positionally via
+  ;; isl_rt_lookup_param; this only adds name-addressable bindings.
+  (let loop ((xs params) (i 0) (acc '()))
+    (if (or (null? xs) (eq? (car xs) '&rest))
+        (apply append (reverse acc))
+        (let* ((symn (cg-next-name! cg-ref))
+               (valn (cg-next-name! cg-ref))
+               (pname (symbol->string (car xs)))
+               (lines
+                (list
+                 (indent 2 (string-append symn " = call ptr @isl_rt_make_symbol(ptr " (str-ptr pname) ")"))
+                 (indent 2 (string-append valn " = call ptr @isl_rt_lookup_param(ptr %env, i32 " (number->string i) ")"))
+                 (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " symn ", ptr " valn ")")))))
+          (loop (cdr xs) (+ i 1) (cons lines acc))))))
+
 (define (emit-function llvm-name params cfg)
   (let ((cg-ref (list 0))
+        (entry (cadr cfg))
         (blocks (caddr cfg)))
     (append
      (list (string-append "define ptr @" llvm-name "(ptr %env) {"))
@@ -257,6 +276,10 @@
                      (term (cadddr b)))
                  (append
                   (list (string-append (mangle-symbol label) ":"))
+                  ;; entry block: install parameter name-bindings first
+                  (if (eq? label entry)
+                      (emit-param-bindings params cg-ref)
+                      '())
                   (apply append
                          (map (lambda (ins)
                                 (emit-rhs (llvm-val (cadr ins)) (caddr ins) params cg-ref))
@@ -303,11 +326,11 @@
     (list
      (indent 2 (string-append sym " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string name)) ")"))
      (indent 2 (string-append fval
-                              " = call ptr @isl_rt_make_compiled_fun(ptr @isl_fun_"
+                              " = call ptr @isl_rt_make_closure(ptr @isl_fun_"
                               (mangle-symbol name)
                               ", i32 "
                               (number->string arity)
-                              ")"))
+                              ", ptr %env)"))
      (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " sym ", ptr " fval ")")))))
 
 (define (emit-global-init ll cg-ref)
@@ -363,14 +386,15 @@
    "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
    "declare i1 @isl_rt_truthy(ptr)"
    "declare ptr @isl_rt_unsupported(ptr)"
-   ;; needed by lambda lifting in both module and aot modes
-   "declare ptr @isl_rt_make_compiled_fun(ptr, i32)"))
+   ;; needed by closures (lambda lifting) and per-call param name-binding,
+   ;; in both module and aot modes
+   "declare ptr @isl_rt_make_closure(ptr, i32, ptr)"
+   "declare void @isl_rt_define(ptr, ptr, ptr)"))
 
 (define (aot-extra-decls)
   (list
    "declare ptr @isl_rt_create_env()"
-   "declare void @isl_rt_install_primitives(ptr)"
-   "declare void @isl_rt_define(ptr, ptr, ptr)"))
+   "declare void @isl_rt_install_primitives(ptr)"))
 
 (define (drain-lambda-queue!)
   ;; Emit each queued lambda as a top-level function.  emit-function may push
