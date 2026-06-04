@@ -51,24 +51,37 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
 `append`/`reverse`, `format ~A/~S/~D`。
 
-### P0 — 黙って誤る（最優先・正しさの欠陥）
+### P0 — 黙って誤る（最優先・正しさの欠陥）✅ 対応済み
 
 これらは「未対応エラー」ではなく **コンパイル・実行が成功して誤った値を返す**ため、
-最も危険。
+最も危険だった。**2026-06-04 に是正済み**（`native-gap-probe.scm` の DIFF は 6→0）。
 
-| 機能 | 期待 | ネイティブ実出力 | 症状 |
-|------|------|------------------|------|
-| `while` | 6 | **0** | ループが実行されず初期値のまま |
-| `dotimes` | 6 | **0** | 同上 |
+| 機能 | 期待 | 修正前 | 修正後 |
+|------|------|--------|--------|
+| `while` | 6 | **0**（黙って誤る）| exit 70 で失敗（`native backend: unsupported special form: while`）|
+| `dotimes` | 6 | **0** | 同上（loud failure）|
 | `dolist` | 6 | **0** | 同上 |
-| `tagbody`/`go` | 3 | 誤 | 反復が機能しない |
-| `unwind-protect` | 9 | 誤 | cleanup が実行されない |
-| `format ~X`（16進）| `ff` | `~X` | 指示子が未処理でそのまま出力 |
+| `tagbody`/`go` | 3 | 誤 | 同上 |
+| `unwind-protect` | 9 | 誤 | 同上 |
+| `format ~X`（16進）| `ff` | `~X` | **`ff`（正しく実装）** |
 
-→ **作業 N0**: codegen/lowering でループ系（`while`/`dotimes`/`dolist`/`tagbody`）の
-本体評価と変数更新を正しく実装。`unwind-protect` の cleanup 経路を実装。
-`format` の `~X`/`~O`/`~B`/`~C`/`~%` 指示子を `llvm_runtime.c` の format 実装に追加。
-**まず誤出力を「未対応エラー」に格下げしてでも、誤った値を返さないようにする**のが先決。
+実施した修正:
+
+1. **`llvm_runtime.c` `isl_rt_unsupported`**: エラー値を返す（→結果が捨てられ
+   黙って誤る）のをやめ、stderr に診断を出して `exit(70)` で停止。あわせて
+   引数 ABI を修正（codegen は `IslValue*` ではなく生 C 文字列を渡していた）。
+2. **`codegen.scm` `emit-rhs`**: 未対応 `special` ノードに *フォーム名入り* の
+   診断メッセージを付与。
+3. **`llvm_runtime.c` `prim_format`**: `~X`/`~O`/`~B`/`~&` を実装（基数出力
+   ヘルパ `isl_format_radix` を追加）。未知の指示子は素通りさせず loud failure。
+
+回帰テスト: `test/compiler/native-p0-smoke.scm`（format 基数 + 未対応形式が
+黙って誤らないことを検証）。
+
+> 補足: ループ系（`while`/`dotimes`/`dolist`/`tagbody`）と `unwind-protect` を
+> ネイティブで *正しく動かす* には、変数変更（`setq`）とループ lowering が必要で、
+> これは P1「制御構造の完成」の範囲（native は現状ミューテーション非対応）。
+> P0 の責務は「誤った値を返さない」ことなので loud failure で達成とする。
 
 ### P1 — 制御構造の完成
 
@@ -157,8 +170,8 @@ N4 (例外 + ゼロ除算条件) → N5 (CLOS・dynamic・convert)
 
 ## 6. 優先タスク一覧（着手順サマリ）
 
-1. **[P0]** ネイティブ: `while`/`dotimes`/`dolist`/`tagbody`/`unwind-protect`/`format ~X`
-   の誤出力を是正（まず誤値を返さない）。
+1. ~~**[P0]** ネイティブ: `while`/`dotimes`/`dolist`/`tagbody`/`unwind-protect`/`format ~X`
+   の誤出力を是正（まず誤値を返さない）。~~ ✅ **完了**（§2 P0 参照、DIFF 6→0）。
 2. **[P1]** ネイティブ: `case`/`and`/`or` の lowering、非局所制御
    （`block`/`catch`）の脱出基盤。
 3. **[P1]** ネイティブ: float 算術 + 数値ライブラリ + 比較網羅。

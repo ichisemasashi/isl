@@ -238,6 +238,16 @@
                                        ", i32 "
                                        (number->string arity)
                                        ", ptr %env)")))))
+     ((eq? op 'special)
+      ;; A special form that lowering left intact (e.g. while/setq/tagbody/
+      ;; dotimes/case/and/or/block/catch) is not yet runnable by the native
+      ;; backend.  Emit a named diagnostic; isl_rt_unsupported aborts loudly so
+      ;; the construct can never silently produce a wrong value.
+      (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr "
+                                     (str-ptr (string-append
+                                               "native backend: unsupported special form: "
+                                               (symbol->string (cadr rhs))))
+                                     ")"))))
      (else
       (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "lowering pending") ")")))))))
 
