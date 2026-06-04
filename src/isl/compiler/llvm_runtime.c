@@ -14,15 +14,18 @@ void *isl_rt_call(void *envp, void *fnp, int32_t argc, void *argvp);
 void *isl_rt_nil(void);
 void *isl_rt_true(void);
 void *isl_rt_false(void);
+void *isl_rt_make_int(int64_t x);
 
 typedef enum {
   ISL_V_INT,
+  ISL_V_RATIO,
   ISL_V_BOOL,
   ISL_V_NIL,
   ISL_V_SYMBOL,
   ISL_V_STRING,
   ISL_V_FUNCTION,
   ISL_V_CONS,
+  ISL_V_STREAM,
   ISL_V_ERROR
 } IslTag;
 
@@ -53,6 +56,10 @@ struct IslValue {
       IslValue *car;
       IslValue *cdr;
     } cons;
+    struct {
+      int64_t num;
+      int64_t den;  /* always > 0 and reduced; never 1 (those are ISL_V_INT) */
+    } ratio;
   } as;
 };
 
@@ -72,6 +79,8 @@ struct IslEnv {
 static IslValue *g_nil = NULL;
 static IslValue *g_true = NULL;
 static IslValue *g_false = NULL;
+static IslValue *g_stdout = NULL;
+static IslValue *g_stderr = NULL;
 
 static IslValue *isl_alloc_value(IslTag tag) {
   IslValue *v = (IslValue *)calloc(1, sizeof(IslValue));
@@ -108,11 +117,44 @@ static int isl_truthy(IslValue *v) {
 }
 
 static IslValue *isl_expect_number(IslValue *v, const char *who) {
-  if (!v || v->tag != ISL_V_INT) {
+  if (!v || (v->tag != ISL_V_INT && v->tag != ISL_V_RATIO)) {
     char buf[128];
     snprintf(buf, sizeof(buf), "%s: expected number", who);
     return isl_make_error(buf);
   }
+  return v;
+}
+
+/* ---- exact rational arithmetic (int64 numerator/denominator) ---- */
+
+static int64_t isl_gcd(int64_t a, int64_t b) {
+  if (a < 0) a = -a;
+  if (b < 0) b = -b;
+  while (b) { int64_t t = a % b; a = b; b = t; }
+  return a ? a : 1;
+}
+
+/* Decompose any number value into a fraction num/den (den > 0). */
+static void isl_as_fraction(IslValue *v, int64_t *num, int64_t *den) {
+  if (v->tag == ISL_V_RATIO) { *num = v->as.ratio.num; *den = v->as.ratio.den; }
+  else { *num = v->as.i64; *den = 1; }
+}
+
+/* Build a normalized number: reduced, den > 0, collapsing den==1 to an int. */
+static IslValue *isl_make_rational(int64_t num, int64_t den) {
+  if (den == 0) return isl_make_error("/: division by zero");
+  if (den < 0) { num = -num; den = -den; }
+  int64_t g = isl_gcd(num, den);
+  num /= g;
+  den /= g;
+  if (den == 1) {
+    IslValue *v = isl_alloc_value(ISL_V_INT);
+    v->as.i64 = num;
+    return v;
+  }
+  IslValue *v = isl_alloc_value(ISL_V_RATIO);
+  v->as.ratio.num = num;
+  v->as.ratio.den = den;
   return v;
 }
 
@@ -156,33 +198,34 @@ static IslValue *isl_make_primitive(const char *name, IslPrimitiveFn fn) {
 
 static IslValue *prim_plus(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
-  int64_t acc = 0;
+  int64_t an = 0, ad = 1;
   for (int32_t i = 0; i < argc; i++) {
     IslValue *n = isl_expect_number(argv[i], "+");
     if (n->tag == ISL_V_ERROR) return n;
-    acc += n->as.i64;
+    int64_t bn, bd;
+    isl_as_fraction(n, &bn, &bd);
+    an = an * bd + bn * ad;
+    ad = ad * bd;
+    int64_t g = isl_gcd(an, ad);
+    an /= g; ad /= g;
   }
-  IslValue *out = isl_alloc_value(ISL_V_INT);
-  out->as.i64 = acc;
-  return out;
+  return isl_make_rational(an, ad);
 }
 
 static IslValue *prim_mul(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
-  int64_t acc = 1;
-  if (argc == 0) {
-    IslValue *out = isl_alloc_value(ISL_V_INT);
-    out->as.i64 = 1;
-    return out;
-  }
+  int64_t an = 1, ad = 1;
   for (int32_t i = 0; i < argc; i++) {
     IslValue *n = isl_expect_number(argv[i], "*");
     if (n->tag == ISL_V_ERROR) return n;
-    acc *= n->as.i64;
+    int64_t bn, bd;
+    isl_as_fraction(n, &bn, &bd);
+    an = an * bn;
+    ad = ad * bd;
+    int64_t g = isl_gcd(an, ad);
+    an /= g; ad /= g;
   }
-  IslValue *out = isl_alloc_value(ISL_V_INT);
-  out->as.i64 = acc;
-  return out;
+  return isl_make_rational(an, ad);
 }
 
 static IslValue *prim_minus(IslEnv *env, int32_t argc, IslValue **argv) {
@@ -190,16 +233,20 @@ static IslValue *prim_minus(IslEnv *env, int32_t argc, IslValue **argv) {
   if (argc <= 0) return isl_make_error("-: arity");
   IslValue *n0 = isl_expect_number(argv[0], "-");
   if (n0->tag == ISL_V_ERROR) return n0;
-  int64_t acc = n0->as.i64;
-  if (argc == 1) acc = -acc;
+  int64_t an, ad;
+  isl_as_fraction(n0, &an, &ad);
+  if (argc == 1) return isl_make_rational(-an, ad);
   for (int32_t i = 1; i < argc; i++) {
     IslValue *n = isl_expect_number(argv[i], "-");
     if (n->tag == ISL_V_ERROR) return n;
-    acc -= n->as.i64;
+    int64_t bn, bd;
+    isl_as_fraction(n, &bn, &bd);
+    an = an * bd - bn * ad;
+    ad = ad * bd;
+    int64_t g = isl_gcd(an, ad);
+    an /= g; ad /= g;
   }
-  IslValue *out = isl_alloc_value(ISL_V_INT);
-  out->as.i64 = acc;
-  return out;
+  return isl_make_rational(an, ad);
 }
 
 static IslValue *prim_div(IslEnv *env, int32_t argc, IslValue **argv) {
@@ -207,16 +254,25 @@ static IslValue *prim_div(IslEnv *env, int32_t argc, IslValue **argv) {
   if (argc <= 0) return isl_make_error("/: arity");
   IslValue *n0 = isl_expect_number(argv[0], "/");
   if (n0->tag == ISL_V_ERROR) return n0;
-  int64_t acc = n0->as.i64;
+  int64_t an, ad;
+  isl_as_fraction(n0, &an, &ad);
+  if (argc == 1) {
+    /* (/ x) == 1/x */
+    if (an == 0) return isl_make_error("/: division by zero");
+    return isl_make_rational(ad, an);
+  }
   for (int32_t i = 1; i < argc; i++) {
     IslValue *n = isl_expect_number(argv[i], "/");
     if (n->tag == ISL_V_ERROR) return n;
-    if (n->as.i64 == 0) return isl_make_error("/: division by zero");
-    acc /= n->as.i64;
+    int64_t bn, bd;
+    isl_as_fraction(n, &bn, &bd);
+    if (bn == 0) return isl_make_error("/: division by zero");
+    an = an * bd;
+    ad = ad * bn;
+    int64_t g = isl_gcd(an, ad);
+    an /= g; ad /= g;
   }
-  IslValue *out = isl_alloc_value(ISL_V_INT);
-  out->as.i64 = acc;
-  return out;
+  return isl_make_rational(an, ad);
 }
 
 static IslValue *prim_cmp(const char *name, int32_t argc, IslValue **argv, int mode) {
@@ -225,13 +281,19 @@ static IslValue *prim_cmp(const char *name, int32_t argc, IslValue **argv, int m
   if (a->tag == ISL_V_ERROR) return a;
   IslValue *b = isl_expect_number(argv[1], name);
   if (b->tag == ISL_V_ERROR) return b;
+  int64_t an, ad, bn, bd;
+  isl_as_fraction(a, &an, &ad);
+  isl_as_fraction(b, &bn, &bd);
+  /* denominators are positive, so compare an/ad ? bn/bd via cross-multiply */
+  int64_t lhs = an * bd;
+  int64_t rhs = bn * ad;
   int ok = 0;
   switch (mode) {
-    case 0: ok = (a->as.i64 == b->as.i64); break;
-    case 1: ok = (a->as.i64 < b->as.i64); break;
-    case 2: ok = (a->as.i64 > b->as.i64); break;
-    case 3: ok = (a->as.i64 <= b->as.i64); break;
-    case 4: ok = (a->as.i64 >= b->as.i64); break;
+    case 0: ok = (lhs == rhs); break;
+    case 1: ok = (lhs < rhs); break;
+    case 2: ok = (lhs > rhs); break;
+    case 3: ok = (lhs <= rhs); break;
+    case 4: ok = (lhs >= rhs); break;
     default: ok = 0; break;
   }
   return ok ? g_true : g_false;
@@ -263,6 +325,7 @@ static IslValue *prim_ge(IslEnv *env, int32_t argc, IslValue **argv) {
 }
 
 static void isl_print_value(IslValue *v);
+static void isl_write_value(IslValue *v, int readable);
 
 static IslValue *prim_print(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
@@ -376,7 +439,169 @@ void *isl_rt_cons(void *a, void *d) {
   return isl_cons((IslValue *)a, (IslValue *)d);
 }
 
-static void isl_print_value(IslValue *v) {
+/* Append a single element to a (head,tail) list being built in order. */
+static void isl_list_append1(IslValue **head, IslValue **tail, IslValue *x) {
+  IslValue *cell = isl_cons(x, (IslValue *)isl_rt_nil());
+  if (*tail == NULL) {
+    *head = cell;
+    *tail = cell;
+  } else {
+    (*tail)->as.cons.cdr = cell;
+    *tail = cell;
+  }
+}
+
+/* (mapcar fn list ...) — apply fn across N lists, collecting results.
+   (mapc fn list ...)   — same, but for effect; returns the first list.
+   collect != 0 selects mapcar behaviour. */
+static IslValue *isl_map_impl(IslEnv *env, int32_t argc, IslValue **argv, int collect) {
+  if (argc < 2) return isl_make_error("mapcar/mapc: expects function and at least one list");
+  IslValue *fn = argv[0];
+  int32_t nlists = argc - 1;
+  IslValue **cur = (IslValue **)calloc((size_t)nlists, sizeof(IslValue *));
+  IslValue **callv = (IslValue **)calloc((size_t)nlists, sizeof(IslValue *));
+  if (!cur || !callv) { fprintf(stderr, "isl_rt: out of memory\n"); exit(2); }
+  for (int32_t i = 0; i < nlists; i++) cur[i] = argv[1 + i];
+  IslValue *head = (IslValue *)isl_rt_nil();
+  IslValue *tail = NULL;
+  for (;;) {
+    int done = 0;
+    for (int32_t i = 0; i < nlists; i++) {
+      if (!(cur[i] && cur[i]->tag == ISL_V_CONS)) { done = 1; break; }
+    }
+    if (done) break;
+    for (int32_t i = 0; i < nlists; i++) {
+      callv[i] = cur[i]->as.cons.car;
+      cur[i] = cur[i]->as.cons.cdr;
+    }
+    IslValue *r = (IslValue *)isl_rt_call(env, fn, nlists, (void *)callv);
+    if (r && r->tag == ISL_V_ERROR) { free(cur); free(callv); return r; }
+    if (collect) isl_list_append1(&head, &tail, r);
+  }
+  free(cur);
+  free(callv);
+  return collect ? head : argv[1];
+}
+
+static IslValue *prim_mapcar(IslEnv *env, int32_t argc, IslValue **argv) {
+  return isl_map_impl(env, argc, argv, 1);
+}
+
+static IslValue *prim_mapc(IslEnv *env, int32_t argc, IslValue **argv) {
+  return isl_map_impl(env, argc, argv, 0);
+}
+
+static IslValue *prim_length(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("length: arity");
+  IslValue *v = argv[0];
+  if (v && v->tag == ISL_V_NIL) return (IslValue *)isl_rt_make_int(0);
+  if (!isl_is_list(v)) return isl_make_error("length: not a proper list");
+  return (IslValue *)isl_rt_make_int(isl_list_length(v));
+}
+
+static IslValue *prim_reverse(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("reverse: arity");
+  IslValue *v = argv[0];
+  if (!(v && (v->tag == ISL_V_CONS || v->tag == ISL_V_NIL)) || !isl_is_list(v))
+    return isl_make_error("reverse: not a proper list");
+  IslValue *acc = (IslValue *)isl_rt_nil();
+  for (; v && v->tag == ISL_V_CONS; v = v->as.cons.cdr)
+    acc = isl_cons(v->as.cons.car, acc);
+  return acc;
+}
+
+/* (append list ...) — concatenate proper lists; the last argument may be any
+   object and becomes the tail. */
+static IslValue *prim_append(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc == 0) return (IslValue *)isl_rt_nil();
+  IslValue *head = (IslValue *)isl_rt_nil();
+  IslValue *tail = NULL;
+  for (int32_t i = 0; i < argc - 1; i++) {
+    IslValue *lst = argv[i];
+    if (!(lst && (lst->tag == ISL_V_CONS || lst->tag == ISL_V_NIL)) || !isl_is_list(lst))
+      return isl_make_error("append: non-final arguments must be proper lists");
+    for (IslValue *p = lst; p && p->tag == ISL_V_CONS; p = p->as.cons.cdr)
+      isl_list_append1(&head, &tail, p->as.cons.car);
+  }
+  IslValue *last = argv[argc - 1];
+  if (tail == NULL) return last;
+  tail->as.cons.cdr = last;
+  return head;
+}
+
+/* Object identity for eq/eql.  Symbols compare by name (the runtime does not
+   intern), integers and booleans by value; everything else by pointer. */
+static int isl_eq(IslValue *a, IslValue *b) {
+  if (a == b) return 1;
+  if (!a || !b || a->tag != b->tag) return 0;
+  switch (a->tag) {
+    case ISL_V_INT:    return a->as.i64 == b->as.i64;
+    case ISL_V_RATIO:  return a->as.ratio.num == b->as.ratio.num &&
+                              a->as.ratio.den == b->as.ratio.den;
+    case ISL_V_BOOL:   return a->as.b == b->as.b;
+    case ISL_V_NIL:    return 1;
+    case ISL_V_SYMBOL: return strcmp(a->as.str, b->as.str) == 0;
+    default:           return 0;
+  }
+}
+
+static IslValue *prim_eq_id(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("eq: arity");
+  return isl_eq(argv[0], argv[1]) ? g_true : g_false;
+}
+
+static IslValue *prim_standard_output(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env; (void)argc; (void)argv;
+  return g_stdout;
+}
+
+static IslValue *prim_error_output(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env; (void)argc; (void)argv;
+  return g_stderr;
+}
+
+/* (format stream control arg...) — minimal directive support: ~A ~S ~D ~% ~~.
+   Output always goes to stdout (the native runtime models only one stream). */
+static IslValue *prim_format(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc < 2) return isl_make_error("format: expects a stream and a control string");
+  IslValue *ctrl = argv[1];
+  if (!ctrl || ctrl->tag != ISL_V_STRING)
+    return isl_make_error("format: control argument must be a string");
+  const char *s = ctrl->as.str;
+  int32_t argi = 2;
+  for (const char *p = s; *p; p++) {
+    if (*p != '~') { putchar(*p); continue; }
+    p++;
+    if (!*p) break;
+    switch (*p) {
+      case '%': putchar('\n'); break;
+      case '~': putchar('~'); break;
+      case 'A': case 'a':
+        if (argi < argc) isl_write_value(argv[argi++], 0);
+        break;
+      case 'S': case 's':
+        if (argi < argc) isl_write_value(argv[argi++], 1);
+        break;
+      case 'D': case 'd':
+        if (argi < argc) isl_write_value(argv[argi++], 0);
+        break;
+      default:
+        putchar('~');
+        putchar(*p);
+        break;
+    }
+  }
+  return (IslValue *)isl_rt_nil();
+}
+
+/* Write a value to stdout.  readable!=0 selects S-style (strings quoted),
+   readable==0 selects A-style (strings unquoted). */
+static void isl_write_value(IslValue *v, int readable) {
   if (!v) {
     printf("#<null>");
     return;
@@ -384,6 +609,9 @@ static void isl_print_value(IslValue *v) {
   switch (v->tag) {
     case ISL_V_INT:
       printf("%lld", (long long)v->as.i64);
+      break;
+    case ISL_V_RATIO:
+      printf("%lld/%lld", (long long)v->as.ratio.num, (long long)v->as.ratio.den);
       break;
     case ISL_V_BOOL:
       printf(v->as.b ? "#t" : "#f");
@@ -395,16 +623,20 @@ static void isl_print_value(IslValue *v) {
       printf("%s", v->as.str);
       break;
     case ISL_V_STRING:
-      printf("\"%s\"", v->as.str);
+      if (readable) printf("\"%s\"", v->as.str);
+      else printf("%s", v->as.str);
       break;
     case ISL_V_FUNCTION:
       printf("#<function>");
+      break;
+    case ISL_V_STREAM:
+      printf("#<stream>");
       break;
     case ISL_V_CONS: {
       IslValue *cur = v;
       printf("(");
       for (;;) {
-        isl_print_value(cur->as.cons.car);
+        isl_write_value(cur->as.cons.car, readable);
         IslValue *rest = cur->as.cons.cdr;
         if (rest && rest->tag == ISL_V_CONS) {
           printf(" ");
@@ -413,7 +645,7 @@ static void isl_print_value(IslValue *v) {
         }
         if (rest && rest->tag != ISL_V_NIL) {
           printf(" . ");
-          isl_print_value(rest);
+          isl_write_value(rest, readable);
         }
         break;
       }
@@ -427,6 +659,10 @@ static void isl_print_value(IslValue *v) {
       printf("#<unknown>");
       break;
   }
+}
+
+static void isl_print_value(IslValue *v) {
+  isl_write_value(v, 1);
 }
 
 void *isl_rt_make_int(int64_t x) {
@@ -549,6 +785,8 @@ void *isl_rt_create_env(void) {
   (void)isl_rt_nil();
   (void)isl_rt_true();
   (void)isl_rt_false();
+  if (!g_stdout) g_stdout = isl_alloc_value(ISL_V_STREAM);
+  if (!g_stderr) g_stderr = isl_alloc_value(ISL_V_STREAM);
 
   isl_define_raw(env, "nil", g_nil);
   isl_define_raw(env, "t", g_true);
@@ -576,6 +814,16 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "list", isl_make_primitive("list", prim_list));
   isl_define_raw(env, "consp", isl_make_primitive("consp", prim_consp));
   isl_define_raw(env, "null", isl_make_primitive("null", prim_null));
+  isl_define_raw(env, "mapcar", isl_make_primitive("mapcar", prim_mapcar));
+  isl_define_raw(env, "mapc", isl_make_primitive("mapc", prim_mapc));
+  isl_define_raw(env, "length", isl_make_primitive("length", prim_length));
+  isl_define_raw(env, "reverse", isl_make_primitive("reverse", prim_reverse));
+  isl_define_raw(env, "append", isl_make_primitive("append", prim_append));
+  isl_define_raw(env, "eq", isl_make_primitive("eq", prim_eq_id));
+  isl_define_raw(env, "eql", isl_make_primitive("eql", prim_eq_id));
+  isl_define_raw(env, "format", isl_make_primitive("format", prim_format));
+  isl_define_raw(env, "standard-output", isl_make_primitive("standard-output", prim_standard_output));
+  isl_define_raw(env, "error-output", isl_make_primitive("error-output", prim_error_output));
 }
 
 /* Create a compiled-function value capturing its defining environment.

@@ -140,15 +140,97 @@
                                     (list else-end else-v)))))
            (list merge-label dst)))))
     ((special)
-     (let ((dst (fresh-temp st)))
-       (emit! st label (list 'assign dst (list 'special (cadr expr) (caddr expr))))
-       (list label dst)))
+     (let* ((sop (cadr expr))
+            (payload (caddr expr))
+            (generic
+             (lambda ()
+               (let ((dst (fresh-temp st)))
+                 (emit! st label (list 'assign dst (list 'special sop payload)))
+                 (list label dst)))))
+       (cond
+        ;; Lower control/binding special forms into core IR (if/lambda/call) so
+        ;; backends that only understand those (e.g. the native LLVM codegen)
+        ;; can run them.  The IR interpreter consumes the same lowered CFG.
+        ;; Malformed binding lists fall through to the generic `special` node so
+        ;; the IR interpreter still reports the precise validation error.
+        ((eq? sop 'cond) (lower-cond payload st label))
+        ((and (eq? sop 'let) (lowerable-let-bindings? (car payload)))
+         (lower-expr (let-bindings->call (car payload) (cadr payload)) st label))
+        ((and (eq? sop 'let*) (lowerable-let-bindings? (car payload)))
+         (lower-expr (let*-bindings->call (car payload) (cadr payload)) st label))
+        (else (generic)))))
     ((invalid-special)
      (let ((dst (fresh-temp st)))
        (emit! st label (list 'assign dst (list 'invalid-special expr)))
        (list label dst)))
     (else
      (error "Unknown normalized node" expr))))
+
+;; Only ordinary symbol variables can be lowered to lambda parameters; a
+;; malformed binding (e.g. a keyword) is left to the IR interpreter to reject.
+(define (lowerable-let-bindings? bindings)
+  (let loop ((xs bindings))
+    (cond ((null? xs) #t)
+          ((not (pair? xs)) #f)
+          ((and (pair? (car xs))
+                (symbol? (caar xs))
+                (not (keyword? (caar xs))))
+           (loop (cdr xs)))
+          (else #f))))
+
+;; (let ((v init)...) body) == ((lambda (v...) body) init...)  — parallel binding.
+(define (let-bindings->call bindings body)
+  (cons 'call
+        (cons (list 'lambda (map car bindings) body)
+              (map cadr bindings))))
+
+;; (let* ((v init)...) body) == nested single-binding lambdas — sequential.
+(define (let*-bindings->call bindings body)
+  (if (null? bindings)
+      (cons 'call (list (list 'lambda '() body)))
+      (let ((b (car bindings)))
+        (list 'call
+              (list 'lambda (list (car b))
+                    (let*-bindings->call (cdr bindings) body))
+              (cadr b)))))
+
+;; Lower a cond into a branch/phi chain.  clauses: ((test body-or-#f) ...).
+;; A clause with no body yields the test value when truthy; if no clause
+;; matches the result is nil.  Returns (list end-label result-temp).
+(define (lower-cond clauses st label)
+  (let ((merge (fresh-label st)))
+    (let loop ((cs clauses) (cur label) (phis '()))
+      (if (null? cs)
+          ;; fall-through: nothing matched -> nil
+          (let ((dst (fresh-temp st)))
+            (emit! st cur (list 'assign dst (list 'const '())))
+            (let ((phis* (cons (list cur dst) phis)))
+              (unless (terminated? st cur)
+                (terminate! st cur (list 'jmp merge)))
+              (let ((res (fresh-temp st)))
+                (emit! st merge (list 'assign res (list 'phi (reverse phis*))))
+                (list merge res))))
+          (let* ((clause (car cs))
+                 (test (car clause))
+                 (body (cadr clause))
+                 (test-r (lower-expr test st cur))
+                 (after-test (car test-r))
+                 (test-v (cadr test-r))
+                 (then-label (fresh-label st))
+                 (next-label (fresh-label st)))
+            (terminate! st after-test (list 'br test-v then-label next-label))
+            (if body
+                (let* ((body-r (lower-expr body st then-label))
+                       (body-end (car body-r))
+                       (body-v (cadr body-r)))
+                  (unless (terminated? st body-end)
+                    (terminate! st body-end (list 'jmp merge)))
+                  (loop (cdr cs) next-label (cons (list body-end body-v) phis)))
+                ;; no body: the test value is the result
+                (begin
+                  (unless (terminated? st then-label)
+                    (terminate! st then-label (list 'jmp merge)))
+                  (loop (cdr cs) next-label (cons (list then-label test-v) phis)))))))))
 
 (define (lower-expr-to-cfg expr)
   (let* ((st (make-state))
