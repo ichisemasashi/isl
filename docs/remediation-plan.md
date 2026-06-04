@@ -103,9 +103,11 @@ frontend は認識するが codegen が "unsupported operation" を出す:
 
 ### P1 — 数値・型の拡充
 
-- ⬜ **浮動小数点が `+` で扱えない**（`(+ 1.5 2.5)` → "expected number"）。
-  `IslValue` に float タグを追加し、算術プリミティブを混合演算対応にする。**未着手**
-  （`expt` の負指数が interp=`0.5` / native=`1/2` と分かれるのもこれが原因）。
+- ✅ **浮動小数点** … **対応済み**。`IslValue` に `ISL_V_FLOAT`（double）を追加し、
+  算術（`+ - * /`）と比較を float 伝播（混合演算は float）対応に。float リテラルは
+  10 進テキストを `strtod` する `isl_rt_make_float` で生成（LLVM の hex-float 要件を
+  回避）。出力は最短往復表現でインタプリタと一致（`4.0`/`0.5`/`0.1`）。`floatp`/
+  `float`/`expt`(float基数) も追加。整数・有理数は引き続き exact。
 - ✅ `expt`, `mod`, `abs`, `max`, `min` … **対応済み**（`llvm_runtime.c` に有理数対応で
   追加。`mod` は除数の符号、`expt` 負指数は有理数）。
 - ✅ 比較網羅 … `>`,`<=`,`>=`,`=` は既存、`/=` を追加して **網羅済み**。
@@ -200,7 +202,7 @@ undefined-entity 条件化後の `spec-probe extended`: **227 OK / 0 MISSING / 0
 2. **[P1]** ネイティブ: `case`/`and`/`or` の lowering ✅、非局所制御
    （`block`/`catch`/`return-from`/`throw`）の setjmp/longjmp 脱出基盤 ✅。
 3. **[P1]** ネイティブ: 数値ライブラリ（`expt`/`mod`/`abs`/`max`/`min`）+ 比較網羅
-   （`/=`）✅。float 算術 ⬜。
+   （`/=`）✅。float 算術 ✅。
 4. ~~**[P1]** インタプリタ: 多次元配列（I-A）、文字列ストリーム/`format-*`（I-B）、
    ゼロ除算条件と条件アクセサ（I-D）。~~ ✅ **完了**（§3 参照、spec-probe 174→203 OK）。
 5. **[P2]** ネイティブ: 文字列・文字・ベクタ ⬜。インタプリタ: plist（I-C）✅、

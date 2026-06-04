@@ -185,8 +185,13 @@
   ;; Build the runtime value for a quoted constant, leaving it in `dst`.
   ;; Lists/pairs are constructed recursively via isl_rt_cons.
   (cond
-   ((integer? v)
+   ;; Exact integers only — 5.0 is `integer?` in Scheme but must become a float.
+   ((and (integer? v) (exact? v))
     (list (indent 2 (string-append dst " = call ptr @isl_rt_make_int(i64 " (number->string v) ")"))))
+   ;; Inexact reals (float literals): pass the decimal text and let the runtime
+   ;; strtod it, sidestepping LLVM's exact hex-float literal requirement.
+   ((and (real? v) (inexact? v))
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_float(ptr " (str-ptr (number->string v)) ")"))))
    ((eq? v #t)
     (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
    ((eq? v #f)
@@ -397,6 +402,7 @@
 (define (module-decls)
   (list
    "declare ptr @isl_rt_make_int(i64)"
+   "declare ptr @isl_rt_make_float(ptr)"
    "declare ptr @isl_rt_make_symbol(ptr)"
    "declare ptr @isl_rt_make_string(ptr)"
    "declare ptr @isl_rt_nil()"
