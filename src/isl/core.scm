@@ -2771,7 +2771,7 @@
                       name
                       (resolve-symbol-in-package name)))
              (val (frame-ref env sym)))
-        (unless (or (closure? val) (primitive? val))
+        (unless (or (closure? val) (primitive? val) (generic? val))
           (error "function: not a function" name))
         val))
      (else
@@ -3502,6 +3502,32 @@
                  (loop (cdr ds) (cdr is) (+ (* acc d) i))
                  #f))))))
 
+;; ---- symbol property lists (ISLISP §10) ----
+;; symbol -> alist of (property-name . value).
+(define *property-table* (make-hash-table 'eq?))
+(define (isl-property-get sym key default)
+  (let ((p (assq key (hash-table-get *property-table* sym '()))))
+    (if p (cdr p) default)))
+(define (isl-property-set! sym key val)
+  (let* ((alist (hash-table-get *property-table* sym '()))
+         (p (assq key alist)))
+    (if p
+        (set-cdr! p val)
+        (hash-table-put! *property-table* sym (cons (cons key val) alist))))
+  val)
+(define (isl-property-remove! sym key)
+  (let* ((alist (hash-table-get *property-table* sym '()))
+         (p (assq key alist)))
+    (if p
+        (begin
+          (hash-table-put! *property-table* sym
+                           (let loop ((xs alist))
+                             (cond ((null? xs) '())
+                                   ((eq? (caar xs) key) (cdr xs))
+                                   (else (cons (car xs) (loop (cdr xs)))))))
+          (cdr p))
+        '())))
+
 ;; ---- 5-A: class hierarchy predicate ----
 ;; Returns #t if sub-sym equals or is a registered subclass of super-sym.
 ;; Handles both package-qualified (ISLISP::<foo>) and bare (<foo>) names.
@@ -3758,6 +3784,41 @@
   (def 'lcm
     (lambda xs
       (if (null? xs) 1 (apply lcm xs))))
+  ;; ISLISP §11: div — floor division (greatest integer <= z1/z2).
+  (def 'div
+    (lambda (z1 z2)
+      (unless (number? z1) (error "div: dividend must be a number" z1))
+      (unless (number? z2) (error "div: divisor must be a number" z2))
+      (if (isl-zero-number? z2)
+          (isl-signal-div0 'div (list z1 z2))
+          (inexact->exact (floor (/ z1 z2))))))
+  ;; ISLISP §11: hyperbolic functions (defined via exp for portability).
+  (def 'sinh (lambda (x) (unless (number? x) (error "sinh needs a number" x))
+                         (/ (- (exp x) (exp (- x))) 2)))
+  (def 'cosh (lambda (x) (unless (number? x) (error "cosh needs a number" x))
+                         (/ (+ (exp x) (exp (- x))) 2)))
+  (def 'tanh (lambda (x) (unless (number? x) (error "tanh needs a number" x))
+                         (let ((ex (exp x)) (enx (exp (- x))))
+                           (/ (- ex enx) (+ ex enx)))))
+  (def 'atanh (lambda (x) (unless (number? x) (error "atanh needs a number" x))
+                          (when (or (>= x 1) (<= x -1))
+                            (error "atanh: argument must be in (-1, 1)" x))
+                          (* 0.5 (log (/ (+ 1 x) (- 1 x))))))
+  ;; ISLISP §11: atan2 — two-argument arctangent.
+  (def 'atan2 (lambda (y x)
+                (unless (number? y) (error "atan2: y must be a number" y))
+                (unless (number? x) (error "atan2: x must be a number" x))
+                (atan y x)))
+  ;; ISLISP §11: generic-function-p
+  (def 'generic-function-p (lambda (x) (if (generic? x) #t '())))
+  ;; ISLISP §11: implementation-defined float magnitude limits (IEEE-754 double).
+  (frame-define! env (resolve-binding-symbol '*most-positive-float*)
+                 1.7976931348623157e308)
+  (frame-define! env (resolve-binding-symbol '*most-negative-float*)
+                 -1.7976931348623157e308)
+  (when *current-package*
+    (package-export! *current-package* '*most-positive-float*)
+    (package-export! *current-package* '*most-negative-float*))
   (def 'signum
     (lambda (x)
       (unless (number? x) (error "signum needs a number" x))
@@ -6378,6 +6439,11 @@
               (apply-islisp (frame-ref global-frame init-sym)
                             (list obj raw-initargs))))
           obj))))
+  ;; ISLISP §21: create — the standard instance-creation generic function.
+  ;; (create class . initargs); shares make-instance's semantics.
+  (def 'create
+    (lambda args
+      (apply-islisp (frame-ref env (resolve-binding-symbol 'make-instance)) args)))
   (def 'class-of
     (lambda (obj)
       (cond
@@ -6602,6 +6668,25 @@
          (else
           (error "import expects symbol or list of symbols" vals)))
         #t)))
+  ;; ISLISP §10: symbol property lists.
+  ;;   (property symbol property-name [default]) -> value or default (nil)
+  ;;   (set-property obj symbol property-name)   -> obj
+  ;;   (remove-property symbol property-name)     -> removed value or nil
+  (def 'property
+    (lambda (sym key . maybe-default)
+      (unless (symbol? sym) (error "property: first argument must be a symbol" sym))
+      (unless (symbol? key) (error "property: property-name must be a symbol" key))
+      (isl-property-get sym key (if (pair? maybe-default) (car maybe-default) '()))))
+  (def 'set-property
+    (lambda (val sym key)
+      (unless (symbol? sym) (error "set-property: symbol argument must be a symbol" sym))
+      (unless (symbol? key) (error "set-property: property-name must be a symbol" key))
+      (isl-property-set! sym key val)))
+  (def 'remove-property
+    (lambda (sym key)
+      (unless (symbol? sym) (error "remove-property: first argument must be a symbol" sym))
+      (unless (symbol? key) (error "remove-property: property-name must be a symbol" key))
+      (isl-property-remove! sym key)))
   (def 'gensym
     (lambda args
       (unless (or (null? args) (= (length args) 1))
@@ -6824,18 +6909,22 @@
              (str  (mk '<string>         (list bv)))
              (baa  (mk '<basic-array*>   (list ba)))
              (gaa  (mk '<general-array*> (list baa)))
+             (gf   (mk '<generic-function> (list fun)))
+             (sgf  (mk '<standard-generic-function> (list gf)))
              (bl   (mk '<basic-list>     (list obj)))
              (lst  (mk '<list>           (list bl)))
              (co   (mk '<cons>           (list lst)))
              (nll  (mk '<null>           (list lst)))
              (so   (mk '<standard-object>(list obj)))
-             (bic  (mk '<built-in-class> (list obj))))
+             (bic  (mk '<built-in-class> (list obj)))
+             (sc   (mk '<standard-class> (list obj))))
         ;; Export all built-in class names from ISLISP package
         (for-each (lambda (name) (package-export! islisp name))
                   '(<object> <number> <integer> <float> <character> <symbol>
-                    <function> <stream> <basic-array> <basic-vector> <general-vector>
+                    <function> <generic-function> <standard-generic-function>
+                    <stream> <basic-array> <basic-vector> <general-vector>
                     <string> <basic-array*> <general-array*> <basic-list> <list> <cons> <null>
-                    <standard-object> <built-in-class>)))
+                    <standard-object> <built-in-class> <standard-class>)))
       ;; ---- Phase 7-E: initialize-object generic function ----
       (for-each (lambda (form) (eval-islisp form env))
         '((defgeneric initialize-object (obj initargs))
@@ -6862,7 +6951,8 @@
           (defclass <type-error>                  (<program-error>)        ())
           (defclass <simple-error>                (<error>)                ())
           (defclass <stream-error>                (<error>)                ())
-          (defclass <end-of-stream>               (<stream-error>)         ())))
+          (defclass <end-of-stream>               (<stream-error>)         ())
+          (defclass <storage-exhausted>           (<serious-condition>)    ())))
       ;; Export condition classes from ISLISP package so ISLISP-USER inherits them.
       (for-each (lambda (name) (package-export! islisp name))
         '(<condition> <serious-condition> <error>
@@ -6872,7 +6962,7 @@
           <domain-error> <undefined-entity>
           <unbound-variable> <undefined-function>
           <arity-error> <index-out-of-range> <type-error>
-          <simple-error> <stream-error> <end-of-stream>))
+          <simple-error> <stream-error> <end-of-stream> <storage-exhausted>))
       ;; ---- ISLISP §16.3/§16.4: when/unless macros ----
       (eval-islisp
        '(defmacro when (condition &rest body)
