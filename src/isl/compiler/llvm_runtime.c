@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <setjmp.h>
 
 typedef struct IslValue IslValue;
 typedef struct IslEnv IslEnv;
@@ -646,6 +647,71 @@ static IslValue *prim_eq_id(IslEnv *env, int32_t argc, IslValue **argv) {
   return isl_eq(argv[0], argv[1]) ? g_true : g_false;
 }
 
+/* ---- non-local exit: block/return-from and catch/throw (setjmp/longjmp) ----
+   A single unified stack of exit points is used for both constructs so that a
+   throw/return-from that jumps past intervening frames of the *other* kind
+   still discards them correctly (the target frame's next pointer is the
+   restored stack top).  kind 0 = catch (match tag by eql), 1 = block (match
+   block name symbol by eql). */
+typedef struct ExitFrame {
+  jmp_buf buf;
+  int kind;
+  IslValue *key;
+  IslValue *result;
+  struct ExitFrame *next;
+} ExitFrame;
+
+static ExitFrame *g_exit_stack = NULL;
+
+/* Establish an exit point, run the zero-argument thunk, and return its value;
+   if a matching throw/return-from fires, return the supplied non-local value. */
+static IslValue *exit_enter(IslEnv *env, int kind, IslValue *key, IslValue *thunk) {
+  ExitFrame frame;
+  frame.kind = kind;
+  frame.key = key;
+  frame.result = NULL;
+  frame.next = g_exit_stack;
+  if (setjmp(frame.buf) == 0) {
+    g_exit_stack = &frame;
+    IslValue *r = (IslValue *)isl_rt_call(env, thunk, 0, NULL);
+    g_exit_stack = frame.next; /* normal exit: pop */
+    return r;
+  }
+  /* longjmp landed here: restore the stack to this frame's saved top. */
+  g_exit_stack = frame.next;
+  return frame.result;
+}
+
+static IslValue *exit_unwind(int kind, IslValue *key, IslValue *value,
+                             const char *err) {
+  for (ExitFrame *f = g_exit_stack; f; f = f->next) {
+    if (f->kind == kind && isl_eq(f->key, key)) {
+      f->result = value;
+      longjmp(f->buf, 1);
+    }
+  }
+  return isl_make_error(err);
+}
+
+static IslValue *prim_catch(IslEnv *env, int32_t argc, IslValue **argv) {
+  if (argc != 2) return isl_make_error("catch: arity");
+  return exit_enter(env, 0, argv[0], argv[1]);
+}
+static IslValue *prim_throw(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("throw: arity");
+  return exit_unwind(0, argv[0], argv[1], "throw: no matching catch tag");
+}
+static IslValue *prim_block(IslEnv *env, int32_t argc, IslValue **argv) {
+  if (argc != 2) return isl_make_error("block: arity");
+  return exit_enter(env, 1, argv[0], argv[1]);
+}
+static IslValue *prim_return_from(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("return-from: arity");
+  return exit_unwind(1, argv[0], argv[1], "return-from: no matching block");
+}
+
 static IslValue *prim_standard_output(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env; (void)argc; (void)argv;
   return g_stdout;
@@ -960,6 +1026,11 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "append", isl_make_primitive("append", prim_append));
   isl_define_raw(env, "eq", isl_make_primitive("eq", prim_eq_id));
   isl_define_raw(env, "eql", isl_make_primitive("eql", prim_eq_id));
+  /* non-local exit primitives that lowering rewrites block/catch/etc. into */
+  isl_define_raw(env, "%catch", isl_make_primitive("%catch", prim_catch));
+  isl_define_raw(env, "%throw", isl_make_primitive("%throw", prim_throw));
+  isl_define_raw(env, "%block", isl_make_primitive("%block", prim_block));
+  isl_define_raw(env, "%return-from", isl_make_primitive("%return-from", prim_return_from));
   isl_define_raw(env, "format", isl_make_primitive("format", prim_format));
   isl_define_raw(env, "standard-output", isl_make_primitive("standard-output", prim_standard_output));
   isl_define_raw(env, "error-output", isl_make_primitive("error-output", prim_error_output));

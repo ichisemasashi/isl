@@ -1251,6 +1251,47 @@
       (unless (>= (length args) 1)
         (runtime-raise 'arity "funcall expects at least 1 argument" args))
       (runtime-apply (car args) (cdr args) state)))
+  ;; Non-local exit primitives that lowering rewrites block/catch/throw/
+  ;; return-from into.  block/catch receive a zero-argument thunk for their body
+  ;; so the same lowered CFG runs on both the IR interpreter and native backend.
+  (def '%block
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%block expects 2 arguments" args))
+      (let ((name (runtime-value->host (car args)))
+            (thunk (cadr args)))
+        (guard (e ((and (nonlocal-return? e) (eqv? (nonlocal-return-name e) name))
+                   (nonlocal-return-value e))
+                  (else (raise e)))
+          (runtime-apply thunk '() state)))))
+  (def '%return-from
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%return-from expects 2 arguments" args))
+      (raise (make-nonlocal-return (runtime-value->host (car args)) (cadr args)))))
+  (def '%catch
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%catch expects 2 arguments" args))
+      (let ((tag (runtime-value->host (car args)))
+            (thunk (cadr args)))
+        (dynamic-wind
+          (lambda () (set! *runtime-catch-stack* (cons tag *runtime-catch-stack*)))
+          (lambda ()
+            (guard (e ((and (throw-signal? e) (eqv? (throw-signal-tag e) tag))
+                       (throw-signal-value e))
+                      (else (raise e)))
+              (runtime-apply thunk '() state)))
+          (lambda () (set! *runtime-catch-stack* (cdr *runtime-catch-stack*)))))))
+  (def '%throw
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%throw expects 2 arguments" args))
+      (let ((tag (runtime-value->host (car args)))
+            (value (cadr args)))
+        (if (runtime-catch-active? tag)
+            (raise (make-throw-signal tag value))
+            (runtime-raise 'control-error "No enclosing catch for throw" tag)))))
   (def 'not
     (lambda (args state)
       (unless (= (length args) 1)

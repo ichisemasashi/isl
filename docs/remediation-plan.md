@@ -45,7 +45,9 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 
 ## 2. ネイティブ AOT バックエンド（最優先領域）
 
-`native-gap-probe.scm` の結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
+`native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
+P0（誤出力是正）+ P1（and/or/case・数値・非局所制御）実施後: **25 SAME / 24 未対応
+/ 0 誤出力**。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
@@ -90,8 +92,11 @@ frontend は認識するが codegen が "unsupported operation" を出す:
 - ✅ `case`, `and`, `or` … **対応済み**（`lowering.scm` に `lower-and`/`lower-or`/
   `lower-case` を追加し branch/phi へ落とす。`case` は key を 1 度だけ束ねて
   `cond`+`eql` に書き換え。`if`/`cond` と同じ基盤を再利用、IR インタプリタも共用）。
-- ⬜ `block`/`return-from`, `catch`/`throw` … 非局所脱出。`llvm_runtime.c` に
-  `setjmp/longjmp` ベースの脱出基盤を入れる（M5 の完了ゲート）。**未着手**。
+- ✅ `block`/`return-from`, `catch`/`throw` … **対応済み**。lowering で body を
+  0 引数サンクに包んだ `%block`/`%catch`/`%throw`/`%return-from` 呼び出しへ書き換え、
+  `llvm_runtime.c` に `setjmp/longjmp` の統合 exit スタックを実装（throw が中間の
+  block フレームを飛び越えても正しく破棄）。同じ lowered CFG を使う IR インタプリタ
+  （runtime.scm）側にも同名プリミティブを追加。
 - ⬜ `for`, `flet`, `labels` … `flet`/`labels` はローカル関数を closure 化して対応。
   `for`/`while`/`dotimes`/`dolist` は `setq`（ミューテーション）とループ lowering が
   前提。**未着手**。
@@ -193,7 +198,7 @@ undefined-entity 条件化後の `spec-probe extended`: **227 OK / 0 MISSING / 0
 1. ~~**[P0]** ネイティブ: `while`/`dotimes`/`dolist`/`tagbody`/`unwind-protect`/`format ~X`
    の誤出力を是正（まず誤値を返さない）。~~ ✅ **完了**（§2 P0 参照、DIFF 6→0）。
 2. **[P1]** ネイティブ: `case`/`and`/`or` の lowering ✅、非局所制御
-   （`block`/`catch`）の脱出基盤 ⬜。
+   （`block`/`catch`/`return-from`/`throw`）の setjmp/longjmp 脱出基盤 ✅。
 3. **[P1]** ネイティブ: 数値ライブラリ（`expt`/`mod`/`abs`/`max`/`min`）+ 比較網羅
    （`/=`）✅。float 算術 ⬜。
 4. ~~**[P1]** インタプリタ: 多次元配列（I-A）、文字列ストリーム/`format-*`（I-B）、
