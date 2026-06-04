@@ -3457,7 +3457,11 @@
         (let ((pair (frame-find-pair env form)))
           (if pair
               (cdr pair)
-              (frame-ref env (resolve-symbol-in-package form))))))
+              (let* ((rsym (resolve-symbol-in-package form))
+                     (rpair (frame-find-pair env rsym)))
+                (if rpair
+                    (cdr rpair)
+                    (isl-signal-unbound-variable form)))))))
    ((pair? form)
     (let ((op (car form))
           (args (cdr form)))
@@ -3469,17 +3473,23 @@
                                   (resolve-symbol-in-package op))))
                  (op-pair (and op-sym (frame-find-pair env op-sym)))
                  (op-val (and op-pair (cdr op-pair))))
-            (if (and op-pair (macro? op-val))
-                (eval-islisp* (if (macro-traced? op-sym)
-                                  (trace-apply-macro op-sym op-val args)
-                                  (apply-macro op-val args))
-                             env
-                             tail?)
-                (let ((fn (eval-islisp* op env #f))
-                      (vals (eval-list args env)))
-                  (if tail?
-                      (make-tail-call fn vals)
-                      (apply-islisp fn vals))))))))
+            (cond
+             ;; A symbol in operator position that is bound nowhere is an
+             ;; undefined function (not a plain unbound variable).
+             ((and (symbol? op) (not op-pair))
+              (isl-signal-undefined-function op))
+             ((and op-pair (macro? op-val))
+              (eval-islisp* (if (macro-traced? op-sym)
+                                (trace-apply-macro op-sym op-val args)
+                                (apply-macro op-val args))
+                           env
+                           tail?))
+             (else
+              (let ((fn (eval-islisp* op env #f))
+                    (vals (eval-list args env)))
+                (if tail?
+                    (make-tail-call fn vals)
+                    (apply-islisp fn vals)))))))))
    ((null? form) '())
    (else
     form)))
@@ -3631,6 +3641,21 @@
      (list 'operation op 'operands operands))))
 
 (define (isl-zero-number? x) (and (number? x) (zero? x)))
+
+;; ISLISP §22: unbound variable / undefined function references signal a
+;; catchable <unbound-variable> / <undefined-function> condition (subclasses of
+;; <undefined-entity>) carrying the entity name and namespace, instead of a raw
+;; host error, so handler-case and the undefined-entity-* accessors can see them.
+(define (isl-signal-unbound-variable sym)
+  (isl-signal-condition
+   (make-isl-condition (resolve-binding-symbol '<unbound-variable>)
+     (string-append "unbound variable: " (symbol->string sym)) #f (list sym)
+     (list 'name sym 'namespace 'variable))))
+(define (isl-signal-undefined-function sym)
+  (isl-signal-condition
+   (make-isl-condition (resolve-binding-symbol '<undefined-function>)
+     (string-append "undefined function: " (symbol->string sym)) #f (list sym)
+     (list 'name sym 'namespace 'function))))
 
 (define (install-primitives! env)
   (define (def name proc)

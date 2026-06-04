@@ -265,7 +265,18 @@
    (list 'value '(subclassp (class <simple-error>) (class <error>)) #t)
    (list 'value '(subclassp (class <error>) (class <serious-condition>)) #t)
    (list 'value '(subclassp (class <division-by-zero>) (class <arithmetic-error>)) #t)
-   (list 'value '(subclassp (class <end-of-stream>) (class <stream-error>)) #t)))
+   (list 'value '(subclassp (class <end-of-stream>) (class <stream-error>)) #t)
+   ;; 未定義関数/変数参照は捕捉可能なコンディションを送出する
+   (list 'value '(handler-case (this-fn-is-undefined)
+                   (<undefined-function> (c) (undefined-entity-name c)))
+         'this-fn-is-undefined)
+   (list 'value '(handler-case this-fn-is-undefined
+                   (<unbound-variable> (c) (undefined-entity-namespace c)))
+         'variable)
+   ;; <unbound-variable>/<undefined-function> は <undefined-entity> の下位
+   (list 'value '(handler-case (this-fn-is-undefined)
+                   (<undefined-entity> (c) 'caught))
+         'caught)))
 
 ;; ==========================================================================
 ;; §21 Object System — create / initialize-object（CLOS）
