@@ -9,6 +9,12 @@ typedef struct IslEnv IslEnv;
 typedef IslValue *(*IslCompiledFn)(IslEnv *env);
 typedef IslValue *(*IslPrimitiveFn)(IslEnv *env, int32_t argc, IslValue **argv);
 
+/* Forward declarations: defined later, used by primitives above their defs. */
+void *isl_rt_call(void *envp, void *fnp, int32_t argc, void *argvp);
+void *isl_rt_nil(void);
+void *isl_rt_true(void);
+void *isl_rt_false(void);
+
 typedef enum {
   ISL_V_INT,
   ISL_V_BOOL,
@@ -16,6 +22,7 @@ typedef enum {
   ISL_V_SYMBOL,
   ISL_V_STRING,
   ISL_V_FUNCTION,
+  ISL_V_CONS,
   ISL_V_ERROR
 } IslTag;
 
@@ -28,6 +35,7 @@ typedef struct {
   IslFnKind kind;
   int32_t arity;
   const char *name;
+  IslEnv *env;            /* captured lexical environment (NULL for primitives) */
   union {
     IslCompiledFn compiled;
     IslPrimitiveFn primitive;
@@ -41,6 +49,10 @@ struct IslValue {
     int b;
     const char *str;
     IslFunction *fn;
+    struct {
+      IslValue *car;
+      IslValue *cdr;
+    } cons;
   } as;
 };
 
@@ -266,6 +278,104 @@ static IslValue *prim_not(IslEnv *env, int32_t argc, IslValue **argv) {
   return isl_truthy(argv[0]) ? g_false : g_true;
 }
 
+/* (funcall fn arg ...) — call a function value with the remaining arguments. */
+static IslValue *prim_funcall(IslEnv *env, int32_t argc, IslValue **argv) {
+  if (argc < 1) return isl_make_error("funcall: expects at least 1 argument");
+  return (IslValue *)isl_rt_call(env, argv[0], argc - 1, (void *)(argv + 1));
+}
+
+static IslValue *isl_cons(IslValue *a, IslValue *d) {
+  IslValue *v = isl_alloc_value(ISL_V_CONS);
+  v->as.cons.car = a;
+  v->as.cons.cdr = d;
+  return v;
+}
+
+static int isl_is_list(IslValue *v) {
+  for (; v && v->tag == ISL_V_CONS; v = v->as.cons.cdr) {}
+  return (v && v->tag == ISL_V_NIL);
+}
+
+static int isl_list_length(IslValue *v) {
+  int n = 0;
+  for (; v && v->tag == ISL_V_CONS; v = v->as.cons.cdr) n++;
+  return n;
+}
+
+static IslValue *prim_cons(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("cons: arity");
+  return isl_cons(argv[0], argv[1]);
+}
+
+static IslValue *prim_car(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("car: arity");
+  if (argv[0] && argv[0]->tag == ISL_V_NIL) return argv[0]; /* (car nil) = nil */
+  if (!argv[0] || argv[0]->tag != ISL_V_CONS) return isl_make_error("car: not a list");
+  return argv[0]->as.cons.car;
+}
+
+static IslValue *prim_cdr(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("cdr: arity");
+  if (argv[0] && argv[0]->tag == ISL_V_NIL) return argv[0]; /* (cdr nil) = nil */
+  if (!argv[0] || argv[0]->tag != ISL_V_CONS) return isl_make_error("cdr: not a list");
+  return argv[0]->as.cons.cdr;
+}
+
+static IslValue *prim_list(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  IslValue *acc = (IslValue *)isl_rt_nil();
+  for (int32_t i = argc - 1; i >= 0; i--) acc = isl_cons(argv[i], acc);
+  return acc;
+}
+
+static IslValue *prim_consp(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("consp: arity");
+  return (argv[0] && argv[0]->tag == ISL_V_CONS) ? g_true : g_false;
+}
+
+static IslValue *prim_null(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("null: arity");
+  return (argv[0] && argv[0]->tag == ISL_V_NIL) ? g_true : g_false;
+}
+
+/* (apply fn a b ... last-list) — spread the final list argument. */
+static IslValue *prim_apply(IslEnv *env, int32_t argc, IslValue **argv) {
+  if (argc < 1) return isl_make_error("apply: expects at least 1 argument");
+  IslValue *fn = argv[0];
+  if (argc == 1) {
+    return (IslValue *)isl_rt_call(env, fn, 0, NULL);
+  }
+  IslValue *last = argv[argc - 1];
+  if (!(last && (last->tag == ISL_V_CONS || last->tag == ISL_V_NIL)) || !isl_is_list(last)) {
+    return isl_make_error("apply: last argument must be a proper list");
+  }
+  int32_t lead = argc - 2;               /* args between fn and the list */
+  int32_t tail = isl_list_length(last);
+  int32_t total = lead + tail;
+  IslValue **callv = (IslValue **)calloc((size_t)(total > 0 ? total : 1), sizeof(IslValue *));
+  if (!callv) {
+    fprintf(stderr, "isl_rt: out of memory\n");
+    exit(2);
+  }
+  int32_t k = 0;
+  for (int32_t i = 0; i < lead; i++) callv[k++] = argv[1 + i];
+  for (IslValue *p = last; p && p->tag == ISL_V_CONS; p = p->as.cons.cdr)
+    callv[k++] = p->as.cons.car;
+  IslValue *r = (IslValue *)isl_rt_call(env, fn, total, (void *)callv);
+  free(callv);
+  return r;
+}
+
+/* Runtime cons constructor used by codegen to build quoted list literals. */
+void *isl_rt_cons(void *a, void *d) {
+  return isl_cons((IslValue *)a, (IslValue *)d);
+}
+
 static void isl_print_value(IslValue *v) {
   if (!v) {
     printf("#<null>");
@@ -290,6 +400,26 @@ static void isl_print_value(IslValue *v) {
     case ISL_V_FUNCTION:
       printf("#<function>");
       break;
+    case ISL_V_CONS: {
+      IslValue *cur = v;
+      printf("(");
+      for (;;) {
+        isl_print_value(cur->as.cons.car);
+        IslValue *rest = cur->as.cons.cdr;
+        if (rest && rest->tag == ISL_V_CONS) {
+          printf(" ");
+          cur = rest;
+          continue;
+        }
+        if (rest && rest->tag != ISL_V_NIL) {
+          printf(" . ");
+          isl_print_value(rest);
+        }
+        break;
+      }
+      printf(")");
+      break;
+    }
     case ISL_V_ERROR:
       printf("#<error %s>", v->as.str);
       break;
@@ -384,7 +514,9 @@ void *isl_rt_call(void *envp, void *fnp, int32_t argc, void *argvp) {
     fprintf(stderr, "isl_rt: out of memory\n");
     exit(2);
   }
-  child->parent = env;
+  /* Lexical scoping: a compiled function runs in the environment where it was
+     defined (captured at closure-creation time), not where it is called. */
+  child->parent = (fn->env != NULL) ? fn->env : env;
   child->bindings = NULL;
   child->argc = argc;
   child->argv = argv;
@@ -436,9 +568,19 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, ">=", isl_make_primitive(">=", prim_ge));
   isl_define_raw(env, "print", isl_make_primitive("print", prim_print));
   isl_define_raw(env, "not", isl_make_primitive("not", prim_not));
+  isl_define_raw(env, "funcall", isl_make_primitive("funcall", prim_funcall));
+  isl_define_raw(env, "apply", isl_make_primitive("apply", prim_apply));
+  isl_define_raw(env, "cons", isl_make_primitive("cons", prim_cons));
+  isl_define_raw(env, "car", isl_make_primitive("car", prim_car));
+  isl_define_raw(env, "cdr", isl_make_primitive("cdr", prim_cdr));
+  isl_define_raw(env, "list", isl_make_primitive("list", prim_list));
+  isl_define_raw(env, "consp", isl_make_primitive("consp", prim_consp));
+  isl_define_raw(env, "null", isl_make_primitive("null", prim_null));
 }
 
-void *isl_rt_make_compiled_fun(void *entryp, int32_t arity) {
+/* Create a compiled-function value capturing its defining environment.
+   envp is the lexical environment in effect where the closure is created. */
+void *isl_rt_make_closure(void *entryp, int32_t arity, void *envp) {
   IslValue *v = isl_alloc_value(ISL_V_FUNCTION);
   IslFunction *f = (IslFunction *)calloc(1, sizeof(IslFunction));
   if (!f) {
@@ -447,7 +589,8 @@ void *isl_rt_make_compiled_fun(void *entryp, int32_t arity) {
   }
   f->kind = ISL_FN_COMPILED;
   f->arity = arity;
-  f->name = "compiled";
+  f->name = "closure";
+  f->env = (IslEnv *)envp;
   f->impl.compiled = (IslCompiledFn)entryp;
   v->as.fn = f;
   return v;

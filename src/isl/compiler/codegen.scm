@@ -1,5 +1,6 @@
 (define-module isl.compiler.codegen
   (use srfi-1)
+  (use isl.compiler.lowering)
   (export ll-units->llvm-module
           ll-units->llvm-aot-module))
 
@@ -8,9 +9,32 @@
 (define *cg-string-pool* '()) ; ((text . @name) ...)
 (define *cg-string-counter* 0)
 
+;; Lambda lifting: lambdas appearing in value position are outlined into
+;; fresh top-level functions @isl_lambda_<n>.  emit-rhs enqueues them here;
+;; emit-module drains the queue (a lambda body may enqueue further lambdas).
+(define *cg-lambda-queue* '())    ; list of (llvm-name params body-cfg)
+(define *cg-lambda-counter* 0)
+
 (define (cg-reset!)
   (set! *cg-string-pool* '())
-  (set! *cg-string-counter* 0))
+  (set! *cg-string-counter* 0)
+  (set! *cg-lambda-queue* '())
+  (set! *cg-lambda-counter* 0))
+
+(define (cg-fresh-lambda-name!)
+  (let ((n *cg-lambda-counter*))
+    (set! *cg-lambda-counter* (+ n 1))
+    (string-append "isl_lambda_" (number->string n))))
+
+(define (cg-enqueue-lambda! params body)
+  ;; Returns (values llvm-name arity).  body is normalized IR.
+  (let ((fname (cg-fresh-lambda-name!))
+        (arity (length (filter (lambda (x) (and (symbol? x) (not (eq? x '&rest))))
+                               params))))
+    (set! *cg-lambda-queue*
+          (append *cg-lambda-queue*
+                  (list (list fname params (lower-expr-to-cfg body)))))
+    (values fname arity)))
 
 (define (mangle-char ch)
   (if (or (char-alphabetic? ch) (char-numeric? ch) (char=? ch #\_))
@@ -157,26 +181,37 @@
                                         arr
                                         ")"))))))))
 
+(define (emit-const-build dst v cg-ref)
+  ;; Build the runtime value for a quoted constant, leaving it in `dst`.
+  ;; Lists/pairs are constructed recursively via isl_rt_cons.
+  (cond
+   ((integer? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_int(i64 " (number->string v) ")"))))
+   ((eq? v #t)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
+   ((eq? v #f)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_false()"))))
+   ((null? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_nil()"))))
+   ((symbol? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string v)) ")"))))
+   ((string? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_string(ptr " (str-ptr v) ")"))))
+   ((pair? v)
+    (let ((carn (cg-next-name! cg-ref))
+          (cdrn (cg-next-name! cg-ref)))
+      (append
+       (emit-const-build carn (car v) cg-ref)
+       (emit-const-build cdrn (cdr v) cg-ref)
+       (list (indent 2 (string-append dst " = call ptr @isl_rt_cons(ptr " carn ", ptr " cdrn ")"))))))
+   (else
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")"))))))
+
 (define (emit-rhs dst rhs params cg-ref)
   (let ((op (car rhs)))
     (cond
      ((eq? op 'const)
-      (let ((v (cadr rhs)))
-        (cond
-         ((integer? v)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_int(i64 " (number->string v) ")"))))
-         ((eq? v #t)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
-         ((eq? v #f)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_false()"))))
-         ((null? v)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_nil()"))))
-         ((symbol? v)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string v)) ")"))))
-         ((string? v)
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_make_string(ptr " (str-ptr v) ")"))))
-         (else
-          (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")")))))))
+      (emit-const-build dst (cadr rhs) cg-ref))
      ((eq? op 'var)
       (let ((idx (param-index params (cadr rhs))))
         (if idx
@@ -193,6 +228,16 @@
                            (string-append "[ " (llvm-val (cadr pr)) ", %" (mangle-symbol (car pr)) " ]"))
                          pairs)))
         (list (indent 2 (string-append dst " = phi ptr " (join-comma items))))))
+     ((eq? op 'lambda)
+      ;; (lambda params body) — outline body into a fresh top-level function
+      ;; and materialize a compiled-function value here.
+      (receive (fname arity) (cg-enqueue-lambda! (cadr rhs) (caddr rhs))
+        (list (indent 2 (string-append dst
+                                       " = call ptr @isl_rt_make_closure(ptr @"
+                                       fname
+                                       ", i32 "
+                                       (number->string arity)
+                                       ", ptr %env)")))))
      (else
       (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "lowering pending") ")")))))))
 
@@ -210,8 +255,27 @@
     (else
      (list (indent 2 "ret ptr null")))))
 
+(define (emit-param-bindings params cg-ref)
+  ;; Bind each (non-&rest) parameter by name into %env at function entry, so
+  ;; that inner lambdas capturing this scope can resolve them by name.  The
+  ;; function body itself still reads its own params positionally via
+  ;; isl_rt_lookup_param; this only adds name-addressable bindings.
+  (let loop ((xs params) (i 0) (acc '()))
+    (if (or (null? xs) (eq? (car xs) '&rest))
+        (apply append (reverse acc))
+        (let* ((symn (cg-next-name! cg-ref))
+               (valn (cg-next-name! cg-ref))
+               (pname (symbol->string (car xs)))
+               (lines
+                (list
+                 (indent 2 (string-append symn " = call ptr @isl_rt_make_symbol(ptr " (str-ptr pname) ")"))
+                 (indent 2 (string-append valn " = call ptr @isl_rt_lookup_param(ptr %env, i32 " (number->string i) ")"))
+                 (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " symn ", ptr " valn ")")))))
+          (loop (cdr xs) (+ i 1) (cons lines acc))))))
+
 (define (emit-function llvm-name params cfg)
   (let ((cg-ref (list 0))
+        (entry (cadr cfg))
         (blocks (caddr cfg)))
     (append
      (list (string-append "define ptr @" llvm-name "(ptr %env) {"))
@@ -223,6 +287,10 @@
                      (term (cadddr b)))
                  (append
                   (list (string-append (mangle-symbol label) ":"))
+                  ;; entry block: install parameter name-bindings first
+                  (if (eq? label entry)
+                      (emit-param-bindings params cg-ref)
+                      '())
                   (apply append
                          (map (lambda (ins)
                                 (emit-rhs (llvm-val (cadr ins)) (caddr ins) params cg-ref))
@@ -269,11 +337,11 @@
     (list
      (indent 2 (string-append sym " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string name)) ")"))
      (indent 2 (string-append fval
-                              " = call ptr @isl_rt_make_compiled_fun(ptr @isl_fun_"
+                              " = call ptr @isl_rt_make_closure(ptr @isl_fun_"
                               (mangle-symbol name)
                               ", i32 "
                               (number->string arity)
-                              ")"))
+                              ", ptr %env)"))
      (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " sym ", ptr " fval ")")))))
 
 (define (emit-global-init ll cg-ref)
@@ -328,14 +396,29 @@
    "declare ptr @isl_rt_lookup_param(ptr, i32)"
    "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
    "declare i1 @isl_rt_truthy(ptr)"
-   "declare ptr @isl_rt_unsupported(ptr)"))
+   "declare ptr @isl_rt_unsupported(ptr)"
+   ;; needed by closures (lambda lifting) and per-call param name-binding,
+   ;; in both module and aot modes
+   "declare ptr @isl_rt_make_closure(ptr, i32, ptr)"
+   "declare void @isl_rt_define(ptr, ptr, ptr)"
+   "declare ptr @isl_rt_cons(ptr, ptr)"))
 
 (define (aot-extra-decls)
   (list
    "declare ptr @isl_rt_create_env()"
-   "declare void @isl_rt_install_primitives(ptr)"
-   "declare ptr @isl_rt_make_compiled_fun(ptr, i32)"
-   "declare void @isl_rt_define(ptr, ptr, ptr)"))
+   "declare void @isl_rt_install_primitives(ptr)"))
+
+(define (drain-lambda-queue!)
+  ;; Emit each queued lambda as a top-level function.  emit-function may push
+  ;; further lambdas onto *cg-lambda-queue* (nested lambdas); process FIFO until
+  ;; the queue drains.
+  (let loop ((acc '()))
+    (if (null? *cg-lambda-queue*)
+        acc
+        (let ((entry (car *cg-lambda-queue*)))
+          (set! *cg-lambda-queue* (cdr *cg-lambda-queue*))
+          (loop (append acc
+                        (emit-function (car entry) (cadr entry) (caddr entry))))))))
 
 (define (emit-module units include-main?)
   (cg-reset!)
@@ -346,6 +429,9 @@
                    (if (null? xs)
                        (reverse acc)
                        (loop (cdr xs) (+ i 1) (cons (emit-top (car xs) i) acc))))))
+         ;; Outline any lambdas discovered while emitting fun-lines.  Draining a
+         ;; lambda may enqueue nested lambdas, so loop until the queue is empty.
+         (lambda-lines (drain-lambda-queue!))
          (decls (if include-main?
                     (append (module-decls) (aot-extra-decls))
                     (module-decls)))
@@ -359,6 +445,7 @@
       decls
       (if (null? consts) '() (append (list "") consts))
       (if (null? fun-lines) '() (append (list "") fun-lines))
+      (if (null? lambda-lines) '() (append (list "") lambda-lines))
       (if (null? main-lines) '() (append (list "") main-lines))))))
 
 (define (ll-units->llvm-module units)

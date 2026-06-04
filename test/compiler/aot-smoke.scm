@@ -29,7 +29,7 @@
 
 (assert-contains aot-text "define i32 @main()" "has-main")
 (assert-contains aot-text "@isl_rt_create_env" "has-create-env")
-(assert-contains aot-text "@isl_rt_make_compiled_fun" "has-fn-register")
+(assert-contains aot-text "@isl_rt_make_closure" "has-fn-register")
 (assert-contains aot-text "call void @isl_rt_install_primitives" "has-primitive-init")
 
 (display "aot smoke passed\n")
