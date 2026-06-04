@@ -9,6 +9,9 @@ typedef struct IslEnv IslEnv;
 typedef IslValue *(*IslCompiledFn)(IslEnv *env);
 typedef IslValue *(*IslPrimitiveFn)(IslEnv *env, int32_t argc, IslValue **argv);
 
+/* Forward declaration: defined later, used by prim_funcall. */
+void *isl_rt_call(void *envp, void *fnp, int32_t argc, void *argvp);
+
 typedef enum {
   ISL_V_INT,
   ISL_V_BOOL,
@@ -266,6 +269,12 @@ static IslValue *prim_not(IslEnv *env, int32_t argc, IslValue **argv) {
   return isl_truthy(argv[0]) ? g_false : g_true;
 }
 
+/* (funcall fn arg ...) — call a function value with the remaining arguments. */
+static IslValue *prim_funcall(IslEnv *env, int32_t argc, IslValue **argv) {
+  if (argc < 1) return isl_make_error("funcall: expects at least 1 argument");
+  return (IslValue *)isl_rt_call(env, argv[0], argc - 1, (void *)(argv + 1));
+}
+
 static void isl_print_value(IslValue *v) {
   if (!v) {
     printf("#<null>");
@@ -436,6 +445,7 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, ">=", isl_make_primitive(">=", prim_ge));
   isl_define_raw(env, "print", isl_make_primitive("print", prim_print));
   isl_define_raw(env, "not", isl_make_primitive("not", prim_not));
+  isl_define_raw(env, "funcall", isl_make_primitive("funcall", prim_funcall));
 }
 
 void *isl_rt_make_compiled_fun(void *entryp, int32_t arity) {
