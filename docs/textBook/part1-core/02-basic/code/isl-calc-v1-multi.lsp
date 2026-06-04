@@ -8,12 +8,12 @@
       (let ((op   (car e))
             ;; オペランド列を一括で再帰評価する
             (args (mapcar (lambda (x) (calc-eval x)) (cdr e))))
-        (cond ((eq op '+) (apply (function +) args))
+        (cond ((eq op '+) (apply #'+ args))
               ((eq op '-) (if (= (length args) 1)
                               (- (car args))          ; 単項マイナス
-                              (apply (function -) args)))
-              ((eq op '*) (apply (function *) args))
-              ((eq op '/) (apply (function /) args))
+                              (apply #'- args)))
+              ((eq op '*) (apply #'* args))
+              ((eq op '/) (apply #'/ args))
               (t (error "unknown operator" op))))
       e))
 
