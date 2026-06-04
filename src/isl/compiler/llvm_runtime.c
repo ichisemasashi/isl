@@ -24,6 +24,7 @@ typedef enum {
   ISL_V_STRING,
   ISL_V_FUNCTION,
   ISL_V_CONS,
+  ISL_V_STREAM,
   ISL_V_ERROR
 } IslTag;
 
@@ -73,6 +74,8 @@ struct IslEnv {
 static IslValue *g_nil = NULL;
 static IslValue *g_true = NULL;
 static IslValue *g_false = NULL;
+static IslValue *g_stdout = NULL;
+static IslValue *g_stderr = NULL;
 
 static IslValue *isl_alloc_value(IslTag tag) {
   IslValue *v = (IslValue *)calloc(1, sizeof(IslValue));
@@ -264,6 +267,7 @@ static IslValue *prim_ge(IslEnv *env, int32_t argc, IslValue **argv) {
 }
 
 static void isl_print_value(IslValue *v);
+static void isl_write_value(IslValue *v, int readable);
 
 static IslValue *prim_print(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
@@ -470,7 +474,74 @@ static IslValue *prim_append(IslEnv *env, int32_t argc, IslValue **argv) {
   return head;
 }
 
-static void isl_print_value(IslValue *v) {
+/* Object identity for eq/eql.  Symbols compare by name (the runtime does not
+   intern), integers and booleans by value; everything else by pointer. */
+static int isl_eq(IslValue *a, IslValue *b) {
+  if (a == b) return 1;
+  if (!a || !b || a->tag != b->tag) return 0;
+  switch (a->tag) {
+    case ISL_V_INT:    return a->as.i64 == b->as.i64;
+    case ISL_V_BOOL:   return a->as.b == b->as.b;
+    case ISL_V_NIL:    return 1;
+    case ISL_V_SYMBOL: return strcmp(a->as.str, b->as.str) == 0;
+    default:           return 0;
+  }
+}
+
+static IslValue *prim_eq_id(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("eq: arity");
+  return isl_eq(argv[0], argv[1]) ? g_true : g_false;
+}
+
+static IslValue *prim_standard_output(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env; (void)argc; (void)argv;
+  return g_stdout;
+}
+
+static IslValue *prim_error_output(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env; (void)argc; (void)argv;
+  return g_stderr;
+}
+
+/* (format stream control arg...) — minimal directive support: ~A ~S ~D ~% ~~.
+   Output always goes to stdout (the native runtime models only one stream). */
+static IslValue *prim_format(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc < 2) return isl_make_error("format: expects a stream and a control string");
+  IslValue *ctrl = argv[1];
+  if (!ctrl || ctrl->tag != ISL_V_STRING)
+    return isl_make_error("format: control argument must be a string");
+  const char *s = ctrl->as.str;
+  int32_t argi = 2;
+  for (const char *p = s; *p; p++) {
+    if (*p != '~') { putchar(*p); continue; }
+    p++;
+    if (!*p) break;
+    switch (*p) {
+      case '%': putchar('\n'); break;
+      case '~': putchar('~'); break;
+      case 'A': case 'a':
+        if (argi < argc) isl_write_value(argv[argi++], 0);
+        break;
+      case 'S': case 's':
+        if (argi < argc) isl_write_value(argv[argi++], 1);
+        break;
+      case 'D': case 'd':
+        if (argi < argc) isl_write_value(argv[argi++], 0);
+        break;
+      default:
+        putchar('~');
+        putchar(*p);
+        break;
+    }
+  }
+  return (IslValue *)isl_rt_nil();
+}
+
+/* Write a value to stdout.  readable!=0 selects S-style (strings quoted),
+   readable==0 selects A-style (strings unquoted). */
+static void isl_write_value(IslValue *v, int readable) {
   if (!v) {
     printf("#<null>");
     return;
@@ -489,16 +560,20 @@ static void isl_print_value(IslValue *v) {
       printf("%s", v->as.str);
       break;
     case ISL_V_STRING:
-      printf("\"%s\"", v->as.str);
+      if (readable) printf("\"%s\"", v->as.str);
+      else printf("%s", v->as.str);
       break;
     case ISL_V_FUNCTION:
       printf("#<function>");
+      break;
+    case ISL_V_STREAM:
+      printf("#<stream>");
       break;
     case ISL_V_CONS: {
       IslValue *cur = v;
       printf("(");
       for (;;) {
-        isl_print_value(cur->as.cons.car);
+        isl_write_value(cur->as.cons.car, readable);
         IslValue *rest = cur->as.cons.cdr;
         if (rest && rest->tag == ISL_V_CONS) {
           printf(" ");
@@ -507,7 +582,7 @@ static void isl_print_value(IslValue *v) {
         }
         if (rest && rest->tag != ISL_V_NIL) {
           printf(" . ");
-          isl_print_value(rest);
+          isl_write_value(rest, readable);
         }
         break;
       }
@@ -521,6 +596,10 @@ static void isl_print_value(IslValue *v) {
       printf("#<unknown>");
       break;
   }
+}
+
+static void isl_print_value(IslValue *v) {
+  isl_write_value(v, 1);
 }
 
 void *isl_rt_make_int(int64_t x) {
@@ -643,6 +722,8 @@ void *isl_rt_create_env(void) {
   (void)isl_rt_nil();
   (void)isl_rt_true();
   (void)isl_rt_false();
+  if (!g_stdout) g_stdout = isl_alloc_value(ISL_V_STREAM);
+  if (!g_stderr) g_stderr = isl_alloc_value(ISL_V_STREAM);
 
   isl_define_raw(env, "nil", g_nil);
   isl_define_raw(env, "t", g_true);
@@ -675,6 +756,11 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "length", isl_make_primitive("length", prim_length));
   isl_define_raw(env, "reverse", isl_make_primitive("reverse", prim_reverse));
   isl_define_raw(env, "append", isl_make_primitive("append", prim_append));
+  isl_define_raw(env, "eq", isl_make_primitive("eq", prim_eq_id));
+  isl_define_raw(env, "eql", isl_make_primitive("eql", prim_eq_id));
+  isl_define_raw(env, "format", isl_make_primitive("format", prim_format));
+  isl_define_raw(env, "standard-output", isl_make_primitive("standard-output", prim_standard_output));
+  isl_define_raw(env, "error-output", isl_make_primitive("error-output", prim_error_output));
 }
 
 /* Create a compiled-function value capturing its defining environment.
