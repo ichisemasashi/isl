@@ -294,7 +294,10 @@
    (list 'value '(functionp 42)              '())
    (list 'value '(general-vector-p (vector 1 2)) #t)
    (list 'value '(general-vector-p '(1 2))       '())
-   (list 'value '(general-array*-p (vector 1 2)) #t)
+   ;; ISLISP: general-array*-p is true only for arrays of rank /= 1, so a
+   ;; rank-1 general vector is NOT a general-array* (was incorrectly #t before).
+   (list 'value '(general-array*-p (vector 1 2)) '())
+   (list 'value '(general-array*-p (create-array '(2 2) 0)) #t)
    ;; 1-D: 三角・超越関数 (結果は inexact float)
    (list 'value '(exp 0)    1.0)
    (list 'value '(log 1)    0.0)

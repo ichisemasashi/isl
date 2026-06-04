@@ -1273,6 +1273,7 @@
    ((char? val)     (ctref '<character>))
    ((pair? val)     (ctref '<cons>))
    ((null? val)     (ctref '<null>))
+   ((isl-array? val) (ctref '<general-array*>))
    ((vector? val)   (ctref '<general-vector>))
    ((or (closure? val) (primitive? val)) (ctref '<function>))
    ((or (input-port? val) (output-port? val)) (ctref '<stream>))
@@ -2706,8 +2707,13 @@
      ((string=? bare "list")      (or (null? val) (pair? val)))
      ((string=? bare "cons")      (pair? val))
      ((string=? bare "null")      (null? val))
-     ((string=? bare "vector")    (vector? val))
-     ((string=? bare "general-vector") (vector? val))
+     ((string=? bare "vector")    (isl-plain-vector? val))
+     ((string=? bare "general-vector") (isl-plain-vector? val))
+     ((string=? bare "general-array*") (isl-array? val))
+     ((string=? bare "basic-array*")   (isl-array? val))
+     ((string=? bare "basic-vector")   (or (isl-plain-vector? val) (string? val)))
+     ((string=? bare "basic-array")
+      (or (isl-plain-vector? val) (string? val) (isl-array? val)))
      ((string=? bare "function")  (or (closure? val) (primitive? val)))
      ;; Condition objects: check ISL condition class hierarchy via isl-subclassp?
      ((isl-condition? val)
@@ -3453,14 +3459,48 @@
 ;; ============================================================
 
 ;; ---- 5-A: isl-condition representation ----
-(define (make-isl-condition class-sym message continuable? irritants)
-  (vector 'isl-condition class-sym message continuable? irritants))
+;; slot 5 (`extra`) is a property list carrying typed accessor data such as
+;; arithmetic-error operation / domain-error expected-class / undefined-entity
+;; namespace.  It is optional so existing 4-argument call sites keep working.
+(define (make-isl-condition class-sym message continuable? irritants . maybe-extra)
+  (vector 'isl-condition class-sym message continuable? irritants
+          (if (pair? maybe-extra) (car maybe-extra) '())))
 (define (isl-condition? x)
-  (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'isl-condition)))
+  (and (vector? x) (>= (vector-length x) 5) (eq? (vector-ref x 0) 'isl-condition)))
 (define (isl-condition-class       x) (vector-ref x 1))
 (define (isl-condition-message     x) (vector-ref x 2))
 (define (isl-condition-continuable? x) (vector-ref x 3))
 (define (isl-condition-irritants   x) (vector-ref x 4))
+(define (isl-condition-extra       x)
+  (if (>= (vector-length x) 6) (vector-ref x 5) '()))
+(define (isl-condition-extra-ref   x key . default)
+  (let loop ((p (isl-condition-extra x)))
+    (cond ((or (null? p) (null? (cdr p)))
+           (if (pair? default) (car default) '()))
+          ((eq? (car p) key) (cadr p))
+          (else (loop (cddr p))))))
+
+;; ---- multi-dimensional general array (rank >= 2) representation ----
+;; Rank-1 general vectors stay as plain host vectors; rank >= 2 arrays use this
+;; tagged structure with row-major flat storage.  ISLISP class: <general-array*>.
+(define (make-isl-array dims storage) (vector 'isl-array dims storage))
+(define (isl-array? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'isl-array)))
+(define (isl-array-dims    x) (vector-ref x 1))
+(define (isl-array-storage x) (vector-ref x 2))
+;; A plain host vector that is NOT one of our tagged structures (condition/array).
+(define (isl-plain-vector? x)
+  (and (vector? x) (not (isl-array? x)) (not (isl-condition? x))))
+;; Row-major flat index for `idxs` within `dims`; #f on rank/bounds mismatch.
+(define (isl-array-flat-index dims idxs)
+  (let loop ((ds dims) (is idxs) (acc 0))
+    (cond ((and (null? ds) (null? is)) acc)
+          ((or (null? ds) (null? is)) #f)
+          (else
+           (let ((d (car ds)) (i (car is)))
+             (if (and (integer? i) (>= i 0) (< i d))
+                 (loop (cdr ds) (cdr is) (+ (* acc d) i))
+                 #f))))))
 
 ;; ---- 5-A: class hierarchy predicate ----
 ;; Returns #t if sub-sym equals or is a registered subclass of super-sym.
@@ -3522,6 +3562,16 @@
         (let ((handler (car stack)))
           (parameterize ((*isl-handler-stack* (cdr stack)))
             (handler cond-obj))))))           ; handler return = signal return
+
+;; ISLISP §11: integer-division operators signal a catchable <division-by-zero>
+;; (with arithmetic-error operation/operands) rather than a raw host error.
+(define (isl-signal-div0 op operands)
+  (isl-signal-condition
+   (make-isl-condition (resolve-binding-symbol '<division-by-zero>)
+     "division by zero" #f operands
+     (list 'operation op 'operands operands))))
+
+(define (isl-zero-number? x) (and (number? x) (zero? x)))
 
 (define (install-primitives! env)
   (define (def name proc)
@@ -3603,12 +3653,18 @@
   ;; ISLISP §11: / signals <division-by-zero> on zero divisor
   (def '/
     (lambda args
-      (guard (e (#t (isl-signal-condition
-                     (make-isl-condition (resolve-binding-symbol '<division-by-zero>)
-                       "division by zero"
-                       #f args))))
-        (apply / args))))
-  (def 'mod modulo)
+      (let ((divisors (if (>= (length args) 2) (cdr args) args)))
+        (if (let lp ((xs divisors))
+              (cond ((null? xs) #f)
+                    ((isl-zero-number? (car xs)) #t)
+                    (else (lp (cdr xs)))))
+            (isl-signal-div0 '/ args)
+            (apply / args)))))
+  (def 'mod
+    (lambda (n d)
+      (if (isl-zero-number? d)
+          (isl-signal-div0 'mod (list n d))
+          (modulo n d))))
   ;; ISLISP §11.10: floor/ceiling/truncate/round return exact integers.
   (def 'floor
     (lambda args
@@ -3655,7 +3711,9 @@
     (lambda (n d)
       (unless (integer? n) (error "quotient n must be integer" n))
       (unless (integer? d) (error "quotient d must be integer" d))
-      (quotient n d)))
+      (if (isl-zero-number? d)
+          (isl-signal-div0 'quotient (list n d))
+          (quotient n d))))
 
   ;; --- Phase 1-A: 算術関数 ---
   (def 'abs
@@ -3691,7 +3749,9 @@
     (lambda (n d)
       (unless (integer? n) (error "rem dividend must be integer" n))
       (unless (integer? d) (error "rem divisor must be integer" d))
-      (remainder n d)))
+      (if (isl-zero-number? d)
+          (isl-signal-div0 'rem (list n d))
+          (remainder n d))))
   (def 'gcd
     (lambda xs
       (if (null? xs) 0 (apply gcd xs))))
@@ -3775,8 +3835,10 @@
   (def 'functionp
     (lambda (x)
       (if (or (closure? x) (primitive? x)) #t '())))
-  (def 'general-vector-p (lambda (x) (if (vector? x) #t '())))
-  (def 'general-array*-p (lambda (x) (if (vector? x) #t '())))
+  ;; general-vector = rank-1 general vector (plain host vector, not a tagged
+  ;; condition/N-D array); general-array* = general array of rank /= 1.
+  (def 'general-vector-p (lambda (x) (if (isl-plain-vector? x) #t '())))
+  (def 'general-array*-p (lambda (x) (if (isl-array? x) #t '())))
 
   ;; --- Phase 1-D: 三角関数・超越関数 ---
   (def 'exp  (lambda (x) (unless (number? x) (error "exp needs number" x))  (exp x)))
@@ -3848,7 +3910,8 @@
             (else (isl-signal-condition
                    (make-isl-condition (resolve-binding-symbol '<domain-error>)
                      "car: argument is not a list"
-                     #f (list x)))))))
+                     #f (list x)
+                     (list 'object x 'expected-class '<list>)))))))
   (def 'cdr
     (lambda (x)
       (cond ((null? x) '())
@@ -3856,7 +3919,8 @@
             (else (isl-signal-condition
                    (make-isl-condition (resolve-binding-symbol '<domain-error>)
                      "cdr: argument is not a list"
-                     #f (list x)))))))
+                     #f (list x)
+                     (list 'object x 'expected-class '<list>)))))))
   (def 'vector (lambda xs (list->vector xs)))
   (def 'make-array
     (lambda args
@@ -3872,18 +3936,45 @@
         (error "vector-ref index out of range" i))
       (vector-ref v i)))
   (def 'aref
-    (lambda (v i)
+    (lambda (v . idxs)
       (cond
-       ((vector? v)
-        (unless (and (integer? i) (>= i 0) (< i (vector-length v)))
-          (error "aref: index out of range" i))
-        (vector-ref v i))
+       ((isl-array? v)
+        (let ((flat (isl-array-flat-index (isl-array-dims v) idxs)))
+          (unless flat (error "aref: index out of range or rank mismatch" idxs))
+          (vector-ref (isl-array-storage v) flat)))
+       ((isl-plain-vector? v)
+        (let ((i (car idxs)))
+          (unless (and (pair? idxs) (null? (cdr idxs)))
+            (error "aref: vector needs exactly one index" idxs))
+          (unless (and (integer? i) (>= i 0) (< i (vector-length v)))
+            (error "aref: index out of range" i))
+          (vector-ref v i)))
        ((string? v)
-        (unless (and (integer? i) (>= i 0) (< i (string-length v)))
-          (error "aref: string index out of range" i))
-        (string-ref v i))
+        (let ((i (car idxs)))
+          (unless (and (pair? idxs) (null? (cdr idxs)))
+            (error "aref: string needs exactly one index" idxs))
+          (unless (and (integer? i) (>= i 0) (< i (string-length v)))
+            (error "aref: string index out of range" i))
+          (string-ref v i)))
        (else
         (error "aref: first argument must be an array" v)))))
+  ;; ISLISP §13: garef — like aref but only for general arrays (not strings)
+  (def 'garef
+    (lambda (v . idxs)
+      (cond
+       ((isl-array? v)
+        (let ((flat (isl-array-flat-index (isl-array-dims v) idxs)))
+          (unless flat (error "garef: index out of range or rank mismatch" idxs))
+          (vector-ref (isl-array-storage v) flat)))
+       ((isl-plain-vector? v)
+        (let ((i (car idxs)))
+          (unless (and (pair? idxs) (null? (cdr idxs)))
+            (error "garef: vector needs exactly one index" idxs))
+          (unless (and (integer? i) (>= i 0) (< i (vector-length v)))
+            (error "garef: index out of range" i))
+          (vector-ref v i)))
+       (else
+        (error "garef: first argument must be a general array" v)))))
   (def 'vector-set!
     (lambda (v i x)
       (unless (vector? v)
@@ -3892,7 +3983,7 @@
         (error "vector-set! index out of range" i))
       (vector-set! v i x)
       x))
-  (def 'vectorp vector?)
+  (def 'vectorp (lambda (x) (isl-plain-vector? x)))
 
   ;; --- Phase 2-D: ベクター ISLISP 標準名 ---
   (def 'create-vector
@@ -3912,32 +4003,72 @@
         (error "general-vector-set index out of range" i))
       (vector-set! v i val)
       val))
-  ;; ISLISP §16: set-aref — mutate a basic array (vector or string)
+  ;; ISLISP §16: set-aref — mutate a basic array (vector, string, or N-D array)
   (def 'set-aref
     (lambda (val arr . idxs)
       (when (null? idxs) (error "set-aref: index required"))
-      (let ((i (car idxs)))
-        (cond
-         ((vector? arr)
+      (cond
+       ((isl-array? arr)
+        (let ((flat (isl-array-flat-index (isl-array-dims arr) idxs)))
+          (unless flat (error "set-aref: index out of range or rank mismatch" idxs))
+          (vector-set! (isl-array-storage arr) flat val)
+          val))
+       ((isl-plain-vector? arr)
+        (let ((i (car idxs)))
           (unless (and (integer? i) (>= i 0) (< i (vector-length arr)))
             (error "set-aref: vector index out of range" i))
           (vector-set! arr i val)
-          val)
-         ((string? arr)
+          val))
+       ((string? arr)
+        (let ((i (car idxs)))
           (unless (and (integer? i) (>= i 0) (< i (string-length arr)))
             (error "set-aref: string index out of range" i))
           (string-set! arr i val)
-          val)
-         (else (error "set-aref: first argument must be an array" arr))))))
+          val))
+       (else (error "set-aref: first argument must be an array" arr)))))
+  ;; ISLISP §13: set-garef — like set-aref but for general arrays (not strings)
+  (def 'set-garef
+    (lambda (val arr . idxs)
+      (when (null? idxs) (error "set-garef: index required"))
+      (cond
+       ((isl-array? arr)
+        (let ((flat (isl-array-flat-index (isl-array-dims arr) idxs)))
+          (unless flat (error "set-garef: index out of range or rank mismatch" idxs))
+          (vector-set! (isl-array-storage arr) flat val)
+          val))
+       ((isl-plain-vector? arr)
+        (let ((i (car idxs)))
+          (unless (and (integer? i) (>= i 0) (< i (vector-length arr)))
+            (error "set-garef: vector index out of range" i))
+          (vector-set! arr i val)
+          val))
+       (else (error "set-garef: first argument must be a general array" arr)))))
 
   ;; --- Phase 2-E: 配列関数 ---
   (def 'create-array
     (lambda args
-      (build-vector-from-args args "create-array")))
+      (when (null? args) (error "create-array needs a dimension argument" args))
+      (let ((dims (car args)))
+        (if (and (list? dims) (> (length dims) 1))
+            ;; rank >= 2 → multi-dimensional general array (row-major storage)
+            (let* ((init (if (pair? (cdr args)) (cadr args) '()))
+                   (total (let lp ((ds dims) (p 1))
+                            (if (null? ds)
+                                p
+                                (begin
+                                  (unless (and (integer? (car ds)) (>= (car ds) 0))
+                                    (error "create-array: dimension must be a non-negative integer" (car ds)))
+                                  (lp (cdr ds) (* p (car ds))))))))
+              (make-isl-array dims (make-vector total init)))
+            ;; rank 1 (or scalar dim) → plain general vector
+            (build-vector-from-args args "create-array")))))
   (def 'array-dimensions
     (lambda (arr)
-      (unless (vector? arr) (error "array-dimensions needs an array" arr))
-      (list (vector-length arr))))
+      (cond
+       ((isl-array? arr) (isl-array-dims arr))
+       ((isl-plain-vector? arr) (list (vector-length arr)))
+       ((string? arr) (list (string-length arr)))
+       (else (error "array-dimensions needs an array" arr)))))
 
   (def 'make-hash-table
     (lambda args
@@ -5037,6 +5168,59 @@
         (unless (output-port? port) (error "finish-output needs an output stream" port))
         (flush port)
         '())))
+  ;; ---- §18.4: string streams ----
+  (def 'create-string-input-stream
+    (lambda (s)
+      (ensure-string s "create-string-input-stream")
+      (open-input-string s)))
+  (def 'create-string-output-stream
+    (lambda ()
+      (open-output-string)))
+  (def 'get-output-stream-string
+    (lambda (stream)
+      (unless (output-port? stream)
+        (error "get-output-stream-string needs a string output stream" stream))
+      (get-output-string stream)))
+  ;; ---- §23.3: granular formatted output (the ISLISP format-* family) ----
+  (def 'format-object
+    (lambda (stream obj quote-p)
+      (unless (output-port? stream) (error "format-object needs an output stream" stream))
+      (if (truthy? quote-p) (write obj stream) (display obj stream))
+      '()))
+  (def 'format-char
+    (lambda (stream ch)
+      (unless (output-port? stream) (error "format-char needs an output stream" stream))
+      (unless (char? ch) (error "format-char needs a character" ch))
+      (write-char ch stream)
+      '()))
+  (def 'format-integer
+    (lambda (stream n radix)
+      (unless (output-port? stream) (error "format-integer needs an output stream" stream))
+      (unless (integer? n) (error "format-integer needs an integer" n))
+      (unless (and (integer? radix) (<= 2 radix 36))
+        (error "format-integer radix must be 2..36" radix))
+      (display (number->string n radix) stream)
+      '()))
+  (def 'format-float
+    (lambda (stream x)
+      (unless (output-port? stream) (error "format-float needs an output stream" stream))
+      (unless (real? x) (error "format-float needs a real number" x))
+      (display (exact->inexact x) stream)
+      '()))
+  (def 'format-fresh-line
+    (lambda (stream)
+      (unless (output-port? stream) (error "format-fresh-line needs an output stream" stream))
+      (newline stream)
+      '()))
+  (def 'format-tab
+    (lambda (stream column)
+      (unless (output-port? stream) (error "format-tab needs an output stream" stream))
+      (unless (and (integer? column) (>= column 0))
+        (error "format-tab column must be a non-negative integer" column))
+      ;; A string stream cannot track its column, so approximate by emitting
+      ;; `column` spaces (enough for the common "indent to N" use).
+      (let loop ((i 0)) (when (< i column) (write-char #\space stream) (loop (+ i 1))))
+      '()))
   ;; ISLISP §18.3: read-byte, write-byte
   (def 'read-byte
     (lambda args
@@ -5094,6 +5278,53 @@
       (unless (isl-condition? cond-obj)
         (error "condition-continuable-p needs an isl condition object" cond-obj))
       (if (isl-condition-continuable? cond-obj) #t '())))
+  ;; ---- 5-B': typed condition accessors (ISLISP §22) ----
+  (def 'simple-error-format-string
+    (lambda (c)
+      (unless (isl-condition? c) (error "simple-error-format-string: not a condition" c))
+      (isl-condition-message c)))
+  (def 'simple-error-format-arguments
+    (lambda (c)
+      (unless (isl-condition? c) (error "simple-error-format-arguments: not a condition" c))
+      (isl-condition-irritants c)))
+  (def 'arithmetic-error-operation
+    (lambda (c)
+      (unless (isl-condition? c) (error "arithmetic-error-operation: not a condition" c))
+      (isl-condition-extra-ref c 'operation)))
+  (def 'arithmetic-error-operands
+    (lambda (c)
+      (unless (isl-condition? c) (error "arithmetic-error-operands: not a condition" c))
+      (isl-condition-extra-ref c 'operands (isl-condition-irritants c))))
+  (def 'domain-error-object
+    (lambda (c)
+      (unless (isl-condition? c) (error "domain-error-object: not a condition" c))
+      (isl-condition-extra-ref c 'object)))
+  (def 'domain-error-expected-class
+    (lambda (c)
+      (unless (isl-condition? c) (error "domain-error-expected-class: not a condition" c))
+      (let ((cs (isl-condition-extra-ref c 'expected-class)))
+        (if (symbol? cs)
+            (let ((p (frame-find-pair env (resolve-binding-symbol cs))))
+              (if p (cdr p) cs))
+            cs))))
+  (def 'undefined-entity-name
+    (lambda (c)
+      (unless (isl-condition? c) (error "undefined-entity-name: not a condition" c))
+      (isl-condition-extra-ref c 'name)))
+  (def 'undefined-entity-namespace
+    (lambda (c)
+      (unless (isl-condition? c) (error "undefined-entity-namespace: not a condition" c))
+      (isl-condition-extra-ref c 'namespace)))
+  ;; ISLISP §22: report-condition — write the condition's report to a stream.
+  ;; The simple-error report applies the format string to its arguments.
+  (def 'report-condition
+    (lambda (c stream)
+      (unless (isl-condition? c) (error "report-condition: not a condition" c))
+      (let ((msg (isl-condition-message c))
+            (irr (isl-condition-irritants c)))
+        (display (if (and (string? msg) (pair? irr)) (render-format msg irr) msg)
+                 stream))
+      '()))
   ;; ---- 5-C: continue-condition ----
   (def 'continue-condition
     (lambda args
@@ -6230,11 +6461,11 @@
   ;; identity
   (def 'identity (lambda (x) x))
 
-  ;; basic-array-p: #t for vectors and strings (all 1D arrays in this impl)
+  ;; basic-array-p: #t for any array — rank-1 vectors/strings and N-D arrays.
   (def 'basic-array-p
-    (lambda (x) (if (or (vector? x) (string? x)) #t '())))
-  ;; basic-array*-p: #t for multi-dimensional basic arrays (not supported in this impl)
-  (def 'basic-array*-p (lambda (x) '()))
+    (lambda (x) (if (or (isl-plain-vector? x) (string? x) (isl-array? x)) #t '())))
+  ;; basic-array*-p: #t for basic arrays of rank /= 1 (our N-D general arrays).
+  (def 'basic-array*-p (lambda (x) (if (isl-array? x) #t '())))
 
   ;; map-into: destructively fill vector from applying fn to lists
   (def 'map-into
@@ -6409,9 +6640,9 @@
     (lambda (lst)
       (unless (list? lst) (error "list-length needs a list" lst))
       (length lst)))
-  ;; E-3. basic-vector-p (ISLISP: true for vectors and strings)
+  ;; E-3. basic-vector-p (ISLISP: true for rank-1 vectors and strings)
   (def 'basic-vector-p
-    (lambda (x) (if (or (vector? x) (string? x)) #t '())))
+    (lambda (x) (if (or (isl-plain-vector? x) (string? x)) #t '())))
   ;; E-4. vector-length (ISLISP standard name) - using a local binding to avoid conflict
   (def 'vector-length
     (lambda (v)
@@ -6591,6 +6822,8 @@
              (bv   (mk '<basic-vector>   (list ba)))
              (gv   (mk '<general-vector> (list bv)))
              (str  (mk '<string>         (list bv)))
+             (baa  (mk '<basic-array*>   (list ba)))
+             (gaa  (mk '<general-array*> (list baa)))
              (bl   (mk '<basic-list>     (list obj)))
              (lst  (mk '<list>           (list bl)))
              (co   (mk '<cons>           (list lst)))
@@ -6601,7 +6834,7 @@
         (for-each (lambda (name) (package-export! islisp name))
                   '(<object> <number> <integer> <float> <character> <symbol>
                     <function> <stream> <basic-array> <basic-vector> <general-vector>
-                    <string> <basic-list> <list> <cons> <null>
+                    <string> <basic-array*> <general-array*> <basic-list> <list> <cons> <null>
                     <standard-object> <built-in-class>)))
       ;; ---- Phase 7-E: initialize-object generic function ----
       (for-each (lambda (form) (eval-islisp form env))

@@ -135,18 +135,21 @@ N4 (例外 + ゼロ除算条件) → N5 (CLOS・dynamic・convert)
 
 `spec-gap-report.md` の分類 A〜G に対応。各項目に推奨優先度を付す。
 
-| ID | 区分 | 内容 | 優先 | 主な作業 |
-|----|------|------|------|----------|
-| I-A | §13 配列 | 多次元配列・`garef`/`set-garef`・`<basic-array*>`/`<general-array*>` | P1 | `create-array` を n 次元対応に。行優先の添字計算。配列クラス追加 |
-| I-B | §18/19 I/O | 文字列ストリーム・`preview-char`・`format-*` 群 | P1 | `create-string-{in,out}put-stream`/`get-output-stream-string`、`format-integer/char/float/object/fresh-line/tab` |
-| I-C | §10 シンボル | `property`/`set-property`/`remove-property` | P2 | シンボルごとの plist テーブル |
-| I-D | §22 条件 | 条件アクセサ群・`report-condition`・ゼロ除算捕捉 | P1 | 各コンディションのスロットアクセサ、`/`・`quotient` のゼロ除算を `<division-by-zero>` として送出 |
+| ID | 区分 | 内容 | 優先 | 状態 | 主な作業 |
+|----|------|------|------|------|----------|
+| I-A | §13 配列 | 多次元配列・`garef`/`set-garef`・`<basic-array*>`/`<general-array*>` | P1 | ✅ | `create-array` を n 次元対応に（行優先 flat storage）。`aref`/`set-aref`/`garef`/`set-garef` を多添字対応。配列クラス追加・`general-array*-p`/`basic-array*-p` 是正 |
+| I-B | §18/19 I/O | 文字列ストリーム・`preview-char`・`format-*` 群 | P1 | ✅ | `create-string-{in,out}put-stream`/`get-output-stream-string`、`format-integer/char/float/object/fresh-line/tab` を実装 |
+| I-C | §10 シンボル | `property`/`set-property`/`remove-property` | P2 | ⬜ | シンボルごとの plist テーブル |
+| I-D | §22 条件 | 条件アクセサ群・`report-condition`・ゼロ除算捕捉 | P1 | ✅ | コンディションに `extra` plist を追加し各アクセサ実装。`/`・`quotient`・`mod`・`rem` のゼロ除算を `<division-by-zero>`（arithmetic-error operation/operands 付き）として送出 |
 | I-E | §21 OO | `create`/`initialize-object`・GF クラス | P2 | 標準 `create` を `make-instance` の別名 GF として実装、`<generic-function>` 等のクラス登録 |
 | I-F | §11 数値 | `div`・`sinh/cosh/tanh/atanh`・`atan2`・`*most-*-float*`・`generic-function-p` | P2 | プリミティブ追加（Gauche に委譲可能なものが多い）|
 | I-G | 逸脱 | `set-car`/`set-cdr` 引数順序、`error` のフォーマット展開 | P3 | 引数順を `(obj cons)` に修正、`condition-message` でフォーマット適用 |
 | I-H | 特殊形式 | `case-using`・`assure` | P3 | `eval-special` に追加（`case`/`the` を流用）|
 
 検証は `gosh test/conformance/run-spec.scm` の FAIL 件数で追跡（実装が進むと減る）。
+I-A/I-B/I-D 実装後の `spec-probe extended`: **203 OK / 23 MISSING / 1 WRONG / 0 ERR**
+（実装前 174 OK / 45 MISSING / 1 WRONG / 7 ERR）。`run-spec` の Spec-Array /
+Spec-Stream / Spec-Condition は全合格。既存 `run.scm` は 101/101 を維持。
 
 ---
 
@@ -181,8 +184,8 @@ N4 (例外 + ゼロ除算条件) → N5 (CLOS・dynamic・convert)
    （`block`/`catch`）の脱出基盤 ⬜。
 3. **[P1]** ネイティブ: 数値ライブラリ（`expt`/`mod`/`abs`/`max`/`min`）+ 比較網羅
    （`/=`）✅。float 算術 ⬜。
-4. **[P1]** インタプリタ: 多次元配列（I-A）、文字列ストリーム/`format-*`（I-B）、
-   ゼロ除算条件と条件アクセサ（I-D）。
+4. ~~**[P1]** インタプリタ: 多次元配列（I-A）、文字列ストリーム/`format-*`（I-B）、
+   ゼロ除算条件と条件アクセサ（I-D）。~~ ✅ **完了**（§3 参照、spec-probe 174→203 OK）。
 5. **[P2]** ネイティブ: 文字列・文字・ベクタ。インタプリタ: plist（I-C）、
    `create`/`initialize-object`（I-E）、数値補完（I-F）。
 6. **[P2/P3]** ネイティブ: 例外・CLOS。インタプリタ: 逸脱是正（I-G）、
