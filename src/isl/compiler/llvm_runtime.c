@@ -14,6 +14,7 @@ void *isl_rt_call(void *envp, void *fnp, int32_t argc, void *argvp);
 void *isl_rt_nil(void);
 void *isl_rt_true(void);
 void *isl_rt_false(void);
+void *isl_rt_make_int(int64_t x);
 
 typedef enum {
   ISL_V_INT,
@@ -376,6 +377,99 @@ void *isl_rt_cons(void *a, void *d) {
   return isl_cons((IslValue *)a, (IslValue *)d);
 }
 
+/* Append a single element to a (head,tail) list being built in order. */
+static void isl_list_append1(IslValue **head, IslValue **tail, IslValue *x) {
+  IslValue *cell = isl_cons(x, (IslValue *)isl_rt_nil());
+  if (*tail == NULL) {
+    *head = cell;
+    *tail = cell;
+  } else {
+    (*tail)->as.cons.cdr = cell;
+    *tail = cell;
+  }
+}
+
+/* (mapcar fn list ...) — apply fn across N lists, collecting results.
+   (mapc fn list ...)   — same, but for effect; returns the first list.
+   collect != 0 selects mapcar behaviour. */
+static IslValue *isl_map_impl(IslEnv *env, int32_t argc, IslValue **argv, int collect) {
+  if (argc < 2) return isl_make_error("mapcar/mapc: expects function and at least one list");
+  IslValue *fn = argv[0];
+  int32_t nlists = argc - 1;
+  IslValue **cur = (IslValue **)calloc((size_t)nlists, sizeof(IslValue *));
+  IslValue **callv = (IslValue **)calloc((size_t)nlists, sizeof(IslValue *));
+  if (!cur || !callv) { fprintf(stderr, "isl_rt: out of memory\n"); exit(2); }
+  for (int32_t i = 0; i < nlists; i++) cur[i] = argv[1 + i];
+  IslValue *head = (IslValue *)isl_rt_nil();
+  IslValue *tail = NULL;
+  for (;;) {
+    int done = 0;
+    for (int32_t i = 0; i < nlists; i++) {
+      if (!(cur[i] && cur[i]->tag == ISL_V_CONS)) { done = 1; break; }
+    }
+    if (done) break;
+    for (int32_t i = 0; i < nlists; i++) {
+      callv[i] = cur[i]->as.cons.car;
+      cur[i] = cur[i]->as.cons.cdr;
+    }
+    IslValue *r = (IslValue *)isl_rt_call(env, fn, nlists, (void *)callv);
+    if (r && r->tag == ISL_V_ERROR) { free(cur); free(callv); return r; }
+    if (collect) isl_list_append1(&head, &tail, r);
+  }
+  free(cur);
+  free(callv);
+  return collect ? head : argv[1];
+}
+
+static IslValue *prim_mapcar(IslEnv *env, int32_t argc, IslValue **argv) {
+  return isl_map_impl(env, argc, argv, 1);
+}
+
+static IslValue *prim_mapc(IslEnv *env, int32_t argc, IslValue **argv) {
+  return isl_map_impl(env, argc, argv, 0);
+}
+
+static IslValue *prim_length(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("length: arity");
+  IslValue *v = argv[0];
+  if (v && v->tag == ISL_V_NIL) return (IslValue *)isl_rt_make_int(0);
+  if (!isl_is_list(v)) return isl_make_error("length: not a proper list");
+  return (IslValue *)isl_rt_make_int(isl_list_length(v));
+}
+
+static IslValue *prim_reverse(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("reverse: arity");
+  IslValue *v = argv[0];
+  if (!(v && (v->tag == ISL_V_CONS || v->tag == ISL_V_NIL)) || !isl_is_list(v))
+    return isl_make_error("reverse: not a proper list");
+  IslValue *acc = (IslValue *)isl_rt_nil();
+  for (; v && v->tag == ISL_V_CONS; v = v->as.cons.cdr)
+    acc = isl_cons(v->as.cons.car, acc);
+  return acc;
+}
+
+/* (append list ...) — concatenate proper lists; the last argument may be any
+   object and becomes the tail. */
+static IslValue *prim_append(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc == 0) return (IslValue *)isl_rt_nil();
+  IslValue *head = (IslValue *)isl_rt_nil();
+  IslValue *tail = NULL;
+  for (int32_t i = 0; i < argc - 1; i++) {
+    IslValue *lst = argv[i];
+    if (!(lst && (lst->tag == ISL_V_CONS || lst->tag == ISL_V_NIL)) || !isl_is_list(lst))
+      return isl_make_error("append: non-final arguments must be proper lists");
+    for (IslValue *p = lst; p && p->tag == ISL_V_CONS; p = p->as.cons.cdr)
+      isl_list_append1(&head, &tail, p->as.cons.car);
+  }
+  IslValue *last = argv[argc - 1];
+  if (tail == NULL) return last;
+  tail->as.cons.cdr = last;
+  return head;
+}
+
 static void isl_print_value(IslValue *v) {
   if (!v) {
     printf("#<null>");
@@ -576,6 +670,11 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "list", isl_make_primitive("list", prim_list));
   isl_define_raw(env, "consp", isl_make_primitive("consp", prim_consp));
   isl_define_raw(env, "null", isl_make_primitive("null", prim_null));
+  isl_define_raw(env, "mapcar", isl_make_primitive("mapcar", prim_mapcar));
+  isl_define_raw(env, "mapc", isl_make_primitive("mapc", prim_mapc));
+  isl_define_raw(env, "length", isl_make_primitive("length", prim_length));
+  isl_define_raw(env, "reverse", isl_make_primitive("reverse", prim_reverse));
+  isl_define_raw(env, "append", isl_make_primitive("append", prim_append));
 }
 
 /* Create a compiled-function value capturing its defining environment.

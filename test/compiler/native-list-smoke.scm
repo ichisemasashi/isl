@@ -70,7 +70,17 @@
             (cons "(print (apply #'+ (list 1 2 3 4)))" "10")
             (cons "(print (apply #'+ 1 2 (list 3 4)))" "10")
             (cons "(print (apply #'+ '(10 20 30)))" "60")
-            (cons "(print (apply (lambda (a b c) (+ a (* b c))) (list 1 2 3)))" "7"))))
+            (cons "(print (apply (lambda (a b c) (+ a (* b c))) (list 1 2 3)))" "7")
+            ;; higher-order list operations
+            (cons "(print (mapcar #'car '((1 2) (3 4) (5 6))))" "(1 3 5)")
+            (cons "(print (mapcar #'+ '(1 2 3) '(10 20 30)))" "(11 22 33)")
+            (cons "(print (mapcar (lambda (x) (* x x)) '(1 2 3 4)))" "(1 4 9 16)")
+            (cons "(print (mapcar #'+ '(1 2 3) '(10 20)))" "(11 22)")
+            (cons "(print (length '(a b c d)))" "4")
+            (cons "(print (reverse '(1 2 3)))" "(3 2 1)")
+            (cons "(print (append '(1 2) '(3 4) '(5)))" "(1 2 3 4 5)")
+            (cons "(print (append '(1 2) 99))" "(1 2 . 99)")
+            (cons "(print (apply #'+ (mapcar (lambda (x) (* x x)) '(1 2 3 4))))" "30"))))
       (for-each
        (lambda (c)
          (let ((got (run-native (car c))))
