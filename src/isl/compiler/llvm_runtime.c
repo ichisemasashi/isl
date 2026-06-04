@@ -294,6 +294,7 @@ static IslValue *prim_cmp(const char *name, int32_t argc, IslValue **argv, int m
     case 2: ok = (lhs > rhs); break;
     case 3: ok = (lhs <= rhs); break;
     case 4: ok = (lhs >= rhs); break;
+    case 5: ok = (lhs != rhs); break;
     default: ok = 0; break;
   }
   return ok ? g_true : g_false;
@@ -322,6 +323,96 @@ static IslValue *prim_le(IslEnv *env, int32_t argc, IslValue **argv) {
 static IslValue *prim_ge(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
   return prim_cmp(">=", argc, argv, 4);
+}
+
+static IslValue *prim_ne(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  return prim_cmp("/=", argc, argv, 5);
+}
+
+/* (abs x) — absolute value, preserving int/ratio. */
+static IslValue *prim_abs(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("abs: arity");
+  IslValue *n = isl_expect_number(argv[0], "abs");
+  if (n->tag == ISL_V_ERROR) return n;
+  int64_t num, den;
+  isl_as_fraction(n, &num, &den);
+  return isl_make_rational(num < 0 ? -num : num, den);
+}
+
+/* max/min over >=1 numeric args, returning the original (winning) value so
+   int/ratio identity is preserved. mode: 0=max, 1=min. */
+static IslValue *isl_minmax(const char *name, int32_t argc, IslValue **argv, int mode) {
+  if (argc < 1) return isl_make_error("max/min: arity");
+  IslValue *best = isl_expect_number(argv[0], name);
+  if (best->tag == ISL_V_ERROR) return best;
+  for (int32_t i = 1; i < argc; i++) {
+    IslValue *n = isl_expect_number(argv[i], name);
+    if (n->tag == ISL_V_ERROR) return n;
+    int64_t an, ad, bn, bd;
+    isl_as_fraction(best, &an, &ad);
+    isl_as_fraction(n, &bn, &bd);
+    int64_t lhs = an * bd, rhs = bn * ad; /* den > 0 */
+    if ((mode == 0 && rhs > lhs) || (mode == 1 && rhs < lhs)) best = n;
+  }
+  return best;
+}
+
+static IslValue *prim_max(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  return isl_minmax("max", argc, argv, 0);
+}
+
+static IslValue *prim_min(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  return isl_minmax("min", argc, argv, 1);
+}
+
+/* Require an integer argument; returns 0 and sets *err on failure. */
+static int64_t isl_expect_int(IslValue *v, const char *name, IslValue **err) {
+  IslValue *n = isl_expect_number(v, name);
+  if (n->tag == ISL_V_ERROR) { *err = n; return 0; }
+  int64_t num, den;
+  isl_as_fraction(n, &num, &den);
+  if (den != 1) { *err = isl_make_error("expects an integer"); return 0; }
+  return num;
+}
+
+/* (mod z1 z2) — ISLISP modulo; result takes the sign of the divisor. */
+static IslValue *prim_mod(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("mod: arity");
+  IslValue *err = NULL;
+  int64_t a = isl_expect_int(argv[0], "mod", &err); if (err) return err;
+  int64_t b = isl_expect_int(argv[1], "mod", &err); if (err) return err;
+  if (b == 0) return isl_make_error("mod: division by zero");
+  int64_t r = a % b;
+  if (r != 0 && ((r < 0) != (b < 0))) r += b; /* floor-style: sign of divisor */
+  IslValue *v = isl_alloc_value(ISL_V_INT);
+  v->as.i64 = r;
+  return v;
+}
+
+/* (expt base exp) — exp must be an integer; base may be int or ratio.
+   Negative exp yields the reciprocal (an exact rational). */
+static IslValue *prim_expt(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("expt: arity");
+  IslValue *base = isl_expect_number(argv[0], "expt");
+  if (base->tag == ISL_V_ERROR) return base;
+  IslValue *err = NULL;
+  int64_t e = isl_expect_int(argv[1], "expt", &err); if (err) return err;
+  int64_t bn, bd;
+  isl_as_fraction(base, &bn, &bd);
+  int64_t k = e < 0 ? -e : e;
+  int64_t rn = 1, rd = 1;
+  for (int64_t i = 0; i < k; i++) { rn *= bn; rd *= bd; }
+  if (e < 0) {
+    if (rn == 0) return isl_make_error("expt: division by zero");
+    return isl_make_rational(rd, rn); /* reciprocal */
+  }
+  return isl_make_rational(rn, rd);
 }
 
 static void isl_print_value(IslValue *v);
@@ -846,6 +937,12 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, ">", isl_make_primitive(">", prim_gt));
   isl_define_raw(env, "<=", isl_make_primitive("<=", prim_le));
   isl_define_raw(env, ">=", isl_make_primitive(">=", prim_ge));
+  isl_define_raw(env, "/=", isl_make_primitive("/=", prim_ne));
+  isl_define_raw(env, "abs", isl_make_primitive("abs", prim_abs));
+  isl_define_raw(env, "max", isl_make_primitive("max", prim_max));
+  isl_define_raw(env, "min", isl_make_primitive("min", prim_min));
+  isl_define_raw(env, "mod", isl_make_primitive("mod", prim_mod));
+  isl_define_raw(env, "expt", isl_make_primitive("expt", prim_expt));
   isl_define_raw(env, "print", isl_make_primitive("print", prim_print));
   isl_define_raw(env, "not", isl_make_primitive("not", prim_not));
   isl_define_raw(env, "funcall", isl_make_primitive("funcall", prim_funcall));

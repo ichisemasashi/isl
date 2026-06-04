@@ -87,18 +87,23 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 
 frontend は認識するが codegen が "unsupported operation" を出す:
 
-- `case`, `and`, `or` … lowering で `if` 連鎖へ落とす（`cond` は既に対応済みなので流用可）
-- `block`/`return-from`, `catch`/`throw` … 非局所脱出。`llvm_runtime.c` に
-  `setjmp/longjmp` ベースの脱出基盤を入れる（M5 の完了ゲート）
-- `for`, `flet`, `labels` … `flet`/`labels` はローカル関数を closure 化して対応
+- ✅ `case`, `and`, `or` … **対応済み**（`lowering.scm` に `lower-and`/`lower-or`/
+  `lower-case` を追加し branch/phi へ落とす。`case` は key を 1 度だけ束ねて
+  `cond`+`eql` に書き換え。`if`/`cond` と同じ基盤を再利用、IR インタプリタも共用）。
+- ⬜ `block`/`return-from`, `catch`/`throw` … 非局所脱出。`llvm_runtime.c` に
+  `setjmp/longjmp` ベースの脱出基盤を入れる（M5 の完了ゲート）。**未着手**。
+- ⬜ `for`, `flet`, `labels` … `flet`/`labels` はローカル関数を closure 化して対応。
+  `for`/`while`/`dotimes`/`dolist` は `setq`（ミューテーション）とループ lowering が
+  前提。**未着手**。
 
 ### P1 — 数値・型の拡充
 
-- **浮動小数点が `+` で扱えない**（`(+ 1.5 2.5)` → "expected number"）。
-  `IslValue` に float タグを追加し、算術プリミティブを混合演算対応にする。
-- `expt`, `mod`, `abs`, `max`, `min` 等の数値ライブラリ関数が未定義
-  （`llvm_runtime.c` に登録 or runtime 呼び出しへ委譲）。
-- 比較は `<` のみ確認済み。`>`,`<=`,`>=`,`=`,`/=` の網羅。
+- ⬜ **浮動小数点が `+` で扱えない**（`(+ 1.5 2.5)` → "expected number"）。
+  `IslValue` に float タグを追加し、算術プリミティブを混合演算対応にする。**未着手**
+  （`expt` の負指数が interp=`0.5` / native=`1/2` と分かれるのもこれが原因）。
+- ✅ `expt`, `mod`, `abs`, `max`, `min` … **対応済み**（`llvm_runtime.c` に有理数対応で
+  追加。`mod` は除数の符号、`expt` 負指数は有理数）。
+- ✅ 比較網羅 … `>`,`<=`,`>=`,`=` は既存、`/=` を追加して **網羅済み**。
 
 ### P2 — データ型の拡張
 
@@ -172,9 +177,10 @@ N4 (例外 + ゼロ除算条件) → N5 (CLOS・dynamic・convert)
 
 1. ~~**[P0]** ネイティブ: `while`/`dotimes`/`dolist`/`tagbody`/`unwind-protect`/`format ~X`
    の誤出力を是正（まず誤値を返さない）。~~ ✅ **完了**（§2 P0 参照、DIFF 6→0）。
-2. **[P1]** ネイティブ: `case`/`and`/`or` の lowering、非局所制御
-   （`block`/`catch`）の脱出基盤。
-3. **[P1]** ネイティブ: float 算術 + 数値ライブラリ + 比較網羅。
+2. **[P1]** ネイティブ: `case`/`and`/`or` の lowering ✅、非局所制御
+   （`block`/`catch`）の脱出基盤 ⬜。
+3. **[P1]** ネイティブ: 数値ライブラリ（`expt`/`mod`/`abs`/`max`/`min`）+ 比較網羅
+   （`/=`）✅。float 算術 ⬜。
 4. **[P1]** インタプリタ: 多次元配列（I-A）、文字列ストリーム/`format-*`（I-B）、
    ゼロ除算条件と条件アクセサ（I-D）。
 5. **[P2]** ネイティブ: 文字列・文字・ベクタ。インタプリタ: plist（I-C）、

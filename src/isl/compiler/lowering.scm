@@ -154,6 +154,9 @@
         ;; Malformed binding lists fall through to the generic `special` node so
         ;; the IR interpreter still reports the precise validation error.
         ((eq? sop 'cond) (lower-cond payload st label))
+        ((eq? sop 'and) (lower-and payload st label))
+        ((eq? sop 'or) (lower-or payload st label))
+        ((eq? sop 'case) (lower-case payload st label))
         ((and (eq? sop 'let) (lowerable-let-bindings? (car payload)))
          (lower-expr (let-bindings->call (car payload) (cadr payload)) st label))
         ((and (eq? sop 'let*) (lowerable-let-bindings? (car payload)))
@@ -231,6 +234,98 @@
                   (unless (terminated? st then-label)
                     (terminate! st then-label (list 'jmp merge)))
                   (loop (cdr cs) next-label (cons (list then-label test-v) phis)))))))))
+
+;; (and e1 e2 ... en): evaluate left to right, short-circuit to the first
+;; falsy value; if all truthy the value of the last form is the result.
+;; Each subform is evaluated at most once (branch/phi form).
+(define (lower-and forms st label)
+  (if (null? forms)
+      (let ((dst (fresh-temp st)))
+        (emit! st label (list 'assign dst (list 'const #t)))
+        (list label dst))
+      (let ((merge (fresh-label st)))
+        (let loop ((fs forms) (cur label) (phis '()))
+          (let* ((r (lower-expr (car fs) st cur))
+                 (after (car r))
+                 (v (cadr r)))
+            (if (null? (cdr fs))
+                (begin
+                  (unless (terminated? st after)
+                    (terminate! st after (list 'jmp merge)))
+                  (let ((res (fresh-temp st)))
+                    (emit! st merge
+                           (list 'assign res
+                                 (list 'phi (reverse (cons (list after v) phis)))))
+                    (list merge res)))
+                (let ((cont (fresh-label st))
+                      (shortc (fresh-label st)))
+                  ;; v truthy -> continue; v falsy -> short-circuit with v
+                  (terminate! st after (list 'br v cont shortc))
+                  (terminate! st shortc (list 'jmp merge))
+                  (loop (cdr fs) cont (cons (list shortc v) phis)))))))))
+
+;; (or e1 e2 ... en): evaluate left to right, short-circuit to the first truthy
+;; value; if all falsy the value of the last form is the result.
+(define (lower-or forms st label)
+  (if (null? forms)
+      (let ((dst (fresh-temp st)))
+        (emit! st label (list 'assign dst (list 'const '())))
+        (list label dst))
+      (let ((merge (fresh-label st)))
+        (let loop ((fs forms) (cur label) (phis '()))
+          (let* ((r (lower-expr (car fs) st cur))
+                 (after (car r))
+                 (v (cadr r)))
+            (if (null? (cdr fs))
+                (begin
+                  (unless (terminated? st after)
+                    (terminate! st after (list 'jmp merge)))
+                  (let ((res (fresh-temp st)))
+                    (emit! st merge
+                           (list 'assign res
+                                 (list 'phi (reverse (cons (list after v) phis)))))
+                    (list merge res)))
+                (let ((truec (fresh-label st))
+                      (cont (fresh-label st)))
+                  ;; v truthy -> short-circuit with v; v falsy -> continue
+                  (terminate! st after (list 'br v truec cont))
+                  (terminate! st truec (list 'jmp merge))
+                  (loop (cdr fs) cont (cons (list truec v) phis)))))))))
+
+;; (case key (clause ...)) where clause = ((datum ...) body) | (else body).
+;; Lower by binding the key once to a fresh variable and rewriting into a cond
+;; whose tests compare the key against each datum with `eql` (OR-combined).
+;; Reuses let/cond/or lowering so the native backend can run it.
+(define (fresh-case-sym st)
+  (let ((n (state-next-temp st)))
+    (set-state-next-temp! st (+ n 1))
+    ;; leading space makes this name impossible to collide with user symbols
+    (string->symbol (string-append " case-key-" (number->string n)))))
+
+(define (case-clause->cond-clause g clause)
+  (let ((data (car clause))
+        (body (cadr clause)))
+    (if (eq? data 'else)
+        (list (list 'const #t) body)
+        (let ((tests (map (lambda (d)
+                            (list 'call (list 'var 'eql)
+                                  (list 'var g) (list 'const d)))
+                          data)))
+          (list (if (= (length tests) 1)
+                    (car tests)
+                    (list 'special 'or tests))
+                body)))))
+
+(define (lower-case payload st label)
+  (let ((keyform (car payload))
+        (clauses (cadr payload))
+        (g (fresh-case-sym st)))
+    (let ((cond-clauses (map (lambda (cl) (case-clause->cond-clause g cl)) clauses)))
+      (lower-expr
+       (list 'call
+             (list 'lambda (list g) (list 'special 'cond cond-clauses))
+             keyform)
+       st label))))
 
 (define (lower-expr-to-cfg expr)
   (let* ((st (make-state))
