@@ -3254,6 +3254,34 @@
                           (eval-sequence* body env tail?))
                       (loop (cdr rest))))))))))
 
+;; ISLISP §22: case-using — like case but compares the key against each datum
+;; with a user-supplied two-argument predicate instead of eql.
+(define (eval-case-using args env tail? form)
+  (unless (>= (length args) 2)
+    (error "case-using needs a predicate, key and clauses" form))
+  (let ((pred (eval-islisp* (car args) env #f))
+        (key  (eval-islisp* (cadr args) env #f))
+        (clauses (cddr args)))
+    (let loop ((rest clauses))
+      (if (null? rest)
+          '()
+          (let* ((clause (car rest))
+                 (keys (and (pair? clause) (car clause)))
+                 (body (and (pair? clause) (cdr clause))))
+            (unless (and (list? clause) (>= (length clause) 1))
+              (error "invalid case-using clause" clause))
+            (if (memq keys '(otherwise t else))
+                (if (null? body) '() (eval-sequence* body env tail?))
+                (let ((matched?
+                       (if (list? keys)
+                           (any (lambda (k)
+                                  (truthy? (apply-islisp pred (list key k))))
+                                keys)
+                           (truthy? (apply-islisp pred (list key keys))))))
+                  (if matched?
+                      (if (null? body) '() (eval-sequence* body env tail?))
+                      (loop (cdr rest))))))))))
+
 (define (eval-and args env)
   (let loop ((rest args) (last #t))
     (if (null? rest)
@@ -3293,7 +3321,7 @@
       (error "if takes 2 or 3 arguments" form)))
 
 (define (special-form? sym)
-  (memq sym '(quote quasiquote if cond case and or loop while do for dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar defdynamic setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass flet labels macrolet the unwind-protect defconstant function with-handler
+  (memq sym '(quote quasiquote if cond case case-using and or loop while do for dolist dotimes return-from catch throw go tagbody trace untrace lambda defpackage in-package defglobal defvar defdynamic setq setf incf defun defmacro defgeneric defmethod progn block let let* with-open-file handler-case defclass flet labels macrolet the assure unwind-protect defconstant function with-handler
              dynamic dynamic-let class)))
 
 (define (extended-special-form? sym)
@@ -3315,6 +3343,8 @@
        (eval-cond args env tail?))
       ((case)
        (eval-case args env tail? form))
+      ((case-using)
+       (eval-case-using args env tail? form))
       ((and)
        (eval-and args env))
       ((or)
@@ -3395,6 +3425,9 @@
       ((macrolet)
        (eval-macrolet args env tail?))
       ((the)
+       (eval-the args env tail?))
+      ((assure)
+       ;; ISLISP §26: assure is `the` with the same class-assertion semantics.
        (eval-the args env tail?))
       ((unwind-protect)
        (eval-unwind-protect args env tail?))
@@ -4393,14 +4426,15 @@
                       tail)
             (car ls)))))))
   ;; ISLISP §15.1: set-car, set-cdr — mutate pair
+  ;; ISLISP §15.1: argument order is (set-car obj cons) / (set-cdr obj cons).
   (def 'set-car
-    (lambda (pair val)
-      (unless (pair? pair) (error "set-car: first argument must be a pair" pair))
+    (lambda (val pair)
+      (unless (pair? pair) (error "set-car: second argument must be a pair" pair))
       (set-car! pair val)
       val))
   (def 'set-cdr
-    (lambda (pair val)
-      (unless (pair? pair) (error "set-cdr: first argument must be a pair" pair))
+    (lambda (val pair)
+      (unless (pair? pair) (error "set-cdr: second argument must be a pair" pair))
       (set-cdr! pair val)
       val))
   ;; ISLISP §15.3: elt — element of a sequence (list, vector, or string)
@@ -5319,11 +5353,19 @@
       (unless (isl-condition? cond-obj)
         (error "signal-condition needs an isl condition object" cond-obj))
       (isl-signal-condition cond-obj)))
+  ;; condition-message is a convenience accessor (non-standard).  For a
+  ;; simple-error it returns the report message with the format string applied
+  ;; to its arguments; if formatting fails (e.g. surplus irritants) it falls
+  ;; back to the raw format string.
   (def 'condition-message
     (lambda (cond-obj)
       (cond
        ((isl-condition? cond-obj)
-        (isl-condition-message cond-obj))
+        (let ((msg (isl-condition-message cond-obj))
+              (irr (isl-condition-irritants cond-obj)))
+          (if (and (string? msg) (pair? irr))
+              (guard (e (else msg)) (render-format msg irr))
+              msg)))
        ((condition? cond-obj)
         (condition/report-string cond-obj))
        (else

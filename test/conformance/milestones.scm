@@ -1428,9 +1428,10 @@
 ;; std-SetCarCdr: set-car, set-cdr callable functions (§15.1)
 (define std-set-car-cdr-cases
   (list
-   (list 'value '(let ((p (cons 1 2))) (set-car p 99) (car p)) 99)
-   (list 'value '(let ((p (cons 1 2))) (set-cdr p 88) (cdr p)) 88)
-   (list 'error '(set-car 42 1) 'error)))
+   ;; ISLISP §15.1: (set-car obj cons) / (set-cdr obj cons) — value first.
+   (list 'value '(let ((p (cons 1 2))) (set-car 99 p) (car p)) 99)
+   (list 'value '(let ((p (cons 1 2))) (set-cdr 88 p) (cdr p)) 88)
+   (list 'error '(set-car 1 42) 'error)))
 
 ;; std-AppendBang: append! destructive append (§15.8)
 (define std-append-bang-cases

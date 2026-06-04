@@ -143,8 +143,8 @@ N4 (例外 + ゼロ除算条件) → N5 (CLOS・dynamic・convert)
 | I-D | §22 条件 | 条件アクセサ群・`report-condition`・ゼロ除算捕捉 | P1 | ✅ | コンディションに `extra` plist を追加し各アクセサ実装。`/`・`quotient`・`mod`・`rem` のゼロ除算を `<division-by-zero>`（arithmetic-error operation/operands 付き）として送出 |
 | I-E | §21 OO | `create`/`initialize-object`・GF クラス | P2 | ✅ | `create` を `make-instance` へ委譲。`<generic-function>`/`<standard-generic-function>`/`<standard-class>`/`<storage-exhausted>` を登録。`function` 特殊形式が generic を返すよう是正 |
 | I-F | §11 数値 | `div`・`sinh/cosh/tanh/atanh`・`atan2`・`*most-*-float*`・`generic-function-p` | P2 | ✅ | プリミティブ追加（`div` は床除算＋ゼロ除算捕捉、双曲線関数は exp 経由、float 定数は値束縛）|
-| I-G | 逸脱 | `set-car`/`set-cdr` 引数順序、`error` のフォーマット展開 | P3 | 引数順を `(obj cons)` に修正、`condition-message` でフォーマット適用 |
-| I-H | 特殊形式 | `case-using`・`assure` | P3 | `eval-special` に追加（`case`/`the` を流用）|
+| I-G | 逸脱 | `set-car`/`set-cdr` 引数順序、`error` のフォーマット展開 | P3 | ✅ | 引数順を `(obj cons)` に修正。`condition-message` をフォーマット適用（失敗時は raw にフォールバック）|
+| I-H | 特殊形式 | `case-using`・`assure` | P3 | ✅ | `eval-case-using` を追加、`assure` は `the` へ委譲 |
 
 検証は `gosh test/conformance/run-spec.scm` の FAIL 件数で追跡（実装が進むと減る）。
 I-A/I-B/I-D 実装後の `spec-probe extended`: **203 OK / 23 MISSING / 1 WRONG / 0 ERR**
@@ -152,10 +152,13 @@ I-A/I-B/I-D 実装後の `spec-probe extended`: **203 OK / 23 MISSING / 1 WRONG 
 Spec-Stream / Spec-Condition は全合格。既存 `run.scm` は 101/101 を維持。
 
 I-C/I-E/I-F 追加後の `spec-probe extended`: **222 OK / 4 MISSING / 1 WRONG / 0 ERR**。
-残り 4 MISSING は `case-using`/`assure`（I-H）と、未定義関数参照が
-`<undefined-function>` 条件として送出されない点（アクセサ自体は実装済み。
-unbound を条件化する I-D フォローアップが別途必要）。`run-spec` は 12 中 10 合格
-（残りは I-G の `set-car`/`set-cdr` 引数順序と I-H）。`run.scm`/`run-strict` は 101/101。
+
+I-G/I-H 追加後の `spec-probe extended`: **225 OK / 2 MISSING / 0 WRONG / 0 ERR**。
+`run-spec` は **12/12 全合格**。`run.scm`/`run-strict` は 101/101。
+残り 2 MISSING は `undefined-entity-name`/`undefined-entity-namespace` のみ。
+アクセサ自体は実装済みだが、未定義関数/変数参照が `<undefined-function>`/
+`<unbound-variable>` コンディションとして送出されず素の host エラーになるため
+`handler-case` で捕捉できない。これらを条件化するのが残作業（I-D フォローアップ）。
 
 ---
 
@@ -194,6 +197,6 @@ unbound を条件化する I-D フォローアップが別途必要）。`run-sp
    ゼロ除算条件と条件アクセサ（I-D）。~~ ✅ **完了**（§3 参照、spec-probe 174→203 OK）。
 5. **[P2]** ネイティブ: 文字列・文字・ベクタ ⬜。インタプリタ: plist（I-C）✅、
    `create`/`initialize-object`（I-E）✅、数値補完（I-F）✅。
-6. **[P2/P3]** ネイティブ: 例外・CLOS。インタプリタ: 逸脱是正（I-G）、
-   `case-using`/`assure`（I-H）。
+6. **[P2/P3]** ネイティブ: 例外・CLOS ⬜。インタプリタ: 逸脱是正（I-G）✅、
+   `case-using`/`assure`（I-H）✅。
 7. **[横断]** プリミティブ二重実装の共通化。

@@ -145,10 +145,9 @@
   '((cons eq (cons 1 2) (1 . 2))
     (car eq (car '(1 2)) 1)
     (cdr eq (cdr '(1 2)) (2))
-    ;; ISLISP 標準の引数順序は (set-car obj cons)。実装は (set-car cons obj) で逆。
-    ;; ここでは存在確認のため実装順で呼ぶ（順序逸脱はギャップレポートに記載）。
-    (set-car val (set-car (list 1 2) 9))
-    (set-cdr val (set-cdr (list 1 2) 9))
+    ;; ISLISP 標準の引数順序 (set-car obj cons) / (set-cdr obj cons)。
+    (set-car val (set-car 9 (list 1 2)))
+    (set-cdr val (set-cdr 9 (list 1 2)))
     (create-list eq (create-list 3 'a) (a a a))
     (list eq (list 1 2 3) (1 2 3))
     (reverse eq (reverse '(1 2 3)) (3 2 1))
