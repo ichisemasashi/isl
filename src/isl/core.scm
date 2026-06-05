@@ -3657,80 +3657,100 @@
      (string-append "undefined function: " (symbol->string sym)) #f (list sym)
      (list 'name sym 'namespace 'function))))
 
+;; ---- install-primitives! が用いる共有ヘルパ（純粋・env 非依存） ----
+;; ---- 5-A: EOF-stream helper (must be define, before any expressions) ----
+(define (eof-stream-error who)
+  (isl-signal-condition
+   (make-isl-condition
+    (resolve-binding-symbol '<end-of-stream>)
+    (string-append "end-of-stream in " who) #f '())))
+(define (list-element-at obj index who)
+  (let loop ((rest obj) (i index))
+    (unless (pair? rest)
+      (error "list accessor needs a list with enough elements" who obj))
+    (if (= i 0)
+        (car rest)
+        (loop (cdr rest) (- i 1)))))
+(define (vector-size-from-dim dim who)
+  (cond
+   ((and (integer? dim) (>= dim 0)) dim)
+   ((and (list? dim) (= (length dim) 1) (integer? (car dim)) (>= (car dim) 0))
+    (car dim))
+   (else
+    (error who "dimension must be non-negative integer or one-element list" dim))))
+(define (build-vector-from-args args who)
+  (unless (>= (length args) 1)
+    (error who "needs at least a dimension argument" args))
+  (let* ((n (vector-size-from-dim (car args) who))
+         (rest (cdr args))
+         (has-init-element #f)
+         (init-element '())
+         (has-init-contents #f)
+         (init-contents '()))
+    (cond
+     ((null? rest) 'ok)
+     ((keyword-symbol? (car rest))
+      (let parse ((xs rest))
+        (unless (null? xs)
+          (unless (pair? (cdr xs))
+            (error who "keyword arguments must be key/value pairs" xs))
+          (let ((k (car xs))
+                (v (cadr xs)))
+            (cond
+             ((eq? k ':initial-element)
+              (set! has-init-element #t)
+              (set! init-element v))
+             ((eq? k ':initial-contents)
+              (set! has-init-contents #t)
+              (set! init-contents v))
+             (else
+              (error who "unknown keyword" k))))
+          (parse (cddr xs)))))
+     ((= (length rest) 1)
+      ;; Backward-compatible positional initializer.
+      (set! has-init-element #t)
+      (set! init-element (car rest)))
+     (else
+      (error who "invalid arguments" args)))
+    (when (and has-init-element has-init-contents)
+      (error who "cannot use both :initial-element and :initial-contents"))
+    (if has-init-contents
+        (let ((vals
+               (cond
+                ((list? init-contents) init-contents)
+                ((vector? init-contents) (vector->list init-contents))
+                (else
+                 (error who ":initial-contents must be list or vector" init-contents)))))
+          (unless (= (length vals) n)
+            (error who ":initial-contents length must match dimension" (length vals) n))
+          (list->vector vals))
+        (make-vector n (if has-init-element init-element '())))))
+
+
 (define (install-primitives! env)
   (define (def name proc)
     (let ((sym (resolve-binding-symbol name)))
       (frame-define! env sym (make-primitive name proc))
       (when *current-package*
         (package-export! *current-package* name))))
-  ;; ---- 5-A: EOF-stream helper (must be define, before any expressions) ----
-  (define (eof-stream-error who)
-    (isl-signal-condition
-     (make-isl-condition
-      (resolve-binding-symbol '<end-of-stream>)
-      (string-append "end-of-stream in " who) #f '())))
-  (define (list-element-at obj index who)
-    (let loop ((rest obj) (i index))
-      (unless (pair? rest)
-        (error "list accessor needs a list with enough elements" who obj))
-      (if (= i 0)
-          (car rest)
-          (loop (cdr rest) (- i 1)))))
-  (define (vector-size-from-dim dim who)
-    (cond
-     ((and (integer? dim) (>= dim 0)) dim)
-     ((and (list? dim) (= (length dim) 1) (integer? (car dim)) (>= (car dim) 0))
-      (car dim))
-     (else
-      (error who "dimension must be non-negative integer or one-element list" dim))))
-  (define (build-vector-from-args args who)
-    (unless (>= (length args) 1)
-      (error who "needs at least a dimension argument" args))
-    (let* ((n (vector-size-from-dim (car args) who))
-           (rest (cdr args))
-           (has-init-element #f)
-           (init-element '())
-           (has-init-contents #f)
-           (init-contents '()))
-      (cond
-       ((null? rest) 'ok)
-       ((keyword-symbol? (car rest))
-        (let parse ((xs rest))
-          (unless (null? xs)
-            (unless (pair? (cdr xs))
-              (error who "keyword arguments must be key/value pairs" xs))
-            (let ((k (car xs))
-                  (v (cadr xs)))
-              (cond
-               ((eq? k ':initial-element)
-                (set! has-init-element #t)
-                (set! init-element v))
-               ((eq? k ':initial-contents)
-                (set! has-init-contents #t)
-                (set! init-contents v))
-               (else
-                (error who "unknown keyword" k))))
-            (parse (cddr xs)))))
-       ((= (length rest) 1)
-        ;; Backward-compatible positional initializer.
-        (set! has-init-element #t)
-        (set! init-element (car rest)))
-       (else
-        (error who "invalid arguments" args)))
-      (when (and has-init-element has-init-contents)
-        (error who "cannot use both :initial-element and :initial-contents"))
-      (if has-init-contents
-          (let ((vals
-                 (cond
-                  ((list? init-contents) init-contents)
-                  ((vector? init-contents) (vector->list init-contents))
-                  (else
-                   (error who ":initial-contents must be list or vector" init-contents)))))
-            (unless (= (length vals) n)
-              (error who ":initial-contents length must match dimension" (length vals) n))
-            (list->vector vals))
-          (make-vector n (if has-init-element init-element '())))))
+  ;; テーマ別インストーラ（登録順は従来と同一）
+  (install-numeric-primitives! def env)
+  (install-vector-array-primitives! def env)
+  (install-list-primitives! def env)
+  (install-string-primitives! def env)
+  (install-char-primitives! def env)
+  (install-io-primitives! def env)
+  (install-condition-primitives! def env)
+  (install-system-primitives! def env)
+  (install-database-primitives! def env)
+  (install-socket-primitives! def env)
+  (install-concurrency-net-primitives! def env)
+  (install-ffi-time-load-primitives! def env)
+  (install-core-clos-primitives! def env)
+  (install-method-package-symbol-primitives! def env)
+  )
 
+(define (install-numeric-primitives! def env)
   (def '+ +)
   (def '- -)
   (def '* *)
@@ -4104,6 +4124,9 @@
       x))
   (def 'vectorp (lambda (x) (isl-plain-vector? x)))
 
+  )
+
+(define (install-vector-array-primitives! def env)
   ;; --- Phase 2-D: ベクター ISLISP 標準名 ---
   (def 'create-vector
     (lambda args
@@ -4278,6 +4301,9 @@
   (def 'list list)
   (def 'append append)
 
+  )
+
+(define (install-list-primitives! def env)
   ;; --- Phase 2-A: リスト関数 ---
   (def 'reverse
     (lambda (xs)
@@ -4950,6 +4976,9 @@
             (start (if (= (length args) 3) (caddr args) 0)))
         (string-index* haystack needle start "string-index"))))
 
+  )
+
+(define (install-string-primitives! def env)
   ;; --- Phase 2-B: 文字列関数 ---
   (def 'string-length
     (lambda (s)
@@ -5006,6 +5035,9 @@
       (for-each (lambda (c) (ensure-char c "list->string")) lst)
       (list->string lst)))
 
+  )
+
+(define (install-char-primitives! def env)
   ;; --- Phase 2-C: 文字比較関数 ---
   (def 'char=
     (lambda (a b)
@@ -5086,6 +5118,9 @@
        lst)
       (list->string lst)))
   (def 'length isl-length)
+  )
+
+(define (install-io-primitives! def env)
   ;; ---- 4-B: print (stream-aware), write, terpri ----
   (def 'print
     (lambda args
@@ -5370,6 +5405,9 @@
   (def 'output-stream-p
     (lambda (obj)
       (if (output-port? obj) #t '())))
+  )
+
+(define (install-condition-primitives! def env)
   ;; ---- 5-B: signal-condition, condition-message, condition-continuable ----
   (def 'signal-condition
     (lambda (cond-obj . rest)
@@ -5509,6 +5547,9 @@
        (make-isl-condition
         (resolve-binding-symbol '<simple-error>)
         msg #f irritants))))
+  )
+
+(define (install-system-primitives! def env)
   (def 'debug
     (lambda args
       (cond
@@ -5759,6 +5800,9 @@
                   #f)
               (list (decode-process-exit-status (process-exit-status p)) #t))
             (list (decode-process-exit-status (process-exit-status p)) #f)))))
+  )
+
+(define (install-database-primitives! def env)
   (def 'sqlite-open
     (lambda (path)
       (unless (string? path)
@@ -5879,6 +5923,9 @@
             (if (null? (car rows))
                 '()
                 (caar rows))))))
+  )
+
+(define (install-socket-primitives! def env)
   (def 'tcp-connect
     (lambda (host port)
       (unless (string? host)
@@ -6166,6 +6213,9 @@
       (guard (e (else #t))
         (gauche-connection-close (tls-connection-raw conn)))
       #t))
+  )
+
+(define (install-concurrency-net-primitives! def env)
   (def 'thread-spawn
     (lambda (fn . args)
       (unless (or (primitive? fn) (closure? fn))
@@ -6343,6 +6393,9 @@
                    body
                    (append (list ':receiver gauche-http-string-receiver) opts))
           resp-body))))
+  )
+
+(define (install-ffi-time-load-primitives! def env)
   (def 'ffi-call
     (lambda (library symbol-name return-type arg-types arg-values)
       (unless (string? library)
@@ -6431,6 +6484,9 @@
                 (register-feature! feature))
               (error "Feature is not provided" feature)))
         #t)))
+  )
+
+(define (install-core-clos-primitives! def env)
   (def 'format
     ;; ISLISP standard: (format output-stream format-string obj*)
     ;; output-stream: t → standard-output, nil → return string, output-port → write to port
@@ -6619,6 +6675,9 @@
   (def 'slot-value
     (lambda (obj slot)
       (instance-slot-ref obj slot)))
+  )
+
+(define (install-method-package-symbol-primitives! def env)
   ;; ---- Phase 7-A ----
   (def 'call-next-method
     (lambda args
@@ -6889,7 +6948,9 @@
   (def '%with-eo-helper
     (lambda (port thunk)
       (parameterize ((current-error-port port))
-        (apply-islisp thunk '())))))
+        (apply-islisp thunk '()))))
+  )
+
 
 (define *extended-primitive-symbols*
   '(debug break getenv setenv system system-timeout
