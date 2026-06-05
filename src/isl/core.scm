@@ -3737,6 +3737,7 @@
   (install-numeric-primitives! def env)
   (install-vector-array-primitives! def env)
   (install-list-primitives! def env)
+  (install-sequence-primitives! def env)
   (install-string-primitives! def env)
   (install-char-primitives! def env)
   (install-io-primitives! def env)
@@ -4488,6 +4489,9 @@
       (unless (pair? pair) (error "set-cdr: second argument must be a pair" pair))
       (set-cdr! pair val)
       val))
+  )
+
+(define (install-sequence-primitives! def env)
   ;; ISLISP §15.3: elt — element of a sequence (list, vector, or string)
   (def 'elt
     (lambda (seq z)
