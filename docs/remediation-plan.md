@@ -46,9 +46,10 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 ## 2. ネイティブ AOT バックエンド（最優先領域）
 
 `native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
-P0（誤出力是正）+ P1（and/or/case・数値・非局所制御・float・setq/ループ/unwind-protect）
-実施後: **32 SAME / 17 未対応 / 0 誤出力**。残る未対応は flet/labels、文字列・文字・
-ベクタ・配列、CLOS、dynamic/the/convert。
+P0+P1（and/or/case・数値・非局所制御・float・setq/ループ/unwind-protect）+ P2 データ型
+（文字・文字列・ベクタ）実施後: **39 SAME / 10 未対応 / 0 誤出力**。残る未対応は
+flet/labels、CLOS（defclass/defmethod）、例外（handler-case/ゼロ除算捕捉）、
+dynamic/the/convert。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
@@ -121,13 +122,15 @@ frontend は認識するが codegen が "unsupported operation" を出す:
 
 ### P2 — データ型の拡張
 
-- **文字列**: `string-append`（未定義）, `length` が文字列を「リストでない」と誤判定。
-  文字列値表現と文字列プリミティブを native runtime に追加。
-- **文字**: 文字リテラル `#\A` が "unsupported"、`char<` 未定義。文字型を追加。
-- **ベクタ/配列**: `vector`, `elt`, `create-array`, `aref` すべて未定義。
-  `ISL_V_VECTOR` を追加。
-- **例外**: `handler-case`、ゼロ除算の `<division-by-zero>` 捕捉が未対応
-  （非局所脱出基盤 P1 の上に構築）。
+- ✅ **文字**: `ISL_V_CHAR` を追加。リテラル `#\A`、`char= /= < > <= >=`、
+  `char->integer`/`integer->char`、印字（`#\A`）。
+- ✅ **文字列**: `string-append`、`string=`、`create-string`、`char-index`、
+  `length`/`elt` を文字列対応に（`elt` は文字を返す）。
+- ✅ **ベクタ/1 次元配列**: `ISL_V_VECTOR` を追加。`vector`、`create-vector`、
+  `create-array`(rank-1)、`elt`/`aref`/`vector-ref`、`set-elt`/`set-aref`、
+  `length`、印字（`#(...)`）。多次元配列はインタプリタのみ（native は rank-1）。
+- ⬜ **例外**: `handler-case`、ゼロ除算の `<division-by-zero>` 捕捉が未対応
+  （非局所脱出基盤の上に構築。`error`/コンディションのネイティブ表現が必要）。
 
 ### P2/P3 — オブジェクト・動的・型注釈
 

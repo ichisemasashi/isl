@@ -192,6 +192,8 @@
    ;; strtod it, sidestepping LLVM's exact hex-float literal requirement.
    ((and (real? v) (inexact? v))
     (list (indent 2 (string-append dst " = call ptr @isl_rt_make_float(ptr " (str-ptr (number->string v)) ")"))))
+   ((char? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_char(i64 " (number->string (char->integer v)) ")"))))
    ((eq? v #t)
     (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
    ((eq? v #f)
@@ -409,6 +411,7 @@
   (list
    "declare ptr @isl_rt_make_int(i64)"
    "declare ptr @isl_rt_make_float(ptr)"
+   "declare ptr @isl_rt_make_char(i64)"
    "declare ptr @isl_rt_make_symbol(ptr)"
    "declare ptr @isl_rt_make_string(ptr)"
    "declare ptr @isl_rt_nil()"

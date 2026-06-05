@@ -21,6 +21,8 @@ typedef enum {
   ISL_V_INT,
   ISL_V_RATIO,
   ISL_V_FLOAT,
+  ISL_V_CHAR,
+  ISL_V_VECTOR,
   ISL_V_BOOL,
   ISL_V_NIL,
   ISL_V_SYMBOL,
@@ -52,8 +54,13 @@ struct IslValue {
   union {
     int64_t i64;
     double f64;
+    int64_t ch;   /* ISL_V_CHAR: Unicode code point */
     int b;
     const char *str;
+    struct {
+      struct IslValue **items;
+      int64_t len;
+    } vec;        /* ISL_V_VECTOR: general vector */
     IslFunction *fn;
     struct {
       IslValue *car;
@@ -167,6 +174,25 @@ static IslValue *isl_make_rational(int64_t num, int64_t den) {
 static IslValue *isl_make_float(double d) {
   IslValue *v = isl_alloc_value(ISL_V_FLOAT);
   v->as.f64 = d;
+  return v;
+}
+
+static IslValue *isl_make_char(int64_t cp) {
+  IslValue *v = isl_alloc_value(ISL_V_CHAR);
+  v->as.ch = cp;
+  return v;
+}
+
+static IslValue *isl_make_vector_n(int64_t len, IslValue *fill) {
+  IslValue *v = isl_alloc_value(ISL_V_VECTOR);
+  v->as.vec.len = len;
+  v->as.vec.items =
+      (len > 0) ? (IslValue **)calloc((size_t)len, sizeof(IslValue *)) : NULL;
+  if (len > 0 && !v->as.vec.items) {
+    fprintf(stderr, "isl_rt: out of memory\n");
+    exit(2);
+  }
+  for (int64_t i = 0; i < len; i++) v->as.vec.items[i] = fill;
   return v;
 }
 
@@ -692,9 +718,182 @@ static IslValue *prim_length(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
   if (argc != 1) return isl_make_error("length: arity");
   IslValue *v = argv[0];
-  if (v && v->tag == ISL_V_NIL) return (IslValue *)isl_rt_make_int(0);
-  if (!isl_is_list(v)) return isl_make_error("length: not a proper list");
-  return (IslValue *)isl_rt_make_int(isl_list_length(v));
+  if (!v) return isl_make_error("length: bad argument");
+  switch (v->tag) {
+    case ISL_V_NIL:    return (IslValue *)isl_rt_make_int(0);
+    case ISL_V_STRING: return (IslValue *)isl_rt_make_int((int64_t)strlen(v->as.str));
+    case ISL_V_VECTOR: return (IslValue *)isl_rt_make_int(v->as.vec.len);
+    case ISL_V_CONS:
+      if (!isl_is_list(v)) return isl_make_error("length: not a proper list");
+      return (IslValue *)isl_rt_make_int(isl_list_length(v));
+    default: return isl_make_error("length: not a sequence");
+  }
+}
+
+/* ---- characters ---- */
+static IslValue *prim_char_cmp(const char *name, int32_t argc, IslValue **argv, int mode) {
+  if (argc != 2) return isl_make_error("char comparison: arity");
+  if (!argv[0] || argv[0]->tag != ISL_V_CHAR ||
+      !argv[1] || argv[1]->tag != ISL_V_CHAR) {
+    return isl_make_error(name);
+  }
+  int64_t a = argv[0]->as.ch, b = argv[1]->as.ch;
+  int ok = 0;
+  switch (mode) {
+    case 0: ok = (a == b); break;
+    case 1: ok = (a < b);  break;
+    case 2: ok = (a > b);  break;
+    case 3: ok = (a <= b); break;
+    case 4: ok = (a >= b); break;
+    case 5: ok = (a != b); break;
+  }
+  return ok ? g_true : g_false;
+}
+static IslValue *prim_char_eq (IslEnv *e, int32_t c, IslValue **a){(void)e; return prim_char_cmp("char=", c,a,0);}
+static IslValue *prim_char_ne (IslEnv *e, int32_t c, IslValue **a){(void)e; return prim_char_cmp("char/=",c,a,5);}
+static IslValue *prim_char_lt (IslEnv *e, int32_t c, IslValue **a){(void)e; return prim_char_cmp("char<", c,a,1);}
+static IslValue *prim_char_gt (IslEnv *e, int32_t c, IslValue **a){(void)e; return prim_char_cmp("char>", c,a,2);}
+static IslValue *prim_char_le (IslEnv *e, int32_t c, IslValue **a){(void)e; return prim_char_cmp("char<=",c,a,3);}
+static IslValue *prim_char_ge (IslEnv *e, int32_t c, IslValue **a){(void)e; return prim_char_cmp("char>=",c,a,4);}
+static IslValue *prim_char_to_int(IslEnv *e, int32_t c, IslValue **a) {
+  (void)e;
+  if (c != 1 || !a[0] || a[0]->tag != ISL_V_CHAR) return isl_make_error("char->integer: expected character");
+  return (IslValue *)isl_rt_make_int(a[0]->as.ch);
+}
+static IslValue *prim_int_to_char(IslEnv *e, int32_t c, IslValue **a) {
+  (void)e;
+  if (c != 1 || !a[0] || a[0]->tag != ISL_V_INT) return isl_make_error("integer->char: expected integer");
+  return isl_make_char(a[0]->as.i64);
+}
+
+/* ---- strings ---- */
+static IslValue *prim_string_append(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  size_t total = 0;
+  for (int32_t i = 0; i < argc; i++) {
+    if (!argv[i] || argv[i]->tag != ISL_V_STRING)
+      return isl_make_error("string-append: expected strings");
+    total += strlen(argv[i]->as.str);
+  }
+  char *buf = (char *)malloc(total + 1);
+  if (!buf) { fprintf(stderr, "isl_rt: out of memory\n"); exit(2); }
+  buf[0] = '\0';
+  for (int32_t i = 0; i < argc; i++) strcat(buf, argv[i]->as.str);
+  IslValue *v = isl_alloc_value(ISL_V_STRING);
+  v->as.str = buf;
+  return v;
+}
+static IslValue *prim_string_eq(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2 || argv[0]->tag != ISL_V_STRING || argv[1]->tag != ISL_V_STRING)
+    return isl_make_error("string=: expected strings");
+  return (strcmp(argv[0]->as.str, argv[1]->as.str) == 0) ? g_true : g_false;
+}
+static IslValue *prim_create_string(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc < 1 || argv[0]->tag != ISL_V_INT)
+    return isl_make_error("create-string: expected length");
+  int64_t n = argv[0]->as.i64;
+  if (n < 0) return isl_make_error("create-string: negative length");
+  char fill = (argc >= 2 && argv[1]->tag == ISL_V_CHAR) ? (char)argv[1]->as.ch : ' ';
+  char *buf = (char *)malloc((size_t)n + 1);
+  if (!buf) { fprintf(stderr, "isl_rt: out of memory\n"); exit(2); }
+  for (int64_t i = 0; i < n; i++) buf[i] = fill;
+  buf[n] = '\0';
+  IslValue *v = isl_alloc_value(ISL_V_STRING);
+  v->as.str = buf;
+  return v;
+}
+/* (char-index char string) -> index or nil */
+static IslValue *prim_char_index(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2 || argv[0]->tag != ISL_V_CHAR || argv[1]->tag != ISL_V_STRING)
+    return isl_make_error("char-index: expected (character string)");
+  const char *s = argv[1]->as.str;
+  for (int64_t i = 0; s[i]; i++)
+    if ((int64_t)(unsigned char)s[i] == argv[0]->as.ch)
+      return (IslValue *)isl_rt_make_int(i);
+  return (IslValue *)isl_rt_nil();
+}
+
+/* ---- vectors / general 1-D arrays ---- */
+static IslValue *prim_vector(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  IslValue *v = isl_make_vector_n(argc, (IslValue *)isl_rt_nil());
+  for (int32_t i = 0; i < argc; i++) v->as.vec.items[i] = argv[i];
+  return v;
+}
+static IslValue *prim_create_vector(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc < 1 || argv[0]->tag != ISL_V_INT)
+    return isl_make_error("create-vector: expected length");
+  int64_t n = argv[0]->as.i64;
+  if (n < 0) return isl_make_error("create-vector: negative length");
+  IslValue *fill = (argc >= 2) ? argv[1] : (IslValue *)isl_rt_nil();
+  return isl_make_vector_n(n, fill);
+}
+/* (create-array dims [fill]) — only rank-1 (a one-element dimension list). */
+static IslValue *prim_create_array(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc < 1) return isl_make_error("create-array: expected dimensions");
+  IslValue *dims = argv[0];
+  if (!dims || dims->tag != ISL_V_CONS || isl_list_length(dims) != 1 ||
+      dims->as.cons.car->tag != ISL_V_INT) {
+    return isl_make_error("create-array: only rank-1 dimensions supported");
+  }
+  int64_t n = dims->as.cons.car->as.i64;
+  IslValue *fill = (argc >= 2) ? argv[1] : (IslValue *)isl_rt_nil();
+  return isl_make_vector_n(n, fill);
+}
+/* element access shared by elt / aref / vector-ref (1-D) */
+static IslValue *isl_seq_ref(IslValue *seq, IslValue *idxv, const char *who) {
+  if (!idxv || idxv->tag != ISL_V_INT) return isl_make_error(who);
+  int64_t i = idxv->as.i64;
+  if (!seq) return isl_make_error(who);
+  switch (seq->tag) {
+    case ISL_V_VECTOR:
+      if (i < 0 || i >= seq->as.vec.len) return isl_make_error("index out of range");
+      return seq->as.vec.items[i];
+    case ISL_V_STRING: {
+      int64_t len = (int64_t)strlen(seq->as.str);
+      if (i < 0 || i >= len) return isl_make_error("index out of range");
+      return isl_make_char((int64_t)(unsigned char)seq->as.str[i]);
+    }
+    case ISL_V_CONS: {
+      IslValue *c = seq;
+      while (i-- > 0 && c->tag == ISL_V_CONS) c = c->as.cons.cdr;
+      if (!c || c->tag != ISL_V_CONS) return isl_make_error("index out of range");
+      return c->as.cons.car;
+    }
+    default: return isl_make_error(who);
+  }
+}
+static IslValue *prim_elt(IslEnv *e, int32_t c, IslValue **a) {
+  (void)e; if (c != 2) return isl_make_error("elt: arity");
+  return isl_seq_ref(a[0], a[1], "elt: bad sequence");
+}
+static IslValue *prim_aref(IslEnv *e, int32_t c, IslValue **a) {
+  (void)e; if (c != 2) return isl_make_error("aref: arity (only rank-1)");
+  return isl_seq_ref(a[0], a[1], "aref: bad array");
+}
+/* (set-elt value seq index) / (set-aref value array index) */
+static IslValue *isl_seq_set(IslValue *val, IslValue *seq, IslValue *idxv, const char *who) {
+  if (!idxv || idxv->tag != ISL_V_INT || !seq) return isl_make_error(who);
+  int64_t i = idxv->as.i64;
+  if (seq->tag == ISL_V_VECTOR) {
+    if (i < 0 || i >= seq->as.vec.len) return isl_make_error("index out of range");
+    seq->as.vec.items[i] = val;
+    return val;
+  }
+  return isl_make_error(who);
+}
+static IslValue *prim_set_elt(IslEnv *e, int32_t c, IslValue **a) {
+  (void)e; if (c != 3) return isl_make_error("set-elt: arity");
+  return isl_seq_set(a[0], a[1], a[2], "set-elt: bad sequence");
+}
+static IslValue *prim_set_aref(IslEnv *e, int32_t c, IslValue **a) {
+  (void)e; if (c != 3) return isl_make_error("set-aref: arity");
+  return isl_seq_set(a[0], a[1], a[2], "set-aref: bad array");
 }
 
 static IslValue *prim_reverse(IslEnv *env, int32_t argc, IslValue **argv) {
@@ -739,6 +938,7 @@ static int isl_eq(IslValue *a, IslValue *b) {
     case ISL_V_RATIO:  return a->as.ratio.num == b->as.ratio.num &&
                               a->as.ratio.den == b->as.ratio.den;
     case ISL_V_FLOAT:  return a->as.f64 == b->as.f64;
+    case ISL_V_CHAR:   return a->as.ch == b->as.ch;
     case ISL_V_BOOL:   return a->as.b == b->as.b;
     case ISL_V_NIL:    return 1;
     case ISL_V_SYMBOL: return strcmp(a->as.str, b->as.str) == 0;
@@ -975,6 +1175,27 @@ static void isl_write_value(IslValue *v, int readable) {
       printf("%s", buf);
       break;
     }
+    case ISL_V_CHAR:
+      if (readable) {
+        /* #\<char> readable syntax, with names for a few non-graphic chars */
+        switch (v->as.ch) {
+          case ' ':  printf("#\\space");   break;
+          case '\n': printf("#\\newline"); break;
+          case '\t': printf("#\\tab");      break;
+          default:   printf("#\\%c", (int)v->as.ch); break;
+        }
+      } else {
+        printf("%c", (int)v->as.ch);
+      }
+      break;
+    case ISL_V_VECTOR:
+      printf("#(");
+      for (int64_t i = 0; i < v->as.vec.len; i++) {
+        if (i > 0) printf(" ");
+        isl_write_value(v->as.vec.items[i], readable);
+      }
+      printf(")");
+      break;
     case ISL_V_BOOL:
       printf(v->as.b ? "#t" : "#f");
       break;
@@ -1037,6 +1258,11 @@ void *isl_rt_make_int(int64_t x) {
    LLVM's hex-float literal requirement; strtod round-trips the reader's value). */
 void *isl_rt_make_float(void *p) {
   return isl_make_float(strtod((const char *)p, NULL));
+}
+
+/* Build a character literal from its code point. */
+void *isl_rt_make_char(int64_t cp) {
+  return isl_make_char(cp);
 }
 
 void *isl_rt_make_symbol(void *p) {
@@ -1205,6 +1431,29 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "expt", isl_make_primitive("expt", prim_expt));
   isl_define_raw(env, "floatp", isl_make_primitive("floatp", prim_floatp));
   isl_define_raw(env, "float", isl_make_primitive("float", prim_float));
+  /* characters */
+  isl_define_raw(env, "char=",  isl_make_primitive("char=",  prim_char_eq));
+  isl_define_raw(env, "char/=", isl_make_primitive("char/=", prim_char_ne));
+  isl_define_raw(env, "char<",  isl_make_primitive("char<",  prim_char_lt));
+  isl_define_raw(env, "char>",  isl_make_primitive("char>",  prim_char_gt));
+  isl_define_raw(env, "char<=", isl_make_primitive("char<=", prim_char_le));
+  isl_define_raw(env, "char>=", isl_make_primitive("char>=", prim_char_ge));
+  isl_define_raw(env, "char->integer", isl_make_primitive("char->integer", prim_char_to_int));
+  isl_define_raw(env, "integer->char", isl_make_primitive("integer->char", prim_int_to_char));
+  /* strings */
+  isl_define_raw(env, "string-append", isl_make_primitive("string-append", prim_string_append));
+  isl_define_raw(env, "string=", isl_make_primitive("string=", prim_string_eq));
+  isl_define_raw(env, "create-string", isl_make_primitive("create-string", prim_create_string));
+  isl_define_raw(env, "char-index", isl_make_primitive("char-index", prim_char_index));
+  /* vectors / 1-D arrays */
+  isl_define_raw(env, "vector", isl_make_primitive("vector", prim_vector));
+  isl_define_raw(env, "create-vector", isl_make_primitive("create-vector", prim_create_vector));
+  isl_define_raw(env, "create-array", isl_make_primitive("create-array", prim_create_array));
+  isl_define_raw(env, "elt", isl_make_primitive("elt", prim_elt));
+  isl_define_raw(env, "aref", isl_make_primitive("aref", prim_aref));
+  isl_define_raw(env, "vector-ref", isl_make_primitive("vector-ref", prim_aref));
+  isl_define_raw(env, "set-elt", isl_make_primitive("set-elt", prim_set_elt));
+  isl_define_raw(env, "set-aref", isl_make_primitive("set-aref", prim_set_aref));
   isl_define_raw(env, "print", isl_make_primitive("print", prim_print));
   isl_define_raw(env, "not", isl_make_primitive("not", prim_not));
   isl_define_raw(env, "funcall", isl_make_primitive("funcall", prim_funcall));
