@@ -950,6 +950,26 @@ static IslValue *prim_append(IslEnv *env, int32_t argc, IslValue **argv) {
   return head;
 }
 
+/* (member obj list) — tail of list starting at the first eql element, or nil. */
+static int isl_eq(IslValue *a, IslValue *b);
+static IslValue *prim_member(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("member: arity");
+  for (IslValue *p = argv[1]; p && p->tag == ISL_V_CONS; p = p->as.cons.cdr)
+    if (isl_eq(argv[0], p->as.cons.car)) return p;
+  return (IslValue *)isl_rt_nil();
+}
+/* (assoc key alist) — first (key . v) pair whose car is eql key, or nil. */
+static IslValue *prim_assoc(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("assoc: arity");
+  for (IslValue *p = argv[1]; p && p->tag == ISL_V_CONS; p = p->as.cons.cdr) {
+    IslValue *e = p->as.cons.car;
+    if (e && e->tag == ISL_V_CONS && isl_eq(argv[0], e->as.cons.car)) return e;
+  }
+  return (IslValue *)isl_rt_nil();
+}
+
 /* Object identity for eq/eql.  Symbols compare by name (the runtime does not
    intern), integers and booleans by value; everything else by pointer. */
 static int isl_eq(IslValue *a, IslValue *b) {
@@ -1765,6 +1785,8 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "length", isl_make_primitive("length", prim_length));
   isl_define_raw(env, "reverse", isl_make_primitive("reverse", prim_reverse));
   isl_define_raw(env, "append", isl_make_primitive("append", prim_append));
+  isl_define_raw(env, "member", isl_make_primitive("member", prim_member));
+  isl_define_raw(env, "assoc", isl_make_primitive("assoc", prim_assoc));
   isl_define_raw(env, "eq", isl_make_primitive("eq", prim_eq_id));
   isl_define_raw(env, "eql", isl_make_primitive("eql", prim_eq_id));
   /* non-local exit primitives that lowering rewrites block/catch/etc. into */
