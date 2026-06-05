@@ -7020,6 +7020,20 @@
         (package-export! *current-package* 'standard-output)
         (package-export! *current-package* 'error-output))
       ;; ---- Phase 7-D: root OOP classes + built-in class hierarchy ----
+      (install-builtin-classes! env islisp)
+      ;; ---- Phase 7-E: initialize-object generic function ----
+      (install-condition-system! env islisp)
+      ;; ---- ISLISP §16.3/§16.4: when/unless macros ----
+      (install-standard-macros! env)
+      (when (strict-profile?)
+        (disable-extended-primitives! env))
+      ;; Lightweight CFFI-compatible facade (extended profile only).
+      (install-ffi-facade! env islisp)
+      (set! *current-package* user))
+    env)))
+
+;; make-initial-env のサブステップ（初期化処理を単一責務へ分離）
+(define (install-builtin-classes! env islisp)
       ;; Helper: intern name in ISLISP package, create class, register it.
       (let* ((mk (lambda (raw-name supers)
                    (let* ((name (resolve-binding-symbol raw-name))
@@ -7057,7 +7071,10 @@
                     <stream> <basic-array> <basic-vector> <general-vector>
                     <string> <basic-array*> <general-array*> <basic-list> <list> <cons> <null>
                     <standard-object> <built-in-class> <standard-class>)))
-      ;; ---- Phase 7-E: initialize-object generic function ----
+  )
+
+;; make-initial-env のサブステップ（初期化処理を単一責務へ分離）
+(define (install-condition-system! env islisp)
       (for-each (lambda (form) (eval-islisp form env))
         '((defgeneric initialize-object (obj initargs))
           (defmethod initialize-object ((obj <standard-object>) initargs) obj)))
@@ -7095,7 +7112,10 @@
           <unbound-variable> <undefined-function>
           <arity-error> <index-out-of-range> <type-error>
           <simple-error> <stream-error> <end-of-stream> <storage-exhausted>))
-      ;; ---- ISLISP §16.3/§16.4: when/unless macros ----
+  )
+
+;; make-initial-env のサブステップ（初期化処理を単一責務へ分離）
+(define (install-standard-macros! env)
       (eval-islisp
        '(defmacro when (condition &rest body)
           (list 'if condition (cons 'progn body) nil))
@@ -7149,9 +7169,10 @@
           (list '%with-eo-helper stream (list 'lambda '() (cons 'progn body))))
        env)
       (package-export! *current-package* 'with-error-output)
-      (when (strict-profile?)
-        (disable-extended-primitives! env))
-      ;; Lightweight CFFI-compatible facade (extended profile only).
+  )
+
+;; make-initial-env のサブステップ（初期化処理を単一責務へ分離）
+(define (install-ffi-facade! env islisp)
       (unless (strict-profile?)
         (let ((saved *current-package*)
               (ffi (ensure-package! "FFI"))
@@ -7200,8 +7221,8 @@
           (package-export! ffi 'define-foreign-function)
           (package-export! cffi 'define-foreign-function)
           (set! *current-package* saved)))
-      (set! *current-package* user))
-    env)))
+  )
+
 
 ;;; ----------------------------------------------------------------
 ;;; ISLISP reader layer
