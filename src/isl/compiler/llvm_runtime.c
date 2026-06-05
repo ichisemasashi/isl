@@ -83,6 +83,7 @@ struct IslValue {
       const char *name;
       struct IslValue **specs;    /* per-method specializer class value (or NULL) */
       struct IslValue **fns;      /* per-method handler closure */
+      int *quals;                 /* per-method qualifier: 0=primary 1=before 2=after 3=around */
       int n;
     } gen;        /* ISL_V_GENERIC */
     struct {
@@ -1402,17 +1403,27 @@ void *isl_rt_defgeneric(void *envp, void *namep) {
   IslValue *nm = (IslValue *)namep;
   g = isl_alloc_value(ISL_V_GENERIC);
   g->as.gen.name = isl_strdup(nm->as.str);
-  g->as.gen.specs = NULL; g->as.gen.fns = NULL; g->as.gen.n = 0;
+  g->as.gen.specs = NULL; g->as.gen.fns = NULL; g->as.gen.quals = NULL; g->as.gen.n = 0;
   isl_rt_define(envp, namep, g);
   return namep;
 }
-void *isl_rt_defmethod(void *envp, void *namep, void *specp, void *closurep) {
+/* map a qualifier symbol string to a method-combination code */
+static int isl_qualifier_code(IslValue *q) {
+  if (!q || q->tag != ISL_V_SYMBOL || !q->as.str || !q->as.str[0]) return 0;
+  const char *s = q->as.str;
+  if (s[0] == ':') s++;            /* tolerate :before / before */
+  if (strcmp(s, "before") == 0) return 1;
+  if (strcmp(s, "after") == 0) return 2;
+  if (strcmp(s, "around") == 0) return 3;
+  return 0;
+}
+void *isl_rt_defmethod(void *envp, void *namep, void *specp, void *closurep, void *qualp) {
   IslValue *g = (IslValue *)isl_rt_lookup(envp, namep);
   if (!g || g->tag != ISL_V_GENERIC) {
     IslValue *nm = (IslValue *)namep;
     g = isl_alloc_value(ISL_V_GENERIC);
     g->as.gen.name = isl_strdup(nm->as.str);
-    g->as.gen.specs = NULL; g->as.gen.fns = NULL; g->as.gen.n = 0;
+    g->as.gen.specs = NULL; g->as.gen.fns = NULL; g->as.gen.quals = NULL; g->as.gen.n = 0;
     isl_rt_define(envp, namep, g);
   }
   IslValue *spec = (IslValue *)specp;
@@ -1421,8 +1432,10 @@ void *isl_rt_defmethod(void *envp, void *namep, void *specp, void *closurep) {
   int n = g->as.gen.n;
   g->as.gen.specs = (IslValue **)realloc(g->as.gen.specs, (size_t)(n + 1) * sizeof(IslValue *));
   g->as.gen.fns = (IslValue **)realloc(g->as.gen.fns, (size_t)(n + 1) * sizeof(IslValue *));
+  g->as.gen.quals = (int *)realloc(g->as.gen.quals, (size_t)(n + 1) * sizeof(int));
   g->as.gen.specs[n] = speccls;
   g->as.gen.fns[n] = (IslValue *)closurep;
+  g->as.gen.quals[n] = isl_qualifier_code((IslValue *)qualp);
   g->as.gen.n = n + 1;
   return namep;
 }
@@ -1488,24 +1501,32 @@ static IslValue *prim_instancep(IslEnv *env, int32_t argc, IslValue **argv) {
   return (isl_class_distance(obj->as.inst.cls, cls) >= 0) ? g_true : g_false;
 }
 /* Active generic-call context, so call-next-method / next-method-p can walk the
-   sorted list of applicable primary methods. */
+   effective method.  An :around chain (kind=1) delegates to the qualified core
+   (before* + primary chain + after*) when its arounds run out; a primary chain
+   (kind=0) advances through less-specific primaries. */
 typedef struct MethodCtx {
-  IslValue **fns; int n; int idx;
+  int kind;                  /* 0 = primary chain, 1 = around chain */
+  IslValue **fns; int n; int idx;     /* the chain being walked */
   IslValue **argv; int32_t argc;
+  IslEnv *env;
+  /* qualified core (only meaningful for an around chain) */
+  IslValue **befores; int nbefore;
+  IslValue **primaries; int nprimary;
+  IslValue **afters; int nafter;
   struct MethodCtx *next;
 } MethodCtx;
 static MethodCtx *g_method_ctx = NULL;
 
-/* Sort applicable methods (most specific first) and call the first one, with a
-   context that call-next-method can advance through. */
-static IslValue *isl_generic_call(IslEnv *env, IslValue *gen, int32_t argc, IslValue **argv) {
-  IslValue *argcls = (argc > 0 && argv[0] && argv[0]->tag == ISL_V_INSTANCE)
-                         ? argv[0]->as.inst.cls : NULL;
+/* Collect applicable methods of qualifier code `qual`, sorted most-specific
+   first.  Returns count; *out receives a malloc'd array (caller frees). */
+static int isl_collect_methods(IslValue *gen, IslValue *argcls, int qual,
+                               IslValue ***out) {
   int total = gen->as.gen.n;
   IslValue **fns = (IslValue **)malloc((size_t)(total ? total : 1) * sizeof(IslValue *));
   int *dist = (int *)malloc((size_t)(total ? total : 1) * sizeof(int));
   int m = 0;
   for (int i = 0; i < total; i++) {
+    if (gen->as.gen.quals[i] != qual) continue;
     IslValue *spec = gen->as.gen.specs[i];
     int d;
     if (!spec) { d = 1000000; }
@@ -1513,35 +1534,94 @@ static IslValue *isl_generic_call(IslEnv *env, IslValue *gen, int32_t argc, IslV
     else { continue; }
     fns[m] = gen->as.gen.fns[i]; dist[m] = d; m++;
   }
-  if (m == 0) { free(fns); free(dist); return isl_make_error("no applicable method"); }
-  for (int i = 1; i < m; i++) { /* insertion sort by distance asc */
+  for (int i = 1; i < m; i++) { /* insertion sort by distance asc (most specific first) */
     IslValue *f = fns[i]; int d = dist[i]; int j = i - 1;
     while (j >= 0 && dist[j] > d) { fns[j+1] = fns[j]; dist[j+1] = dist[j]; j--; }
     fns[j+1] = f; dist[j+1] = d;
   }
+  free(dist);
+  *out = fns;
+  return m;
+}
+
+/* Run the qualified core: all before methods (most specific first), then the
+   primary chain, then all after methods (least specific first).  Returns the
+   primary value. */
+static IslValue *isl_run_core(IslEnv *env, int32_t argc, IslValue **argv,
+                              IslValue **befores, int nbefore,
+                              IslValue **primaries, int nprimary,
+                              IslValue **afters, int nafter) {
+  if (nprimary == 0) return isl_make_error("no applicable primary method");
+  for (int i = 0; i < nbefore; i++) (void)isl_rt_call(env, befores[i], argc, argv);
   MethodCtx ctx;
-  ctx.fns = fns; ctx.n = m; ctx.idx = 0; ctx.argv = argv; ctx.argc = argc; ctx.next = g_method_ctx;
+  ctx.kind = 0; ctx.fns = primaries; ctx.n = nprimary; ctx.idx = 0;
+  ctx.argv = argv; ctx.argc = argc; ctx.env = env;
+  ctx.befores = NULL; ctx.nbefore = 0; ctx.primaries = NULL; ctx.nprimary = 0;
+  ctx.afters = NULL; ctx.nafter = 0;
+  ctx.next = g_method_ctx;
   g_method_ctx = &ctx;
-  IslValue *r = (IslValue *)isl_rt_call(env, fns[0], argc, argv);
+  IslValue *r = (IslValue *)isl_rt_call(env, primaries[0], argc, argv);
   g_method_ctx = ctx.next;
-  free(fns); free(dist);
+  for (int i = nafter - 1; i >= 0; i--) (void)isl_rt_call(env, afters[i], argc, argv);
+  return r;
+}
+
+/* Partition methods by qualifier, then run the effective method. */
+static IslValue *isl_generic_call(IslEnv *env, IslValue *gen, int32_t argc, IslValue **argv) {
+  IslValue *argcls = (argc > 0 && argv[0] && argv[0]->tag == ISL_V_INSTANCE)
+                         ? argv[0]->as.inst.cls : NULL;
+  IslValue **arounds, **befores, **primaries, **afters;
+  int na = isl_collect_methods(gen, argcls, 3, &arounds);
+  int nb = isl_collect_methods(gen, argcls, 1, &befores);
+  int np = isl_collect_methods(gen, argcls, 0, &primaries);
+  int nf = isl_collect_methods(gen, argcls, 2, &afters);
+  IslValue *r;
+  if (na == 0 && np == 0) {
+    r = isl_make_error("no applicable method");
+  } else if (na > 0) {
+    MethodCtx ctx;
+    ctx.kind = 1; ctx.fns = arounds; ctx.n = na; ctx.idx = 0;
+    ctx.argv = argv; ctx.argc = argc; ctx.env = env;
+    ctx.befores = befores; ctx.nbefore = nb;
+    ctx.primaries = primaries; ctx.nprimary = np;
+    ctx.afters = afters; ctx.nafter = nf;
+    ctx.next = g_method_ctx;
+    g_method_ctx = &ctx;
+    r = (IslValue *)isl_rt_call(env, arounds[0], argc, argv);
+    g_method_ctx = ctx.next;
+  } else {
+    r = isl_run_core(env, argc, argv, befores, nb, primaries, np, afters, nf);
+  }
+  free(arounds); free(befores); free(primaries); free(afters);
   return r;
 }
 static IslValue *prim_call_next_method(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)argc; (void)argv;
   MethodCtx *ctx = g_method_ctx;
   if (!ctx) return isl_make_error("call-next-method: no method context");
-  if (ctx->idx + 1 >= ctx->n) return isl_make_error("call-next-method: no next method");
-  int saved = ctx->idx;
-  ctx->idx = saved + 1;
-  IslValue *r = (IslValue *)isl_rt_call(env, ctx->fns[ctx->idx], ctx->argc, ctx->argv);
-  ctx->idx = saved;
-  return r;
+  if (ctx->idx + 1 < ctx->n) {
+    int saved = ctx->idx;
+    ctx->idx = saved + 1;
+    IslValue *r = (IslValue *)isl_rt_call(ctx->env, ctx->fns[ctx->idx], ctx->argc, ctx->argv);
+    ctx->idx = saved;
+    return r;
+  }
+  if (ctx->kind == 1) {
+    /* arounds exhausted: delegate to before* + primary chain + after* */
+    return isl_run_core(ctx->env, ctx->argc, ctx->argv,
+                        ctx->befores, ctx->nbefore,
+                        ctx->primaries, ctx->nprimary,
+                        ctx->afters, ctx->nafter);
+  }
+  return isl_make_error("call-next-method: no next method");
 }
 static IslValue *prim_next_method_p(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env; (void)argc; (void)argv;
   MethodCtx *ctx = g_method_ctx;
-  return (ctx && ctx->idx + 1 < ctx->n) ? g_true : g_false;
+  if (!ctx) return g_false;
+  if (ctx->idx + 1 < ctx->n) return g_true;
+  if (ctx->kind == 1 && ctx->nprimary > 0) return g_true;
+  return g_false;
 }
 
 /* ---- dynamic (special) variables ---- */

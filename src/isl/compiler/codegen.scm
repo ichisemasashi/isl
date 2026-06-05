@@ -251,6 +251,7 @@
 (define (emit-defmethod dst payload cg-ref)
   ;; payload = (name qualifier param-specs body)
   (let* ((name (list-ref payload 0))
+         (qualifier (list-ref payload 1))
          (param-specs (list-ref payload 2))
          (body (list-ref payload 3))
          (params (map (lambda (ps) (if (pair? ps) (car ps) ps)) param-specs))
@@ -259,14 +260,15 @@
     (receive (fname arity) (cg-enqueue-lambda! params body)
       (receive (nsym nlines) (emit-mksym (symbol->string name) cg-ref)
         (receive (ssym slines) (emit-mksym (if spec (symbol->string spec) "") cg-ref)
-          (let ((clo (cg-next-name! cg-ref)))
-            (append
-             nlines slines
-             (list
-              (indent 2 (string-append clo " = call ptr @isl_rt_make_closure(ptr @" fname
-                                       ", i32 " (number->string arity) ", ptr %env)"))
-              (indent 2 (string-append dst " = call ptr @isl_rt_defmethod(ptr %env, ptr "
-                                       nsym ", ptr " ssym ", ptr " clo ")"))))))))))
+          (receive (qsym qlines) (emit-mksym (if qualifier (symbol->string qualifier) "") cg-ref)
+            (let ((clo (cg-next-name! cg-ref)))
+              (append
+               nlines slines qlines
+               (list
+                (indent 2 (string-append clo " = call ptr @isl_rt_make_closure(ptr @" fname
+                                         ", i32 " (number->string arity) ", ptr %env)"))
+                (indent 2 (string-append dst " = call ptr @isl_rt_defmethod(ptr %env, ptr "
+                                         nsym ", ptr " ssym ", ptr " clo ", ptr " qsym ")")))))))))))
 
 ;; define an accessor reader `(lambda (obj) (%slot-read obj 'slot))` as a global
 (define (emit-accessor-def reader-name slot-name cg-ref)
@@ -561,7 +563,7 @@
    "declare ptr @isl_rt_class_add_slot(ptr, ptr, ptr, ptr)"
    "declare ptr @isl_rt_class_finalize(ptr, ptr)"
    "declare ptr @isl_rt_defgeneric(ptr, ptr)"
-   "declare ptr @isl_rt_defmethod(ptr, ptr, ptr, ptr)"
+   "declare ptr @isl_rt_defmethod(ptr, ptr, ptr, ptr, ptr)"
    "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
    "declare i1 @isl_rt_truthy(ptr)"
    "declare ptr @isl_rt_unsupported(ptr)"

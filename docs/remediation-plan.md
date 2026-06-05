@@ -48,8 +48,14 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 `native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
 全 P0〜P3（制御・数値・float・データ型・the/convert/dynamic・例外・CLOS）実施後:
 **49 SAME / 0 未対応 / 0 誤出力 / 0 DIFF（全 49 項目）**。native-gap-probe の全項目が
-インタプリタと出力一致。残るは些末な未対応のみ（ベクタリテラル `#(...)` の定数構築、
-多次元配列の native 構築、CLOS の高度機能）で、いずれも誤出力ではなく明示エラー化済み。
+インタプリタと出力一致。さらに「残りの軽微な制限」を解消済み:
+ベクタリテラル `#(...)` の定数構築（ネスト・空ベクタ含む）、`call-next-method`/
+`next-method-p`（多段継承チェーン）、多次元配列の native 構築（`create-array` rank≥2・
+`aref`/`set-aref`/`array-dimensions`・印字）、メソッド修飾子 `:before`/`:after`/
+`:around`（標準メソッド結合）を実装し、いずれもインタプリタと出力一致。
+回帰は `test/compiler/native-minor-smoke.scm`（17 ケース）でカバー。
+残る未対応は `setf` の汎用 place（フロントエンドの `invalid-special`、両バックエンド共通）
+のみで、誤出力ではなく明示エラー化済み。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
@@ -130,7 +136,8 @@ frontend は認識するが codegen が "unsupported operation" を出す:
   `length`/`elt` を文字列対応に（`elt` は文字を返す）。
 - ✅ **ベクタ/1 次元配列**: `ISL_V_VECTOR` を追加。`vector`、`create-vector`、
   `create-array`(rank-1)、`elt`/`aref`/`vector-ref`、`set-elt`/`set-aref`、
-  `length`、印字（`#(...)`）。多次元配列はインタプリタのみ（native は rank-1）。
+  `length`、印字（`#(...)`）。ベクタリテラル `#(...)` の定数構築、多次元配列
+  （rank≥2、`array-dimensions`、行優先 flat storage）も native 対応済み。
 - ✅ **例外**: `handler-case` / `error` / ゼロ除算の `<division-by-zero>` 捕捉 …
   **対応済み**。条件のネイティブ表現（`ISL_V_CONDITION`：クラス＋メッセージ＋
   irritants）を追加し、`error` は `<simple-error>` を、`/`・`mod` のゼロ除算は
@@ -148,8 +155,12 @@ frontend は認識するが codegen が "unsupported operation" を出す:
   codegen のみ**（emit-rhs で本体・アクセサを cg-enqueue-lambda! で outline）で
   処理し、共有 lowering と JIT の CLOS には一切触れない（JIT は従来どおり
   runtime-eval-special でフル CLOS）。
-  既知の制限: `call-next-method`、`:before`/`:after`/`:around` 修飾子、多重
-  ディスパッチ、setf アクセサは未実装（単一ディスパッチ・読み取りアクセサのみ）。
+  `call-next-method`/`next-method-p`（MethodCtx スタックで多段継承チェーンを
+  距離順に辿る）、メソッド修飾子 `:before`/`:after`/`:around`（標準メソッド結合：
+  around→before→primary→after の順、before は最特定優先・after は最汎用優先、
+  around 枯渇時は qualified core に委譲）も native 対応済み。
+  残る制限: 多重ディスパッチ（第 1 引数のみ）、setf アクセサ（フロントエンドの
+  `invalid-special` 制限で両バックエンド共通）。
 - ✅ `dynamic`/`dynamic-let`/`defdynamic`, `the`/`assure`, `convert` … **対応済み**。
   動的変数は専用テーブル（`%dynamic-get`/`%dynamic-set`、defdynamic は
   `ll-define-dynamic` で起動時初期化）。dynamic-let は値保存＋unwind-protect で
