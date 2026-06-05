@@ -775,20 +775,41 @@
                 (string=? bare "condition")
                 (string=? bare "serious-condition"))))))))
 
+;; ---- install-primitives! が用いる共有ヘルパ（純粋・env 非依存） ----
+(define (rt-char rv who)
+  (let ((v (runtime-value->host rv)))
+    (unless (char? v) (runtime-raise 'type-error (string-append who " expects character") rv))
+    v))
+;; ---- 5: EOF-stream helper ----
+(define (rt-eof-stream-error who)
+  (with-module isl.core
+    (isl-signal-condition
+     (make-isl-condition
+      (resolve-binding-symbol '<end-of-stream>)
+      (string-append "end-of-stream in " who) #f '()))))
+
 (define (install-primitives! env)
   (define (def name proc)
     (env-define! env name (make-fn-value (make-primitive name proc))))
-  (define (rt-char rv who)
-    (let ((v (runtime-value->host rv)))
-      (unless (char? v) (runtime-raise 'type-error (string-append who " expects character") rv))
-      v))
-  ;; ---- 5: EOF-stream helper ----
-  (define (rt-eof-stream-error who)
-    (with-module isl.core
-      (isl-signal-condition
-       (make-isl-condition
-        (resolve-binding-symbol '<end-of-stream>)
-        (string-append "end-of-stream in " who) #f '()))))
+  ;; テーマ別インストーラ（登録順は従来と同一）
+  (install-arithmetic-primitives! def)
+  (install-basic-data-primitives! def)
+  (install-system-misc-primitives! def)
+  (install-control-flow-primitives! def)
+  (install-io-primitives! def)
+  (install-condition-primitives! def)
+  (install-clos-primitives! def)
+  (install-numeric-library-primitives! def)
+  (install-list-primitives! def)
+  (install-string-primitives! def)
+  (install-char-primitives! def)
+  (install-vector-array-primitives! def)
+  (install-standard-accessor-primitives! def)
+  (install-standard-sequence-extra-primitives! def)
+  (install-with-standard-primitives! def)
+  )
+
+(define (install-arithmetic-primitives! def)
   (def '+
     (lambda (args state)
       (runtime-arith "+" + 0 args)))
@@ -946,6 +967,9 @@
         (runtime-raise 'arity "oddp expects 1 argument" args))
       (host->runtime-value
        (if (zero? (modulo (runtime-integer (car args) "oddp") 2)) '() #t))))
+  )
+
+(define (install-basic-data-primitives! def)
   (def 'list
     (lambda (args state)
       (host->runtime-value (map runtime-value->host args))))
@@ -1203,6 +1227,9 @@
           (if p
               (host->runtime-value p)
               (host->runtime-value '()))))))
+  )
+
+(define (install-system-misc-primitives! def)
   (def 'probe-file
     (lambda (args state)
       (unless (= (length args) 1)
@@ -1275,6 +1302,9 @@
           (runtime-raise 'index-out-of-range "vector-set!: index out of range" (cadr args)))
         (vector-set! v i val)
         (caddr args))))
+  )
+
+(define (install-control-flow-primitives! def)
   (def 'funcall
     (lambda (args state)
       (unless (>= (length args) 1)
@@ -1405,6 +1435,9 @@
       (unless (= (length args) 1)
         (runtime-raise 'arity "not expects 1 argument" args))
       (host->runtime-value (if (runtime-truthy? (car args)) '() #t))))
+  )
+
+(define (install-io-primitives! def)
   ;; ---- 4-B: print (stream-aware), write, terpri ----
   (def 'print
     (lambda (args state)
@@ -1728,6 +1761,9 @@
       (unless (= (length args) 1)
         (runtime-raise 'arity "output-stream-p expects 1 argument" args))
       (host->runtime-value (if (output-port? (runtime-value->host (car args))) #t '()))))
+  )
+
+(define (install-condition-primitives! def)
   ;; ---- Phase 5: condition system ----
   ;; Helpers from isl.core (already imported via (use isl.core))
   (def 'signal-condition
@@ -1984,6 +2020,9 @@
       (let ((obj (runtime-value->host (car args)))
             (slot (runtime-value->host (cadr args))))
         (host->runtime-value (rt-instance-slot-ref obj slot)))))
+  )
+
+(define (install-clos-primitives! def)
   ;; ---- Phase 7-A ----
   (def 'call-next-method
     (lambda (args state)
@@ -2490,6 +2529,9 @@
         (gauche-mutex-unlock! m)
         (host->runtime-value #t))))
 
+  )
+
+(define (install-numeric-library-primitives! def)
   ;; ---- Phase 1-A: 算術関数 ----
   (def 'abs
     (lambda (args state)
@@ -2722,6 +2764,9 @@
           (host->runtime-value (atan y x))))
        (else (runtime-raise 'arity "atan expects 1 or 2 arguments" args)))))
 
+  )
+
+(define (install-list-primitives! def)
   ;; ---- Phase 2-A: リスト関数 ----
   (def 'reverse
     (lambda (args state)
@@ -3152,6 +3197,9 @@
                                            (host->runtime-value b))
                                      state))))))))
 
+  )
+
+(define (install-string-primitives! def)
   ;; ---- Phase 2-B: 文字列関数 ----
   (def 'string-length
     (lambda (args state)
@@ -3227,6 +3275,9 @@
           (runtime-raise 'type-error "list->string: all elements must be characters" (car args)))
         (host->runtime-value (list->string lst)))))
 
+  )
+
+(define (install-char-primitives! def)
   ;; ---- Phase 2-C: 文字比較関数 ----
   (def 'char=
     (lambda (args state)
@@ -3269,6 +3320,9 @@
         (runtime-raise 'arity "char-downcase expects 1 argument" args))
       (host->runtime-value (char-downcase (rt-char (car args) "char-downcase")))))
 
+  )
+
+(define (install-vector-array-primitives! def)
   ;; ---- Phase 2-D: ベクター ISLISP 標準名 ----
   (def 'create-vector
     (lambda (args state)
@@ -3338,6 +3392,9 @@
         (runtime-raise 'arity "array-dimensions expects 1 argument" args))
       (let ((v (runtime-vector (car args) "array-dimensions")))
         (host->runtime-value (list (vector-length v))))))
+  )
+
+(define (install-standard-accessor-primitives! def)
   ;; ---- Missing ISLISP standard primitives ----
   (def 'apply
     (lambda (args state)
@@ -3526,6 +3583,9 @@
         (unless (char? c)
           (runtime-raise 'type-error "char-lower-case-p: char required" c))
         (host->runtime-value (if (char-lower-case? c) #t '())))))
+  )
+
+(define (install-standard-sequence-extra-primitives! def)
   (def 'some
     (lambda (args state)
       (unless (>= (length args) 2)
@@ -3829,6 +3889,9 @@
              (units (frontend-compile-forms (list form) (state-frontend-env state))))
         (runtime-load-units! state units)
         (state-last-value state))))
+  )
+
+(define (install-with-standard-primitives! def)
   ;; ---- ISLISP §18.2: with-standard-input/output/error-output helpers ----
   (def '%with-si-helper
     (lambda (args state)
@@ -3861,6 +3924,7 @@
         (parameterize ((current-error-port port))
           (runtime-apply thunk '() state)))))
   )
+
 
 (define (runtime-eval-special op payload env state)
   ;; ---- 5-F: tag matching with isl-condition class hierarchy ----
