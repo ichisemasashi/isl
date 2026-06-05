@@ -163,6 +163,15 @@
         ((eq? sop 'go) (lower-go payload st label))
         ((eq? sop 'flet) (lower-flet payload st label))
         ((eq? sop 'labels) (lower-labels payload st label))
+        ;; the/assure: assert the value's class (%the checks built-in classes;
+        ;; unknown classes pass through) and return it.
+        ((eq? sop 'the)
+         (lower-expr (mk-call '%the (list 'const (car payload)) (cadr payload)) st label))
+        ((eq? sop 'assure)
+         (lower-expr (mk-call '%the (list 'const (car payload)) (cadr payload)) st label))
+        ((eq? sop 'dynamic)
+         (lower-expr (mk-call '%dynamic-get (list 'const (car payload))) st label))
+        ((eq? sop 'dynamic-let) (lower-dynamic-let payload st label))
         ((eq? sop 'unwind-protect)
          (lower-expr (list 'call (list 'var '%unwind-protect)
                            (list 'lambda '() (car payload))
@@ -562,6 +571,38 @@
                        bindings))
          (form (list 'special 'let
                      (list placeholders (apply mk-seq (append assigns (list body)))))))
+    (lower-expr form st label)))
+
+;; ---- dynamic variables ----
+;; dynamic-let reduces to: save current values + evaluate new values (in the
+;; outer dynamic env), then set the new values, run body, and restore on any
+;; exit via unwind-protect.  %dynamic-get / %dynamic-set are runtime primitives.
+(define (lower-dynamic-let payload st label)
+  (let* ((bindings (car payload))
+         (body (cadr payload))
+         (saves (map (lambda (b) (cons (car b) (fresh-loop-sym st "dyn-old"))) bindings))
+         (vals  (map (lambda (b) (cons (car b) (fresh-loop-sym st "dyn-val"))) bindings))
+         (let-binds
+          (apply append
+                 (map (lambda (b)
+                        (let ((name (car b)))
+                          (list (list (cdr (assq name saves))
+                                      (mk-call '%dynamic-get (list 'const name)))
+                                (list (cdr (assq name vals)) (cadr b)))))
+                      bindings)))
+         (set-news (map (lambda (b)
+                          (mk-call '%dynamic-set (list 'const (car b))
+                                   (list 'var (cdr (assq (car b) vals)))))
+                        bindings))
+         (restores (map (lambda (b)
+                          (mk-call '%dynamic-set (list 'const (car b))
+                                   (list 'var (cdr (assq (car b) saves)))))
+                        bindings))
+         (protected (apply mk-seq (append set-news (list body))))
+         (cleanup (apply mk-seq restores))
+         (form (list 'special 'let
+                     (list let-binds
+                           (list 'special 'unwind-protect (list protected (list cleanup)))))))
     (lower-expr form st label)))
 
 (define (lower-expr-to-cfg expr)

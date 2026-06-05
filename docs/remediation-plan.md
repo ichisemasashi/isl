@@ -47,9 +47,9 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 
 `native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
 P0+P1（and/or/case・数値・非局所制御・float・setq/ループ/unwind-protect・flet/labels）
-+ P2 データ型（文字・文字列・ベクタ）実施後: **41 SAME / 8 未対応 / 0 誤出力**。
-残る未対応は CLOS（defclass/defmethod）、例外（handler-case/ゼロ除算捕捉）、
-dynamic/the/convert。
++ P2/P3（文字・文字列・ベクタ・the/convert/dynamic）実施後:
+**44 SAME / 5 未対応 / 0 誤出力**。残る未対応は CLOS（defclass/defgeneric/defmethod）
+と例外（handler-case/ゼロ除算の `<division-by-zero>` 捕捉）のみ。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
@@ -136,9 +136,14 @@ frontend は認識するが codegen が "unsupported operation" を出す:
 
 ### P2/P3 — オブジェクト・動的・型注釈
 
-- **CLOS**: `defclass`/`make-instance`/`defmethod` が native では未対応。
+- ⬜ **CLOS**: `defclass`/`make-instance`/`defmethod` が native では未対応。
   最も重い。後段（JIT/インタプリタへフォールバックする手もある）。
-- `dynamic`/`dynamic-let`, `the`（無視で可）, `convert` の native 対応。
+- ✅ `dynamic`/`dynamic-let`/`defdynamic`, `the`/`assure`, `convert` … **対応済み**。
+  動的変数は専用テーブル（`%dynamic-get`/`%dynamic-set`、defdynamic は
+  `ll-define-dynamic` で起動時初期化）。dynamic-let は値保存＋unwind-protect で
+  非局所脱出時も復元。`the`/`assure` は組込みクラスの型チェック（不一致は error、
+  未知クラスは素通し）。`convert` は int↔char、→integer/float/string/symbol/list
+  等を実装。JIT 経路とも同じ lowering を共有。
 
 ### ネイティブ AOT 推奨着手順
 

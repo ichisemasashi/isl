@@ -69,8 +69,8 @@
 ;;    ここでは未対応が安定している CLOS / dynamic を使う。
 (check-fails-loudly "defclass-not-silent"
   "(defclass <p> () ((x :initarg :x :accessor px))) (print (px (make-instance '<p> :x 1)))")
-(check-fails-loudly "dynamic-not-silent"
-  "(defdynamic *d* 1) (print (dynamic-let ((*d* 9)) (dynamic *d*)))")
+(check-fails-loudly "handler-case-not-silent"
+  "(print (handler-case (error \"boom\") (<error> (c) 'caught)))")
 
 (when (file-exists? *tmp*) (sys-unlink *tmp*))
 

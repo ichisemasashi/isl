@@ -332,6 +332,10 @@
      (emit-function (string-append "isl_global_init_" (mangle-symbol (cadr ll)))
                     '()
                     (caddr ll)))
+    ((ll-define-dynamic)
+     (emit-function (string-append "isl_dyn_init_" (mangle-symbol (cadr ll)))
+                    '()
+                    (caddr ll)))
     ((ll-expr)
      (emit-function (string-append "isl_expr_" (number->string idx))
                     '()
@@ -376,6 +380,15 @@
      (indent 2 (string-append val " = call ptr @isl_global_init_" (mangle-symbol name) "(ptr %env)"))
      (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " sym ", ptr " val ")")))))
 
+(define (emit-dynamic-init ll cg-ref)
+  (let* ((name (cadr ll))
+         (sym (cg-next-name! cg-ref))
+         (val (cg-next-name! cg-ref)))
+    (list
+     (indent 2 (string-append sym " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string name)) ")"))
+     (indent 2 (string-append val " = call ptr @isl_dyn_init_" (mangle-symbol name) "(ptr %env)"))
+     (indent 2 (string-append "call ptr @isl_rt_dyn_set(ptr " sym ", ptr " val ")")))))
+
 (define (emit-aot-main tops)
   (let ((cg-ref (list 1000)))
     (let loop ((xs tops) (idx 0) (acc '()) (last #f))
@@ -396,6 +409,11 @@
                (loop (cdr xs)
                      (+ idx 1)
                      (append acc (emit-global-init ll cg-ref))
+                     last))
+              ((ll-define-dynamic)
+               (loop (cdr xs)
+                     (+ idx 1)
+                     (append acc (emit-dynamic-init ll cg-ref))
                      last))
               ((ll-expr)
                (let ((r (cg-next-name! cg-ref)))
@@ -420,6 +438,7 @@
    "declare ptr @isl_rt_lookup(ptr, ptr)"
    "declare ptr @isl_rt_lookup_param(ptr, i32)"
    "declare ptr @isl_rt_set(ptr, ptr, ptr)"
+   "declare ptr @isl_rt_dyn_set(ptr, ptr)"
    "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
    "declare i1 @isl_rt_truthy(ptr)"
    "declare ptr @isl_rt_unsupported(ptr)"
