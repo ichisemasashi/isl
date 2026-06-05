@@ -46,9 +46,9 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 ## 2. ネイティブ AOT バックエンド（最優先領域）
 
 `native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
-P0+P1（and/or/case・数値・非局所制御・float・setq/ループ/unwind-protect）+ P2 データ型
-（文字・文字列・ベクタ）実施後: **39 SAME / 10 未対応 / 0 誤出力**。残る未対応は
-flet/labels、CLOS（defclass/defmethod）、例外（handler-case/ゼロ除算捕捉）、
+P0+P1（and/or/case・数値・非局所制御・float・setq/ループ/unwind-protect・flet/labels）
++ P2 データ型（文字・文字列・ベクタ）実施後: **41 SAME / 8 未対応 / 0 誤出力**。
+残る未対応は CLOS（defclass/defmethod）、例外（handler-case/ゼロ除算捕捉）、
 dynamic/the/convert。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
@@ -105,9 +105,11 @@ frontend は認識するが codegen が "unsupported operation" を出す:
   後方エッジへ lowering（値は可変 env 経由なので phi 不要）。dotimes/dolist/for は
   let+while+setq へ縮約。tagbody は各ラベルを CFG ブロックにし `go` を jmp 化。
   unwind-protect は exit スタックを段階的に巻き戻して各 cleanup を実行。
-- ⬜ `flet`, `labels` … ローカル関数を closure 化して対応。**未着手**。
-  （`go` がネスト lambda を越える/`unwind-protect` を `go` で抜ける場合の cleanup は
-  現状未対応。lexically-direct なケースは動作する。）
+- ✅ `flet`, `labels` … **対応済み**。flet→let（lambda 束縛、非再帰）、
+  labels→let+setq（プレースホルダを setq で各クロージャに更新し、共有 env を
+  捕捉して相互再帰・自己再帰を実現）。
+  （既知の制限: `go` がネスト lambda を越える/`unwind-protect` を `go` で抜ける場合の
+  cleanup は未対応。lexically-direct なケースは動作する。）
 
 ### P1 — 数値・型の拡充
 

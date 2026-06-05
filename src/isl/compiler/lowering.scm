@@ -161,6 +161,8 @@
         ((eq? sop 'for) (lower-for payload st label))
         ((eq? sop 'tagbody) (lower-tagbody payload st label))
         ((eq? sop 'go) (lower-go payload st label))
+        ((eq? sop 'flet) (lower-flet payload st label))
+        ((eq? sop 'labels) (lower-labels payload st label))
         ((eq? sop 'unwind-protect)
          (lower-expr (list 'call (list 'var '%unwind-protect)
                            (list 'lambda '() (car payload))
@@ -526,6 +528,41 @@
     (let ((d (fresh-temp st)))
       (emit! st after (list 'assign d (list 'const '())))
       (list after d))))
+
+;; ---- flet / labels (local functions) ----
+;; A local function binding is (name params . body-forms).  In this backend the
+;; operator and variable namespaces share the environment, so a local function
+;; is just a variable bound to a closure.
+;;   flet   : non-recursive — bind names to closures captured in the outer env
+;;            => (let ((name (lambda params body)) ...) body)
+;;   labels : mutually recursive — bind placeholders, then setq each to a closure
+;;            captured in the (shared) labels env => closures see each other.
+(define (flet-fn-body body-forms)
+  (if (and (pair? body-forms) (null? (cdr body-forms)))
+      (car body-forms)
+      (cons 'seq body-forms)))
+
+(define (lower-flet payload st label)
+  (let* ((bindings (car payload))
+         (body (cadr payload))
+         (let-binds (map (lambda (b)
+                           (list (car b)
+                                 (list 'lambda (cadr b) (flet-fn-body (cddr b)))))
+                         bindings))
+         (form (list 'special 'let (list let-binds body))))
+    (lower-expr form st label)))
+
+(define (lower-labels payload st label)
+  (let* ((bindings (car payload))
+         (body (cadr payload))
+         (placeholders (map (lambda (b) (list (car b) (list 'const '()))) bindings))
+         (assigns (map (lambda (b)
+                         (mk-setq (car b)
+                                  (list 'lambda (cadr b) (flet-fn-body (cddr b)))))
+                       bindings))
+         (form (list 'special 'let
+                     (list placeholders (apply mk-seq (append assigns (list body)))))))
+    (lower-expr form st label)))
 
 (define (lower-expr-to-cfg expr)
   (let* ((st (make-state))

@@ -63,14 +63,14 @@
 (check-output "format-mix" "(format (standard-output) \"~A=~X~%\" 255 255)"
               "255=ff")
 
-;; 2. まだネイティブ未対応の特殊形式は「黙って誤った値」を返さず、必ず
-;;    非 0 終了で失敗する（誤出力を error へ格下げする P0 の原則を維持）。
-;;    while/dotimes/dolist/unwind-protect は実装済みのため
-;;    test/compiler/native-loop-smoke.scm / native-nonlocal-smoke.scm で検証する。
-(check-fails-loudly "flet-not-silent"
-  "(print (flet ((f (x) (* x 2))) (f 21)))")
+;; 2. まだネイティブ未対応の構文は「黙って誤った値」を返さず、必ず非 0 終了で
+;;    失敗する（誤出力を error へ格下げする P0 の原則を維持）。
+;;    実装済みの構文は native-loop/nonlocal/data/closure-smoke 等で検証する。
+;;    ここでは未対応が安定している CLOS / dynamic を使う。
 (check-fails-loudly "defclass-not-silent"
   "(defclass <p> () ((x :initarg :x :accessor px))) (print (px (make-instance '<p> :x 1)))")
+(check-fails-loudly "dynamic-not-silent"
+  "(defdynamic *d* 1) (print (dynamic-let ((*d* 9)) (dynamic *d*)))")
 
 (when (file-exists? *tmp*) (sys-unlink *tmp*))
 
