@@ -204,9 +204,15 @@
 (define (set-env-bindings! env bindings) (vector-set! env 2 bindings))
 
 (define (runtime-resolve-symbol sym)
-  (if (symbol? sym)
-      (with-module isl.core (resolve-symbol-in-package sym))
-      sym))
+  (cond
+   ((not (symbol? sym)) sym)
+   ;; Compiler-internal operators (lowering artifacts such as %handler-case,
+   ;; %catch, %dynamic-get) use a reserved `%` prefix and bypass package
+   ;; resolution, so they bind/look-up consistently in any current package.
+   ((let ((s (symbol->string sym)))
+      (and (> (string-length s) 0) (char=? (string-ref s 0) #\%)))
+    sym)
+   (else (with-module isl.core (resolve-symbol-in-package sym)))))
 
 (define (env-define! env sym val)
   (set! sym (runtime-resolve-symbol sym))
@@ -746,6 +752,29 @@
             (host->runtime-value acc)
             (loop xs (op acc (runtime-number (car rest) who)) (cdr rest))))))
 
+;; Module-level handler-case tag matcher (shared by the %handler-case primitive
+;; that top-level handler-case lowers into).  `tag` is a resolved class symbol.
+(define (rt-htag-match? tag cond-obj)
+  (cond
+   ((or (eq? tag 't) (eq? tag 'otherwise)) #t)
+   (else
+    (with-module isl.core
+      (let ((bare (symbol-base-name tag)))
+        (if (isl-condition? cond-obj)
+            (or (isl-subclassp? (isl-condition-class cond-obj) tag)
+                (and (string=? bare "error")
+                     (isl-subclassp? (isl-condition-class cond-obj)
+                                     (resolve-binding-symbol '<error>)))
+                (and (string=? bare "serious-condition")
+                     (isl-subclassp? (isl-condition-class cond-obj)
+                                     (resolve-binding-symbol '<serious-condition>)))
+                (and (string=? bare "condition")
+                     (isl-subclassp? (isl-condition-class cond-obj)
+                                     (resolve-binding-symbol '<condition>))))
+            (or (string=? bare "error")
+                (string=? bare "condition")
+                (string=? bare "serious-condition"))))))))
+
 (define (install-primitives! env)
   (define (def name proc)
     (env-define! env name (make-fn-value (make-primitive name proc))))
@@ -1251,6 +1280,126 @@
       (unless (>= (length args) 1)
         (runtime-raise 'arity "funcall expects at least 1 argument" args))
       (runtime-apply (car args) (cdr args) state)))
+  ;; Non-local exit primitives that lowering rewrites block/catch/throw/
+  ;; return-from into.  block/catch receive a zero-argument thunk for their body
+  ;; so the same lowered CFG runs on both the IR interpreter and native backend.
+  (def '%block
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%block expects 2 arguments" args))
+      (let ((name (runtime-value->host (car args)))
+            (thunk (cadr args)))
+        (guard (e ((and (nonlocal-return? e) (eqv? (nonlocal-return-name e) name))
+                   (nonlocal-return-value e))
+                  (else (raise e)))
+          (runtime-apply thunk '() state)))))
+  (def '%return-from
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%return-from expects 2 arguments" args))
+      (raise (make-nonlocal-return (runtime-value->host (car args)) (cadr args)))))
+  (def '%catch
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%catch expects 2 arguments" args))
+      (let ((tag (runtime-value->host (car args)))
+            (thunk (cadr args)))
+        (dynamic-wind
+          (lambda () (set! *runtime-catch-stack* (cons tag *runtime-catch-stack*)))
+          (lambda ()
+            (guard (e ((and (throw-signal? e) (eqv? (throw-signal-tag e) tag))
+                       (throw-signal-value e))
+                      (else (raise e)))
+              (runtime-apply thunk '() state)))
+          (lambda () (set! *runtime-catch-stack* (cdr *runtime-catch-stack*)))))))
+  (def '%throw
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%throw expects 2 arguments" args))
+      (let ((tag (runtime-value->host (car args)))
+            (value (cadr args)))
+        (if (runtime-catch-active? tag)
+            (raise (make-throw-signal tag value))
+            (runtime-raise 'control-error "No enclosing catch for throw" tag)))))
+  (def '%unwind-protect
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "%unwind-protect expects 2 arguments" args))
+      (let ((protected (car args)) (cleanup (cadr args)))
+        (dynamic-wind
+          (lambda () #f)
+          (lambda () (runtime-apply protected '() state))
+          (lambda () (runtime-apply cleanup '() state))))))
+  ;; dynamic-variable access (top-level dynamic/dynamic-let lower into these;
+  ;; they share the same table as the in-lambda runtime-eval-special path).
+  (def '%dynamic-get
+    (lambda (args state)
+      (let ((name (runtime-value->host (car args)))
+            (tbl (*dynamic-var-table*)))
+        (if (hash-table-exists? tbl name)
+            (host->runtime-value (hash-table-ref tbl name))
+            (runtime-raise 'unbound-variable "dynamic variable not bound" name)))))
+  (def '%the
+    (lambda (args state)
+      (let* ((class-name (runtime-value->host (car args)))
+             (val-rv (cadr args))
+             (val (runtime-value->host val-rv))
+             (s (symbol->string class-name))
+             (bare (if (and (> (string-length s) 0)
+                            (char=? (string-ref s 0) #\<)
+                            (char=? (string-ref s (- (string-length s) 1)) #\>))
+                       (substring s 1 (- (string-length s) 1))
+                       s))
+             (ok? (cond
+                   ((string=? bare "object")    #t)
+                   ((string=? bare "t")         #t)
+                   ((string=? bare "integer")   (and (integer? val) (exact? val)))
+                   ((string=? bare "float")     (and (number? val) (inexact? val)))
+                   ((string=? bare "number")    (number? val))
+                   ((string=? bare "string")    (string? val))
+                   ((string=? bare "symbol")    (symbol? val))
+                   ((string=? bare "character") (char? val))
+                   ((string=? bare "list")      (or (null? val) (pair? val)))
+                   ((string=? bare "cons")      (pair? val))
+                   ((string=? bare "null")      (null? val))
+                   ((string=? bare "vector")    (vector? val))
+                   ((string=? bare "general-vector") (vector? val))
+                   (else #t))))
+        (unless ok?
+          (runtime-raise 'domain-error "the: value is not of the asserted class" val))
+        val-rv)))
+  (def '%dynamic-set
+    (lambda (args state)
+      (let ((name (runtime-value->host (car args)))
+            (val (cadr args)))
+        (hash-table-put! (*dynamic-var-table*) name (runtime-value->host val))
+        val)))
+  (def 'assure
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "assure expects 2 arguments" args))
+      (cadr args)))
+  ;; top-level handler-case lowers to
+  ;;   (%handler-case body-thunk class1 handler1 class2 handler2 ...)
+  ;; with the clauses as flat alternating arguments.
+  (def '%handler-case
+    (lambda (args state)
+      (let ((body (car args))
+            (clauses (cdr args)))
+        (guard (e
+                ((or (nonlocal-return? e) (throw-signal? e) (go-signal? e)) (raise e))
+                (else
+                 (let loop ((cs clauses))
+                   (if (or (null? cs) (null? (cdr cs)))
+                       (raise e)
+                       (let* ((class-sym (runtime-value->host (car cs)))
+                              (handler (cadr cs))
+                              (tag (with-module isl.core
+                                     (resolve-binding-symbol class-sym))))
+                         (if (rt-htag-match? tag e)
+                             (runtime-apply handler (list (host->runtime-value e)) state)
+                             (loop (cddr cs))))))))
+          (runtime-apply body '() state)))))
   (def 'not
     (lambda (args state)
       (unless (= (length args) 1)
@@ -4620,6 +4769,14 @@
      (if (= (length rhs) 2)
          (env-ref env (cadr rhs))
          (runtime-raise 'invalid-ir "var rhs expects one symbol" rhs)))
+    ((set)
+     ;; (set name value-temp): setq lowered into the CFG.  Mutate the nearest
+     ;; binding (env-set! defines it when absent); the result is the value.
+     (if (and (= (length rhs) 3) (symbol? (cadr rhs)) (symbol? (caddr rhs)))
+         (let ((v (env-ref env (caddr rhs))))
+           (env-set! env (cadr rhs) v)
+           v)
+         (runtime-raise 'invalid-ir "set rhs expects (name value)" rhs)))
     ((call)
      (let ((fn (env-ref env (cadr rhs)))
            (args (map (lambda (s) (env-ref env s)) (caddr rhs))))

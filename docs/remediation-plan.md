@@ -45,7 +45,17 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 
 ## 2. ネイティブ AOT バックエンド（最優先領域）
 
-`native-gap-probe.scm` の結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
+`native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
+全 P0〜P3（制御・数値・float・データ型・the/convert/dynamic・例外・CLOS）実施後:
+**49 SAME / 0 未対応 / 0 誤出力 / 0 DIFF（全 49 項目）**。native-gap-probe の全項目が
+インタプリタと出力一致。さらに「残りの軽微な制限」を解消済み:
+ベクタリテラル `#(...)` の定数構築（ネスト・空ベクタ含む）、`call-next-method`/
+`next-method-p`（多段継承チェーン）、多次元配列の native 構築（`create-array` rank≥2・
+`aref`/`set-aref`/`array-dimensions`・印字）、メソッド修飾子 `:before`/`:after`/
+`:around`（標準メソッド結合）を実装し、いずれもインタプリタと出力一致。
+回帰は `test/compiler/native-minor-smoke.scm`（17 ケース）でカバー。
+残る未対応は `setf` の汎用 place（フロントエンドの `invalid-special`、両バックエンド共通）
+のみで、誤出力ではなく明示エラー化済み。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
@@ -87,34 +97,76 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 
 frontend は認識するが codegen が "unsupported operation" を出す:
 
-- `case`, `and`, `or` … lowering で `if` 連鎖へ落とす（`cond` は既に対応済みなので流用可）
-- `block`/`return-from`, `catch`/`throw` … 非局所脱出。`llvm_runtime.c` に
-  `setjmp/longjmp` ベースの脱出基盤を入れる（M5 の完了ゲート）
-- `for`, `flet`, `labels` … `flet`/`labels` はローカル関数を closure 化して対応
+- ✅ `case`, `and`, `or` … **対応済み**（`lowering.scm` に `lower-and`/`lower-or`/
+  `lower-case` を追加し branch/phi へ落とす。`case` は key を 1 度だけ束ねて
+  `cond`+`eql` に書き換え。`if`/`cond` と同じ基盤を再利用、IR インタプリタも共用）。
+- ✅ `block`/`return-from`, `catch`/`throw` … **対応済み**。lowering で body を
+  0 引数サンクに包んだ `%block`/`%catch`/`%throw`/`%return-from` 呼び出しへ書き換え、
+  `llvm_runtime.c` に `setjmp/longjmp` の統合 exit スタックを実装（throw が中間の
+  block フレームを飛び越えても正しく破棄）。同じ lowered CFG を使う IR インタプリタ
+  （runtime.scm）側にも同名プリミティブを追加。
+- ✅ `setq` と反復（`while`/`dotimes`/`dolist`/`for`/`tagbody`/`go`）、`unwind-protect`
+  … **対応済み**。setq は `(set name val)` 命令へ lowering し、変数読みを名前参照に
+  統一（パラメータは entry で名前束縛済み）＋ `isl_rt_set` で可変化。ループは CFG の
+  後方エッジへ lowering（値は可変 env 経由なので phi 不要）。dotimes/dolist/for は
+  let+while+setq へ縮約。tagbody は各ラベルを CFG ブロックにし `go` を jmp 化。
+  unwind-protect は exit スタックを段階的に巻き戻して各 cleanup を実行。
+- ✅ `flet`, `labels` … **対応済み**。flet→let（lambda 束縛、非再帰）、
+  labels→let+setq（プレースホルダを setq で各クロージャに更新し、共有 env を
+  捕捉して相互再帰・自己再帰を実現）。
+  （既知の制限: `go` がネスト lambda を越える/`unwind-protect` を `go` で抜ける場合の
+  cleanup は未対応。lexically-direct なケースは動作する。）
 
 ### P1 — 数値・型の拡充
 
-- **浮動小数点が `+` で扱えない**（`(+ 1.5 2.5)` → "expected number"）。
-  `IslValue` に float タグを追加し、算術プリミティブを混合演算対応にする。
-- `expt`, `mod`, `abs`, `max`, `min` 等の数値ライブラリ関数が未定義
-  （`llvm_runtime.c` に登録 or runtime 呼び出しへ委譲）。
-- 比較は `<` のみ確認済み。`>`,`<=`,`>=`,`=`,`/=` の網羅。
+- ✅ **浮動小数点** … **対応済み**。`IslValue` に `ISL_V_FLOAT`（double）を追加し、
+  算術（`+ - * /`）と比較を float 伝播（混合演算は float）対応に。float リテラルは
+  10 進テキストを `strtod` する `isl_rt_make_float` で生成（LLVM の hex-float 要件を
+  回避）。出力は最短往復表現でインタプリタと一致（`4.0`/`0.5`/`0.1`）。`floatp`/
+  `float`/`expt`(float基数) も追加。整数・有理数は引き続き exact。
+- ✅ `expt`, `mod`, `abs`, `max`, `min` … **対応済み**（`llvm_runtime.c` に有理数対応で
+  追加。`mod` は除数の符号、`expt` 負指数は有理数）。
+- ✅ 比較網羅 … `>`,`<=`,`>=`,`=` は既存、`/=` を追加して **網羅済み**。
 
 ### P2 — データ型の拡張
 
-- **文字列**: `string-append`（未定義）, `length` が文字列を「リストでない」と誤判定。
-  文字列値表現と文字列プリミティブを native runtime に追加。
-- **文字**: 文字リテラル `#\A` が "unsupported"、`char<` 未定義。文字型を追加。
-- **ベクタ/配列**: `vector`, `elt`, `create-array`, `aref` すべて未定義。
-  `ISL_V_VECTOR` を追加。
-- **例外**: `handler-case`、ゼロ除算の `<division-by-zero>` 捕捉が未対応
-  （非局所脱出基盤 P1 の上に構築）。
+- ✅ **文字**: `ISL_V_CHAR` を追加。リテラル `#\A`、`char= /= < > <= >=`、
+  `char->integer`/`integer->char`、印字（`#\A`）。
+- ✅ **文字列**: `string-append`、`string=`、`create-string`、`char-index`、
+  `length`/`elt` を文字列対応に（`elt` は文字を返す）。
+- ✅ **ベクタ/1 次元配列**: `ISL_V_VECTOR` を追加。`vector`、`create-vector`、
+  `create-array`(rank-1)、`elt`/`aref`/`vector-ref`、`set-elt`/`set-aref`、
+  `length`、印字（`#(...)`）。ベクタリテラル `#(...)` の定数構築、多次元配列
+  （rank≥2、`array-dimensions`、行優先 flat storage）も native 対応済み。
+- ✅ **例外**: `handler-case` / `error` / ゼロ除算の `<division-by-zero>` 捕捉 …
+  **対応済み**。条件のネイティブ表現（`ISL_V_CONDITION`：クラス＋メッセージ＋
+  irritants）を追加し、`error` は `<simple-error>` を、`/`・`mod` のゼロ除算は
+  `<division-by-zero>` を `isl_signal` で送出。handler-case は exit スタックの
+  ハンドラフレーム（kind=3）に巻き戻し、クラス階層でディスパッチ。途中の
+  unwind-protect cleanup も実行。非一致節は外側へ再シグナル。返り値として
+  伝播したエラーも捕捉。
 
 ### P2/P3 — オブジェクト・動的・型注釈
 
-- **CLOS**: `defclass`/`make-instance`/`defmethod` が native では未対応。
-  最も重い。後段（JIT/インタプリタへフォールバックする手もある）。
-- `dynamic`/`dynamic-let`, `the`（無視で可）, `convert` の native 対応。
+- ✅ **CLOS**: `defclass`/`defgeneric`/`defmethod`/`make-instance`/`create`/
+  アクセサ/`class-of`/`instancep` … **対応済み**。ネイティブに ISL_V_CLASS/
+  INSTANCE/GENERIC を追加し、クラスレジストリ・スロット継承・クラス階層に基づく
+  最特定メソッドディスパッチを実装。defclass/defgeneric/defmethod は **ネイティブ
+  codegen のみ**（emit-rhs で本体・アクセサを cg-enqueue-lambda! で outline）で
+  処理し、共有 lowering と JIT の CLOS には一切触れない（JIT は従来どおり
+  runtime-eval-special でフル CLOS）。
+  `call-next-method`/`next-method-p`（MethodCtx スタックで多段継承チェーンを
+  距離順に辿る）、メソッド修飾子 `:before`/`:after`/`:around`（標準メソッド結合：
+  around→before→primary→after の順、before は最特定優先・after は最汎用優先、
+  around 枯渇時は qualified core に委譲）も native 対応済み。
+  残る制限: 多重ディスパッチ（第 1 引数のみ）、setf アクセサ（フロントエンドの
+  `invalid-special` 制限で両バックエンド共通）。
+- ✅ `dynamic`/`dynamic-let`/`defdynamic`, `the`/`assure`, `convert` … **対応済み**。
+  動的変数は専用テーブル（`%dynamic-get`/`%dynamic-set`、defdynamic は
+  `ll-define-dynamic` で起動時初期化）。dynamic-let は値保存＋unwind-protect で
+  非局所脱出時も復元。`the`/`assure` は組込みクラスの型チェック（不一致は error、
+  未知クラスは素通し）。`convert` は int↔char、→integer/float/string/symbol/list
+  等を実装。JIT 経路とも同じ lowering を共有。
 
 ### ネイティブ AOT 推奨着手順
 
@@ -130,18 +182,33 @@ N4 (例外 + ゼロ除算条件) → N5 (CLOS・dynamic・convert)
 
 `spec-gap-report.md` の分類 A〜G に対応。各項目に推奨優先度を付す。
 
-| ID | 区分 | 内容 | 優先 | 主な作業 |
-|----|------|------|------|----------|
-| I-A | §13 配列 | 多次元配列・`garef`/`set-garef`・`<basic-array*>`/`<general-array*>` | P1 | `create-array` を n 次元対応に。行優先の添字計算。配列クラス追加 |
-| I-B | §18/19 I/O | 文字列ストリーム・`preview-char`・`format-*` 群 | P1 | `create-string-{in,out}put-stream`/`get-output-stream-string`、`format-integer/char/float/object/fresh-line/tab` |
-| I-C | §10 シンボル | `property`/`set-property`/`remove-property` | P2 | シンボルごとの plist テーブル |
-| I-D | §22 条件 | 条件アクセサ群・`report-condition`・ゼロ除算捕捉 | P1 | 各コンディションのスロットアクセサ、`/`・`quotient` のゼロ除算を `<division-by-zero>` として送出 |
-| I-E | §21 OO | `create`/`initialize-object`・GF クラス | P2 | 標準 `create` を `make-instance` の別名 GF として実装、`<generic-function>` 等のクラス登録 |
-| I-F | §11 数値 | `div`・`sinh/cosh/tanh/atanh`・`atan2`・`*most-*-float*`・`generic-function-p` | P2 | プリミティブ追加（Gauche に委譲可能なものが多い）|
-| I-G | 逸脱 | `set-car`/`set-cdr` 引数順序、`error` のフォーマット展開 | P3 | 引数順を `(obj cons)` に修正、`condition-message` でフォーマット適用 |
-| I-H | 特殊形式 | `case-using`・`assure` | P3 | `eval-special` に追加（`case`/`the` を流用）|
+| ID | 区分 | 内容 | 優先 | 状態 | 主な作業 |
+|----|------|------|------|------|----------|
+| I-A | §13 配列 | 多次元配列・`garef`/`set-garef`・`<basic-array*>`/`<general-array*>` | P1 | ✅ | `create-array` を n 次元対応に（行優先 flat storage）。`aref`/`set-aref`/`garef`/`set-garef` を多添字対応。配列クラス追加・`general-array*-p`/`basic-array*-p` 是正 |
+| I-B | §18/19 I/O | 文字列ストリーム・`preview-char`・`format-*` 群 | P1 | ✅ | `create-string-{in,out}put-stream`/`get-output-stream-string`、`format-integer/char/float/object/fresh-line/tab` を実装 |
+| I-C | §10 シンボル | `property`/`set-property`/`remove-property` | P2 | ✅ | シンボルごとの plist テーブル（`*property-table*`）を実装 |
+| I-D | §22 条件 | 条件アクセサ群・`report-condition`・ゼロ除算捕捉 | P1 | ✅ | コンディションに `extra` plist を追加し各アクセサ実装。`/`・`quotient`・`mod`・`rem` のゼロ除算を `<division-by-zero>`（arithmetic-error operation/operands 付き）として送出 |
+| I-E | §21 OO | `create`/`initialize-object`・GF クラス | P2 | ✅ | `create` を `make-instance` へ委譲。`<generic-function>`/`<standard-generic-function>`/`<standard-class>`/`<storage-exhausted>` を登録。`function` 特殊形式が generic を返すよう是正 |
+| I-F | §11 数値 | `div`・`sinh/cosh/tanh/atanh`・`atan2`・`*most-*-float*`・`generic-function-p` | P2 | ✅ | プリミティブ追加（`div` は床除算＋ゼロ除算捕捉、双曲線関数は exp 経由、float 定数は値束縛）|
+| I-G | 逸脱 | `set-car`/`set-cdr` 引数順序、`error` のフォーマット展開 | P3 | ✅ | 引数順を `(obj cons)` に修正。`condition-message` をフォーマット適用（失敗時は raw にフォールバック）|
+| I-H | 特殊形式 | `case-using`・`assure` | P3 | ✅ | `eval-case-using` を追加、`assure` は `the` へ委譲 |
 
 検証は `gosh test/conformance/run-spec.scm` の FAIL 件数で追跡（実装が進むと減る）。
+I-A/I-B/I-D 実装後の `spec-probe extended`: **203 OK / 23 MISSING / 1 WRONG / 0 ERR**
+（実装前 174 OK / 45 MISSING / 1 WRONG / 7 ERR）。`run-spec` の Spec-Array /
+Spec-Stream / Spec-Condition は全合格。既存 `run.scm` は 101/101 を維持。
+
+I-C/I-E/I-F 追加後の `spec-probe extended`: **222 OK / 4 MISSING / 1 WRONG / 0 ERR**。
+
+I-G/I-H 追加後の `spec-probe extended`: **225 OK / 2 MISSING / 0 WRONG / 0 ERR**。
+
+undefined-entity 条件化後の `spec-probe extended`: **227 OK / 0 MISSING / 0 WRONG / 0 ERR**
+（全 227 項目が標準準拠）。未定義関数/変数参照を `<undefined-function>`/
+`<unbound-variable>`（`<undefined-entity>` の下位）コンディションとして送出するよう
+評価器を変更し、`handler-case` で捕捉でき `undefined-entity-name`/`-namespace`
+アクセサも機能するようになった。`<error>`/`<serious-condition>` での既存捕捉挙動は維持。
+`run-spec` は **12/12 全合格**、`run.scm`/`run-strict` は 101/101、`oracle-compare` は
+13 失敗（CLOS インスタンス同一性に起因する既存分、不変）。
 
 ---
 
@@ -172,13 +239,14 @@ N4 (例外 + ゼロ除算条件) → N5 (CLOS・dynamic・convert)
 
 1. ~~**[P0]** ネイティブ: `while`/`dotimes`/`dolist`/`tagbody`/`unwind-protect`/`format ~X`
    の誤出力を是正（まず誤値を返さない）。~~ ✅ **完了**（§2 P0 参照、DIFF 6→0）。
-2. **[P1]** ネイティブ: `case`/`and`/`or` の lowering、非局所制御
-   （`block`/`catch`）の脱出基盤。
-3. **[P1]** ネイティブ: float 算術 + 数値ライブラリ + 比較網羅。
-4. **[P1]** インタプリタ: 多次元配列（I-A）、文字列ストリーム/`format-*`（I-B）、
-   ゼロ除算条件と条件アクセサ（I-D）。
-5. **[P2]** ネイティブ: 文字列・文字・ベクタ。インタプリタ: plist（I-C）、
-   `create`/`initialize-object`（I-E）、数値補完（I-F）。
-6. **[P2/P3]** ネイティブ: 例外・CLOS。インタプリタ: 逸脱是正（I-G）、
-   `case-using`/`assure`（I-H）。
+2. **[P1]** ネイティブ: `case`/`and`/`or` の lowering ✅、非局所制御
+   （`block`/`catch`/`return-from`/`throw`）の setjmp/longjmp 脱出基盤 ✅。
+3. **[P1]** ネイティブ: 数値ライブラリ（`expt`/`mod`/`abs`/`max`/`min`）+ 比較網羅
+   （`/=`）✅。float 算術 ✅。
+4. ~~**[P1]** インタプリタ: 多次元配列（I-A）、文字列ストリーム/`format-*`（I-B）、
+   ゼロ除算条件と条件アクセサ（I-D）。~~ ✅ **完了**（§3 参照、spec-probe 174→203 OK）。
+5. **[P2]** ネイティブ: 文字列・文字・ベクタ ⬜。インタプリタ: plist（I-C）✅、
+   `create`/`initialize-object`（I-E）✅、数値補完（I-F）✅。
+6. **[P2/P3]** ネイティブ: 例外・CLOS ⬜。インタプリタ: 逸脱是正（I-G）✅、
+   `case-using`/`assure`（I-H）✅。
 7. **[横断]** プリミティブ二重実装の共通化。

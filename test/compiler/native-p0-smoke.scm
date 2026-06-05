@@ -63,15 +63,10 @@
 (check-output "format-mix" "(format (standard-output) \"~A=~X~%\" 255 255)"
               "255=ff")
 
-;; 2. 未対応特殊形式は黙って誤らず失敗する
-(check-fails-loudly "while-not-silent"
-  "(let ((i 0) (s 0)) (while (< i 4) (setq s (+ s i)) (setq i (+ i 1))) (print s))")
-(check-fails-loudly "dotimes-not-silent"
-  "(let ((s 0)) (dotimes (i 4) (setq s (+ s i))) (print s))")
-(check-fails-loudly "dolist-not-silent"
-  "(let ((s 0)) (dolist (x '(1 2 3)) (setq s (+ s x))) (print s))")
-(check-fails-loudly "unwind-protect-not-silent"
-  "(let ((s 0)) (block b (unwind-protect (return-from b 1) (setq s 9))) (print s))")
+;; 2. まだコンパイラ未対応の構文は「黙って誤った値」を返さず、必ず非 0 終了で
+;;    失敗する（誤出力を error へ格下げする P0 の原則を維持）。ほぼ全機能が
+;;    実装済みのため、残るフロントエンド未対応（setf の汎用 place）で検証する。
+(check-fails-loudly "setf-place-not-silent" "(setf x 9)")
 
 (when (file-exists? *tmp*) (sys-unlink *tmp*))
 

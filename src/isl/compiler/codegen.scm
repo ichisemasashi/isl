@@ -185,8 +185,15 @@
   ;; Build the runtime value for a quoted constant, leaving it in `dst`.
   ;; Lists/pairs are constructed recursively via isl_rt_cons.
   (cond
-   ((integer? v)
+   ;; Exact integers only — 5.0 is `integer?` in Scheme but must become a float.
+   ((and (integer? v) (exact? v))
     (list (indent 2 (string-append dst " = call ptr @isl_rt_make_int(i64 " (number->string v) ")"))))
+   ;; Inexact reals (float literals): pass the decimal text and let the runtime
+   ;; strtod it, sidestepping LLVM's exact hex-float literal requirement.
+   ((and (real? v) (inexact? v))
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_float(ptr " (str-ptr (number->string v)) ")"))))
+   ((char? v)
+    (list (indent 2 (string-append dst " = call ptr @isl_rt_make_char(i64 " (number->string (char->integer v)) ")"))))
    ((eq? v #t)
     (list (indent 2 (string-append dst " = call ptr @isl_rt_true()"))))
    ((eq? v #f)
@@ -204,8 +211,120 @@
        (emit-const-build carn (car v) cg-ref)
        (emit-const-build cdrn (cdr v) cg-ref)
        (list (indent 2 (string-append dst " = call ptr @isl_rt_cons(ptr " carn ", ptr " cdrn ")"))))))
+   ((vector? v)
+    ;; quoted vector literal #(...): build each element, then assemble.
+    (let* ((n (vector-length v))
+           (arr (cg-next-name! cg-ref))
+           (arr-type (string-append "[" (number->string (max n 1)) " x ptr]")))
+      (let loop ((i 0)
+                 (acc (list (indent 2 (string-append arr " = alloca " arr-type)))))
+        (if (= i n)
+            (append acc
+                    (list (indent 2 (string-append dst " = call ptr @isl_rt_vector(i32 "
+                                                   (number->string n) ", ptr " arr ")"))))
+            (let* ((elt (cg-next-name! cg-ref))
+                   (elt-lines (emit-const-build elt (vector-ref v i) cg-ref))
+                   (slot (cg-next-name! cg-ref)))
+              (loop (+ i 1)
+                    (append acc elt-lines
+                            (list (indent 2 (string-append slot " = getelementptr inbounds "
+                                                           arr-type ", ptr " arr ", i64 0, i64 "
+                                                           (number->string i)))
+                                  (indent 2 (string-append "store ptr " elt ", ptr " slot))))))))))
    (else
     (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")"))))))
+
+;; ---- CLOS code generation (native-only; the IR interpreter keeps its own
+;; CLOS via runtime-eval-special, so the shared lowering is left untouched) ----
+(define (emit-mksym name cg-ref)
+  ;; returns (values reg lines) that materialise a symbol value
+  (let ((reg (cg-next-name! cg-ref)))
+    (values reg
+            (list (indent 2 (string-append reg " = call ptr @isl_rt_make_symbol(ptr "
+                                           (str-ptr name) ")"))))))
+
+(define (emit-defgeneric dst payload cg-ref)
+  (receive (nsym nlines) (emit-mksym (symbol->string (car payload)) cg-ref)
+    (append nlines
+            (list (indent 2 (string-append dst " = call ptr @isl_rt_defgeneric(ptr %env, ptr " nsym ")"))))))
+
+(define (emit-defmethod dst payload cg-ref)
+  ;; payload = (name qualifier param-specs body)
+  (let* ((name (list-ref payload 0))
+         (qualifier (list-ref payload 1))
+         (param-specs (list-ref payload 2))
+         (body (list-ref payload 3))
+         (params (map (lambda (ps) (if (pair? ps) (car ps) ps)) param-specs))
+         (spec (let ((p0 (and (pair? param-specs) (car param-specs))))
+                 (if (and (pair? p0) (pair? (cdr p0))) (cadr p0) #f))))
+    (receive (fname arity) (cg-enqueue-lambda! params body)
+      (receive (nsym nlines) (emit-mksym (symbol->string name) cg-ref)
+        (receive (ssym slines) (emit-mksym (if spec (symbol->string spec) "") cg-ref)
+          (receive (qsym qlines) (emit-mksym (if qualifier (symbol->string qualifier) "") cg-ref)
+            (let ((clo (cg-next-name! cg-ref)))
+              (append
+               nlines slines qlines
+               (list
+                (indent 2 (string-append clo " = call ptr @isl_rt_make_closure(ptr @" fname
+                                         ", i32 " (number->string arity) ", ptr %env)"))
+                (indent 2 (string-append dst " = call ptr @isl_rt_defmethod(ptr %env, ptr "
+                                         nsym ", ptr " ssym ", ptr " clo ", ptr " qsym ")")))))))))))
+
+;; define an accessor reader `(lambda (obj) (%slot-read obj 'slot))` as a global
+(define (emit-accessor-def reader-name slot-name cg-ref)
+  (receive (fname arity)
+      (cg-enqueue-lambda! (list 'obj)
+                          (list 'call (list 'var '%slot-read)
+                                (list 'var 'obj) (list 'const slot-name)))
+    (receive (rsym rlines) (emit-mksym (symbol->string reader-name) cg-ref)
+      (let ((clo (cg-next-name! cg-ref)))
+        (append
+         (list (indent 2 (string-append clo " = call ptr @isl_rt_make_closure(ptr @" fname
+                                        ", i32 " (number->string arity) ", ptr %env)")))
+         rlines
+         (list (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " rsym ", ptr " clo ")"))))))))
+
+(define (emit-defclass dst payload cg-ref)
+  ;; payload = (name supers slot-specs); slot-spec = (slot-spec name initform initarg readers writers)
+  (let* ((name (list-ref payload 0))
+         (supers (list-ref payload 1))
+         (slot-specs (list-ref payload 2)))
+    (receive (nsym nlines) (emit-mksym (symbol->string name) cg-ref)
+      (append
+       nlines
+       (list (indent 2 (string-append "call ptr @isl_rt_class_new(ptr %env, ptr " nsym ")")))
+       ;; superclasses
+       (apply append
+              (map (lambda (sup)
+                     (receive (ss sl) (emit-mksym (symbol->string sup) cg-ref)
+                       (append sl (list (indent 2 (string-append
+                                                   "call ptr @isl_rt_class_add_super(ptr %env, ptr "
+                                                   nsym ", ptr " ss ")"))))))
+                   supers))
+       ;; slots
+       (apply append
+              (map (lambda (sp)
+                     (let ((sname (list-ref sp 1))
+                           (initarg (list-ref sp 3)))
+                       (receive (slsym sll) (emit-mksym (symbol->string sname) cg-ref)
+                         (receive (iasym ial)
+                             (emit-mksym (if initarg (symbol->string initarg) "") cg-ref)
+                           (append sll ial
+                                   (list (indent 2 (string-append
+                                                    "call ptr @isl_rt_class_add_slot(ptr %env, ptr "
+                                                    nsym ", ptr " slsym ", ptr " iasym ")"))))))))
+                   slot-specs))
+       ;; finalize (result is the class name; bind to dst)
+       (list (indent 2 (string-append dst " = call ptr @isl_rt_class_finalize(ptr %env, ptr " nsym ")")))
+       ;; accessor readers
+       (apply append
+              (map (lambda (sp)
+                     (let ((sname (list-ref sp 1))
+                           (readers (list-ref sp 4)))
+                       (apply append
+                              (map (lambda (r) (emit-accessor-def r sname cg-ref))
+                                   (if (list? readers) readers '())))))
+                   slot-specs))))))
 
 (define (emit-rhs dst rhs params cg-ref)
   (let ((op (car rhs)))
@@ -213,13 +332,19 @@
      ((eq? op 'const)
       (emit-const-build dst (cadr rhs) cg-ref))
      ((eq? op 'var)
-      (let ((idx (param-index params (cadr rhs))))
-        (if idx
-            (list (indent 2 (string-append dst " = call ptr @isl_rt_lookup_param(ptr %env, i32 " (number->string idx) ")")))
-            (let ((key (cg-next-name! cg-ref)))
-              (list
-               (indent 2 (string-append key " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string (cadr rhs))) ")"))
-               (indent 2 (string-append dst " = call ptr @isl_rt_lookup(ptr %env, ptr " key ")")))))))
+      ;; Read variables by name from the (mutable) environment.  Parameters are
+      ;; name-bound at function entry (emit-param-bindings), so this sees both
+      ;; lexical bindings and any subsequent setq mutation.
+      (let ((key (cg-next-name! cg-ref)))
+        (list
+         (indent 2 (string-append key " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string (cadr rhs))) ")"))
+         (indent 2 (string-append dst " = call ptr @isl_rt_lookup(ptr %env, ptr " key ")")))))
+     ((eq? op 'set)
+      ;; (set name value-temp): mutate the named binding, result is the value.
+      (let ((key (cg-next-name! cg-ref)))
+        (list
+         (indent 2 (string-append key " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string (cadr rhs))) ")"))
+         (indent 2 (string-append dst " = call ptr @isl_rt_set(ptr %env, ptr " key ", ptr " (llvm-val (caddr rhs)) ")")))))
      ((eq? op 'call)
       (emit-call-rhs dst rhs cg-ref))
      ((eq? op 'phi)
@@ -238,6 +363,12 @@
                                        ", i32 "
                                        (number->string arity)
                                        ", ptr %env)")))))
+     ((and (eq? op 'special) (eq? (cadr rhs) 'defgeneric))
+      (emit-defgeneric dst (caddr rhs) cg-ref))
+     ((and (eq? op 'special) (eq? (cadr rhs) 'defmethod))
+      (emit-defmethod dst (caddr rhs) cg-ref))
+     ((and (eq? op 'special) (eq? (cadr rhs) 'defclass))
+      (emit-defclass dst (caddr rhs) cg-ref))
      ((eq? op 'special)
       ;; A special form that lowering left intact (e.g. while/setq/tagbody/
       ;; dotimes/case/and/or/block/catch) is not yet runnable by the native
@@ -319,6 +450,10 @@
      (emit-function (string-append "isl_global_init_" (mangle-symbol (cadr ll)))
                     '()
                     (caddr ll)))
+    ((ll-define-dynamic)
+     (emit-function (string-append "isl_dyn_init_" (mangle-symbol (cadr ll)))
+                    '()
+                    (caddr ll)))
     ((ll-expr)
      (emit-function (string-append "isl_expr_" (number->string idx))
                     '()
@@ -363,6 +498,15 @@
      (indent 2 (string-append val " = call ptr @isl_global_init_" (mangle-symbol name) "(ptr %env)"))
      (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " sym ", ptr " val ")")))))
 
+(define (emit-dynamic-init ll cg-ref)
+  (let* ((name (cadr ll))
+         (sym (cg-next-name! cg-ref))
+         (val (cg-next-name! cg-ref)))
+    (list
+     (indent 2 (string-append sym " = call ptr @isl_rt_make_symbol(ptr " (str-ptr (symbol->string name)) ")"))
+     (indent 2 (string-append val " = call ptr @isl_dyn_init_" (mangle-symbol name) "(ptr %env)"))
+     (indent 2 (string-append "call ptr @isl_rt_dyn_set(ptr " sym ", ptr " val ")")))))
+
 (define (emit-aot-main tops)
   (let ((cg-ref (list 1000)))
     (let loop ((xs tops) (idx 0) (acc '()) (last #f))
@@ -384,6 +528,11 @@
                      (+ idx 1)
                      (append acc (emit-global-init ll cg-ref))
                      last))
+              ((ll-define-dynamic)
+               (loop (cdr xs)
+                     (+ idx 1)
+                     (append acc (emit-dynamic-init ll cg-ref))
+                     last))
               ((ll-expr)
                (let ((r (cg-next-name! cg-ref)))
                  (loop (cdr xs)
@@ -397,6 +546,9 @@
 (define (module-decls)
   (list
    "declare ptr @isl_rt_make_int(i64)"
+   "declare ptr @isl_rt_make_float(ptr)"
+   "declare ptr @isl_rt_make_char(i64)"
+   "declare ptr @isl_rt_vector(i32, ptr)"
    "declare ptr @isl_rt_make_symbol(ptr)"
    "declare ptr @isl_rt_make_string(ptr)"
    "declare ptr @isl_rt_nil()"
@@ -404,6 +556,14 @@
    "declare ptr @isl_rt_false()"
    "declare ptr @isl_rt_lookup(ptr, ptr)"
    "declare ptr @isl_rt_lookup_param(ptr, i32)"
+   "declare ptr @isl_rt_set(ptr, ptr, ptr)"
+   "declare ptr @isl_rt_dyn_set(ptr, ptr)"
+   "declare ptr @isl_rt_class_new(ptr, ptr)"
+   "declare ptr @isl_rt_class_add_super(ptr, ptr, ptr)"
+   "declare ptr @isl_rt_class_add_slot(ptr, ptr, ptr, ptr)"
+   "declare ptr @isl_rt_class_finalize(ptr, ptr)"
+   "declare ptr @isl_rt_defgeneric(ptr, ptr)"
+   "declare ptr @isl_rt_defmethod(ptr, ptr, ptr, ptr, ptr)"
    "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
    "declare i1 @isl_rt_truthy(ptr)"
    "declare ptr @isl_rt_unsupported(ptr)"

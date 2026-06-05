@@ -31,15 +31,19 @@
 
 (define (cond-message e)
   (guard (_ (else "<no-message>"))
-    (if (is-a? e <message-condition>)
-        (x->string (slot-ref e 'message))
-        (x->string e))))
+    (cond
+     ((isl-condition? e) (isl-condition-message e))
+     ((is-a? e <message-condition>) (x->string (slot-ref e 'message)))
+     (else (x->string e)))))
 
 (define (missing-error? e)
-  ;; 未定義の操作子は frame-ref が "Unbound variable ..." を送出する
+  ;; 未定義の操作子/変数は <undefined-function>/<unbound-variable> を送出する
+  ;; （旧経路の生エラー "Unbound variable ..." も後方互換で検出）。
   (let ((m (cond-message e)))
     (and (string? m)
-         (string-prefix? "Unbound variable" m))))
+         (or (string-prefix? "Unbound variable" m)
+             (string-prefix? "unbound variable" m)
+             (string-prefix? "undefined function" m)))))
 
 ;; entry: (name kind form expected)
 ;;   kind = eq   : (equal? result expected) を判定
@@ -145,10 +149,9 @@
   '((cons eq (cons 1 2) (1 . 2))
     (car eq (car '(1 2)) 1)
     (cdr eq (cdr '(1 2)) (2))
-    ;; ISLISP 標準の引数順序は (set-car obj cons)。実装は (set-car cons obj) で逆。
-    ;; ここでは存在確認のため実装順で呼ぶ（順序逸脱はギャップレポートに記載）。
-    (set-car val (set-car (list 1 2) 9))
-    (set-cdr val (set-cdr (list 1 2) 9))
+    ;; ISLISP 標準の引数順序 (set-car obj cons) / (set-cdr obj cons)。
+    (set-car val (set-car 9 (list 1 2)))
+    (set-cdr val (set-cdr 9 (list 1 2)))
     (create-list eq (create-list 3 'a) (a a a))
     (list eq (list 1 2 3) (1 2 3))
     (reverse eq (reverse '(1 2 3)) (3 2 1))
