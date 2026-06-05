@@ -3926,9 +3926,8 @@
   )
 
 
-(define (runtime-eval-special op payload env state)
-  ;; ---- 5-F: tag matching with isl-condition class hierarchy ----
-  (define (handler-case-tag-match? tag cond-obj)
+;; ---- runtime-eval-special: 特殊形式ごとの評価補助（旧 case 枝を抽出） ----
+(define (handler-case-tag-match? tag cond-obj)
     (cond
      ((or (eq? tag 't) (eq? tag 'otherwise)) #t)
      (else
@@ -3950,8 +3949,8 @@
               (or (string=? bare "error")
                   (string=? bare "condition")
                   (string=? bare "serious-condition"))))))))
-  (case op
-    ((setq)
+
+(define (rt-eval-setq op payload env state)
      (unless (list? payload)
        (runtime-raise 'invalid-ir "setq payload must be list" payload))
      (if (null? payload)
@@ -3965,7 +3964,8 @@
                  (let ((v (runtime-eval-expr (cadr entry) env state)))
                    (env-set! env (car entry) v)
                    (loop (cdr xs) v)))))))
-    ((let)
+
+(define (rt-eval-let op payload env state)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "let payload must be (bindings body)" payload))
      (let* ((bindings (car payload))
@@ -3989,7 +3989,8 @@
            (for-each (lambda (x) (env-define! let-env (car x) (cdr x)))
                      (reverse init-values))
            (runtime-eval-expr body let-env state)))))
-    ((and)
+
+(define (rt-eval-and op payload env state)
      (unless (list? payload)
        (runtime-raise 'invalid-ir "and payload must be expr list" payload))
      (let loop ((xs payload) (last (host->runtime-value #t)))
@@ -3999,7 +4000,8 @@
              (if (runtime-truthy? v)
                  (loop (cdr xs) v)
                  (host->runtime-value '()))))))
-    ((cond)
+
+(define (rt-eval-cond op payload env state)
      (unless (list? payload)
        (runtime-raise 'invalid-ir "cond payload must be clause list" payload))
      (let loop ((clauses payload))
@@ -4015,7 +4017,8 @@
                        (runtime-eval-expr body-ir env state)
                        test-v)
                    (loop (cdr clauses))))))))
-    ((or)
+
+(define (rt-eval-or op payload env state)
      (unless (list? payload)
        (runtime-raise 'invalid-ir "or payload must be expr list" payload))
     (let loop ((xs payload))
@@ -4025,7 +4028,8 @@
             (if (runtime-truthy? v)
                 v
                 (loop (cdr xs)))))))
-    ((let*)
+
+(define (rt-eval-let* op payload env state)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "let* payload must be (bindings body)" payload))
      (let* ((bindings (car payload))
@@ -4042,7 +4046,8 @@
                 (env-define! let-env (let-binding-name parsed) v))))
           bindings)
          (runtime-eval-expr body let-env state))))
-    ((setf)
+
+(define (rt-eval-setf op payload env state)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "setf payload must be (place value)" payload))
      (let ((place (car payload))
@@ -4115,7 +4120,8 @@
             value-rv))
          (else
          (runtime-raise 'unsupported-special "unsupported setf place" place)))))
-    ((block)
+
+(define (rt-eval-block op payload env state)
      (unless (and (list? payload) (= (length payload) 2) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "block payload must be (name body)" payload))
      (let ((name (car payload))
@@ -4127,13 +4133,15 @@
                     (raise e)))
                (else (raise e)))
          (runtime-eval-expr body env state))))
-    ((return-from)
+
+(define (rt-eval-return-from op payload env state)
      (unless (and (list? payload) (= (length payload) 2) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "return-from payload must be (name value)" payload))
      (let ((name (car payload))
            (value (runtime-eval-expr (cadr payload) env state)))
        (raise (make-nonlocal-return name value))))
-    ((catch)
+
+(define (rt-eval-catch op payload env state)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "catch payload must be (tag body)" payload))
      (let ((tag (runtime-value->host (runtime-eval-expr (car payload) env state)))
@@ -4149,7 +4157,8 @@
                    (else (raise e)))
              (runtime-eval-expr body env state)))
          (lambda () (set! *runtime-catch-stack* (cdr *runtime-catch-stack*))))))
-    ((throw)
+
+(define (rt-eval-throw op payload env state)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "throw payload must be (tag value)" payload))
      (let ((tag (runtime-value->host (runtime-eval-expr (car payload) env state)))
@@ -4157,14 +4166,16 @@
        (if (runtime-catch-active? tag)
            (raise (make-throw-signal tag value))
            (runtime-raise 'control-error "No enclosing catch for throw" tag))))
-    ((go)
+
+(define (rt-eval-go op payload env state)
      (unless (and (list? payload) (= (length payload) 1))
        (runtime-raise 'invalid-ir "go payload must be (tag)" payload))
      (let ((tag (car payload)))
        (unless (or (symbol? tag) (integer? tag))
          (runtime-raise 'invalid-ir "go tag must be symbol or integer" tag))
        (raise (make-go-signal tag))))
-    ((tagbody)
+
+(define (rt-eval-tagbody op payload env state)
      (unless (list? payload)
        (runtime-raise 'invalid-ir "tagbody payload must be item list" payload))
      (let* ((items payload)
@@ -4197,7 +4208,8 @@
                                 (runtime-raise 'invalid-ir "tagbody item must be label/form pair" it))
                             (+ i 1))))
                      (loop next-i))))))))
-    ((while)
+
+(define (rt-eval-while op payload env state)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "while payload must be (test body)" payload))
      (let ((test-expr (car payload))
@@ -4206,7 +4218,8 @@
          (if (runtime-truthy? (runtime-eval-expr test-expr env state))
              (loop (runtime-eval-expr body-expr env state))
              last))))
-    ((with-open-file)
+
+(define (rt-eval-with-open-file op payload env state)
      (unless (and (list? payload) (= (length payload) 4) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "with-open-file payload must be (var path options body)" payload))
      (let* ((var (car payload))
@@ -4249,7 +4262,8 @@
            (let ((r (runtime-eval-expr body-expr wf-env state)))
              (close-port port)
              r)))))
-    ((dolist)
+
+(define (rt-eval-dolist op payload env state)
      (unless (and (list? payload) (= (length payload) 4) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "dolist payload must be (var list result body)" payload))
      (let* ((var (car payload))
@@ -4270,7 +4284,8 @@
        (if result-expr
            (runtime-eval-expr result-expr loop-env state)
            (host->runtime-value '()))))
-    ((handler-case)
+
+(define (rt-eval-handler-case op payload env state)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "handler-case payload must be (protected clauses)" payload))
      (let ((protected (car payload))
@@ -4303,7 +4318,8 @@
                                 (runtime-eval-expr body henv state))
                               (loop (cdr cs)))))))))
          (runtime-eval-expr protected env state))))
-    ((with-handler)
+
+(define (rt-eval-with-handler op payload env state)
      ;; payload = (handler-ir protected-ir)
      (unless (and (list? payload) (= (length payload) 2))
        (runtime-raise 'invalid-ir "with-handler payload must be (handler protected)" payload))
@@ -4318,8 +4334,8 @@
                                               state))
                              (*isl-handler-stack*))))
          (runtime-eval-expr protected-ir env state))))
-    ;; ---- Phase 6-B ----
-    ((dynamic)
+
+(define (rt-eval-dynamic op payload env state)
      ;; payload = (sym)
      (unless (and (list? payload) (= (length payload) 1) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "dynamic payload must be (sym)" payload))
@@ -4328,7 +4344,8 @@
          (if (hash-table-exists? tbl sym)
              (host->runtime-value (hash-table-ref tbl sym))
              (runtime-raise 'unbound-variable "dynamic variable not bound" sym)))))
-    ((dynamic-let)
+
+(define (rt-eval-dynamic-let op payload env state)
      ;; payload = (norm-bindings body-ir)
      ;; norm-bindings = list of (var-sym norm-expr-ir)
      ;; body-ir       = (body norm-expr-ir ...)
@@ -4370,8 +4387,8 @@
                              (hash-table-put! tbl sym old)
                              (hash-table-delete! tbl sym))))
                      saved)))))
-    ;; ---- case (§10.4) ----
-    ((case)
+
+(define (rt-eval-case op payload env state)
      ;; payload = (keyform-ir norm-clauses)
      ;; norm-clauses = ((keys body-ir) ... [(else body-ir)])
      (unless (and (list? payload) (= (length payload) 2))
@@ -4391,8 +4408,8 @@
                      (if (any (lambda (k) (eqv? key k)) keys)
                          (runtime-eval-expr body-ir env state)
                          (loop (cdr cs))))))))))
-    ;; ---- dotimes (§10.6) ----
-    ((dotimes)
+
+(define (rt-eval-dotimes op payload env state)
      ;; payload = (var count-ir result-ir? body-ir)
      (unless (and (list? payload) (= (length payload) 4) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "dotimes payload must be (var count result? body)" payload))
@@ -4414,8 +4431,8 @@
        (if result-ir
            (runtime-eval-expr result-ir loop-env state)
            (host->runtime-value '()))))
-    ;; ---- for / do (§10.8) ----
-    ((for)
+
+(define (rt-eval-for op payload env state)
      ;; payload = (norm-specs end-test-ir result-ir body-ir)
      ;; norm-specs = ((sym init-ir step-ir?) ...)
      (unless (and (list? payload) (= (length payload) 4))
@@ -4451,19 +4468,22 @@
                               (env-set! loop-env (car spec) val))
                            specs new-vals))
                (loop))))))
-    ((defpackage)
+
+(define (rt-eval-defpackage op payload env state)
      (unless (list? payload)
        (runtime-raise 'invalid-ir "defpackage payload must be list" payload))
      (host->runtime-value
       (with-module isl.core
         (eval-defpackage payload))))
-    ((in-package)
+
+(define (rt-eval-in-package op payload env state)
      (unless (and (list? payload) (= (length payload) 1))
        (runtime-raise 'invalid-ir "in-package payload must be one argument list" payload))
      (host->runtime-value
       (with-module isl.core
         (eval-in-package payload))))
-    ((defclass)
+
+(define (rt-eval-defclass op payload env state)
      (unless (and (list? payload) (= (length payload) 3) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "defclass payload must be (name supers slots)" payload))
      (let* ((name (car payload))
@@ -4542,7 +4562,8 @@
                (rt-slot-writers s))))
           own-slots)
          (host->runtime-value name))))
-    ((defgeneric)
+
+(define (rt-eval-defgeneric op payload env state)
      (unless (and (list? payload) (= (length payload) 2) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "defgeneric payload must be (name params)" payload))
      (let ((name (car payload))
@@ -4550,7 +4571,8 @@
        (validate-params params)
        (ensure-generic-function! name env params)
        (host->runtime-value name)))
-    ((defmethod)
+
+(define (rt-eval-defmethod op payload env state)
      (unless (and (list? payload) (= (length payload) 4) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "defmethod payload must be (name qualifier params body)" payload))
      (let* ((name (car payload))
@@ -4565,8 +4587,8 @@
             (method (make-rt-method qualifier specializers plain-params method-fn)))
        (set-rt-generic-methods! generic (cons method (rt-generic-methods generic)))
        (host->runtime-value name)))
-    ;; ---- Phase 3 ----
-    ((flet labels)
+
+(define (rt-eval-flet-labels op payload env state)
      ;; payload = (bindings body)
      ;; bindings = list of (name params body-ir)
      (unless (and (list? payload) (= (length payload) 2) (list? (car payload)))
@@ -4594,7 +4616,8 @@
             (env-define! fenv fname closure)))
         bindings)
        (runtime-eval-expr body fenv state)))
-    ((macrolet)
+
+(define (rt-eval-macrolet op payload env state)
      ;; payload = (bindings body) — local macro bindings (§22)
      ;; At runtime, macrolet macros are functions that receive unevaluated args
      ;; and return expanded forms which are then evaluated.
@@ -4604,7 +4627,8 @@
      ;; For compiler macrolet: treat as flet since expansion happened at compile time.
      ;; If body was not expanded, just evaluate body in the outer env.
      (runtime-eval-expr (cadr payload) env state))
-    ((the)
+
+(define (rt-eval-the op payload env state)
      ;; payload = (class-name value-expr)
      (unless (and (list? payload) (= (length payload) 2) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "the payload must be (class-name value-expr)" payload))
@@ -4645,7 +4669,8 @@
                         (string-append "the: value is not of class " (symbol->string class-name))
                         val-rv))
        val-rv))
-    ((unwind-protect)
+
+(define (rt-eval-unwind-protect op payload env state)
      ;; payload = (protected-expr (cleanup-expr...))
      (unless (and (list? payload) (= (length payload) 2) (list? (cadr payload)))
        (runtime-raise 'invalid-ir "unwind-protect payload must be (protected cleanups)" payload))
@@ -4656,8 +4681,8 @@
          (lambda () (runtime-eval-expr protected env state))
          (lambda ()
            (for-each (lambda (c) (runtime-eval-expr c env state)) cleanups)))))
-    ;; ---- Phase 7-C ----
-    ((class)
+
+(define (rt-eval-class op payload env state)
      (unless (and (list? payload) (= (length payload) 1) (symbol? (car payload)))
        (runtime-raise 'invalid-ir "class payload must be (sym)" payload))
      (let* ((sym (car payload))
@@ -4668,8 +4693,45 @@
          (unless (rt-class? raw)
            (runtime-raise 'type-error "class: not a class" sym))
          (cdr pair))))
+
+(define (runtime-eval-special op payload env state)
+  (case op
+    ((setq) (rt-eval-setq op payload env state))
+    ((let) (rt-eval-let op payload env state))
+    ((and) (rt-eval-and op payload env state))
+    ((cond) (rt-eval-cond op payload env state))
+    ((or) (rt-eval-or op payload env state))
+    ((let*) (rt-eval-let* op payload env state))
+    ((setf) (rt-eval-setf op payload env state))
+    ((block) (rt-eval-block op payload env state))
+    ((return-from) (rt-eval-return-from op payload env state))
+    ((catch) (rt-eval-catch op payload env state))
+    ((throw) (rt-eval-throw op payload env state))
+    ((go) (rt-eval-go op payload env state))
+    ((tagbody) (rt-eval-tagbody op payload env state))
+    ((while) (rt-eval-while op payload env state))
+    ((with-open-file) (rt-eval-with-open-file op payload env state))
+    ((dolist) (rt-eval-dolist op payload env state))
+    ((handler-case) (rt-eval-handler-case op payload env state))
+    ((with-handler) (rt-eval-with-handler op payload env state))
+    ((dynamic) (rt-eval-dynamic op payload env state))
+    ((dynamic-let) (rt-eval-dynamic-let op payload env state))
+    ((case) (rt-eval-case op payload env state))
+    ((dotimes) (rt-eval-dotimes op payload env state))
+    ((for) (rt-eval-for op payload env state))
+    ((defpackage) (rt-eval-defpackage op payload env state))
+    ((in-package) (rt-eval-in-package op payload env state))
+    ((defclass) (rt-eval-defclass op payload env state))
+    ((defgeneric) (rt-eval-defgeneric op payload env state))
+    ((defmethod) (rt-eval-defmethod op payload env state))
+    ((flet labels) (rt-eval-flet-labels op payload env state))
+    ((macrolet) (rt-eval-macrolet op payload env state))
+    ((the) (rt-eval-the op payload env state))
+    ((unwind-protect) (rt-eval-unwind-protect op payload env state))
+    ((class) (rt-eval-class op payload env state))
     (else
      (runtime-raise 'unsupported-special "special form is not yet lowered" (list op payload)))))
+
 
 ;; ---- Phase 7-A: next-method support (compiler) ----
 (define *rt-next-methods* (make-parameter '()))
