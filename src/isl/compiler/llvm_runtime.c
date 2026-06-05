@@ -30,6 +30,7 @@ typedef enum {
   ISL_V_CLASS,
   ISL_V_INSTANCE,
   ISL_V_GENERIC,
+  ISL_V_ARRAY,
   ISL_V_BOOL,
   ISL_V_NIL,
   ISL_V_SYMBOL,
@@ -84,6 +85,10 @@ struct IslValue {
       struct IslValue **fns;      /* per-method handler closure */
       int n;
     } gen;        /* ISL_V_GENERIC */
+    struct {
+      int64_t *dims; int ndim;
+      struct IslValue **items; int64_t len;   /* row-major flat storage */
+    } arr;        /* ISL_V_ARRAY: rank >= 2 general array */
     IslFunction *fn;
     struct {
       IslValue *car;
@@ -588,6 +593,7 @@ static void isl_format_radix(IslValue *v, int radix);
 static void isl_format_double(char *out, size_t outsz, double d);
 static IslValue *isl_str_value(const char *s);
 static IslValue *isl_generic_call(IslEnv *env, IslValue *gen, int32_t argc, IslValue **argv);
+static int64_t isl_array_index(IslValue *a, int32_t argc, IslValue **argv, int32_t base);
 
 static IslValue *prim_print(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
@@ -871,18 +877,41 @@ static IslValue *prim_create_vector(IslEnv *env, int32_t argc, IslValue **argv) 
   IslValue *fill = (argc >= 2) ? argv[1] : (IslValue *)isl_rt_nil();
   return isl_make_vector_n(n, fill);
 }
-/* (create-array dims [fill]) — only rank-1 (a one-element dimension list). */
+/* (create-array dims [fill]) — rank-1 yields a vector, rank>=2 an N-D array. */
 static IslValue *prim_create_array(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
   if (argc < 1) return isl_make_error("create-array: expected dimensions");
   IslValue *dims = argv[0];
-  if (!dims || dims->tag != ISL_V_CONS || isl_list_length(dims) != 1 ||
-      dims->as.cons.car->tag != ISL_V_INT) {
-    return isl_make_error("create-array: only rank-1 dimensions supported");
-  }
-  int64_t n = dims->as.cons.car->as.i64;
+  if (!dims || (dims->tag != ISL_V_CONS && dims->tag != ISL_V_NIL) || !isl_is_list(dims))
+    return isl_make_error("create-array: dimensions must be a list");
+  int ndim = isl_list_length(dims);
   IslValue *fill = (argc >= 2) ? argv[1] : (IslValue *)isl_rt_nil();
-  return isl_make_vector_n(n, fill);
+  if (ndim == 1) return isl_make_vector_n(dims->as.cons.car->as.i64, fill);
+  if (ndim == 0) return isl_make_error("create-array: empty dimensions");
+  int64_t *ds = (int64_t *)calloc((size_t)ndim, sizeof(int64_t));
+  int64_t total = 1; int i = 0;
+  for (IslValue *p = dims; p && p->tag == ISL_V_CONS; p = p->as.cons.cdr) {
+    if (p->as.cons.car->tag != ISL_V_INT) { free(ds); return isl_make_error("create-array: dimension must be an integer"); }
+    ds[i] = p->as.cons.car->as.i64; total *= ds[i]; i++;
+  }
+  IslValue *v = isl_alloc_value(ISL_V_ARRAY);
+  v->as.arr.dims = ds; v->as.arr.ndim = ndim; v->as.arr.len = total;
+  v->as.arr.items = total ? (IslValue **)calloc((size_t)total, sizeof(IslValue *)) : NULL;
+  for (int64_t j = 0; j < total; j++) v->as.arr.items[j] = fill;
+  return v;
+}
+/* Row-major flat index for an N-D array given indices in argv[base..base+ndim). */
+static int64_t isl_array_index(IslValue *a, int32_t argc, IslValue **argv, int32_t base) {
+  if (argc - base != a->as.arr.ndim) return -1;
+  int64_t flat = 0;
+  for (int d = 0; d < a->as.arr.ndim; d++) {
+    IslValue *iv = argv[base + d];
+    if (!iv || iv->tag != ISL_V_INT) return -1;
+    int64_t i = iv->as.i64;
+    if (i < 0 || i >= a->as.arr.dims[d]) return -1;
+    flat = flat * a->as.arr.dims[d] + i;
+  }
+  return flat;
 }
 /* element access shared by elt / aref / vector-ref (1-D) */
 static IslValue *isl_seq_ref(IslValue *seq, IslValue *idxv, const char *who) {
@@ -912,8 +941,30 @@ static IslValue *prim_elt(IslEnv *e, int32_t c, IslValue **a) {
   return isl_seq_ref(a[0], a[1], "elt: bad sequence");
 }
 static IslValue *prim_aref(IslEnv *e, int32_t c, IslValue **a) {
-  (void)e; if (c != 2) return isl_make_error("aref: arity (only rank-1)");
+  (void)e;
+  if (c >= 1 && a[0] && a[0]->tag == ISL_V_ARRAY) {
+    int64_t flat = isl_array_index(a[0], c, a, 1);
+    if (flat < 0) return isl_make_error("aref: index out of range or rank mismatch");
+    return a[0]->as.arr.items[flat];
+  }
+  if (c != 2) return isl_make_error("aref: arity");
   return isl_seq_ref(a[0], a[1], "aref: bad array");
+}
+static IslValue *prim_array_dimensions(IslEnv *e, int32_t c, IslValue **a) {
+  (void)e; if (c != 1) return isl_make_error("array-dimensions: arity");
+  IslValue *v = a[0];
+  IslValue *acc = (IslValue *)isl_rt_nil();
+  if (v && v->tag == ISL_V_ARRAY) {
+    for (int d = v->as.arr.ndim - 1; d >= 0; d--)
+      acc = isl_cons((IslValue *)isl_rt_make_int(v->as.arr.dims[d]), acc);
+  } else if (v && v->tag == ISL_V_VECTOR) {
+    acc = isl_cons((IslValue *)isl_rt_make_int(v->as.vec.len), acc);
+  } else if (v && v->tag == ISL_V_STRING) {
+    acc = isl_cons((IslValue *)isl_rt_make_int((int64_t)strlen(v->as.str)), acc);
+  } else {
+    return isl_make_error("array-dimensions: not an array");
+  }
+  return acc;
 }
 /* (set-elt value seq index) / (set-aref value array index) */
 static IslValue *isl_seq_set(IslValue *val, IslValue *seq, IslValue *idxv, const char *who) {
@@ -931,7 +982,14 @@ static IslValue *prim_set_elt(IslEnv *e, int32_t c, IslValue **a) {
   return isl_seq_set(a[0], a[1], a[2], "set-elt: bad sequence");
 }
 static IslValue *prim_set_aref(IslEnv *e, int32_t c, IslValue **a) {
-  (void)e; if (c != 3) return isl_make_error("set-aref: arity");
+  (void)e;
+  if (c >= 2 && a[1] && a[1]->tag == ISL_V_ARRAY) {
+    int64_t flat = isl_array_index(a[1], c, a, 2);
+    if (flat < 0) return isl_make_error("set-aref: index out of range or rank mismatch");
+    a[1]->as.arr.items[flat] = a[0];
+    return a[0];
+  }
+  if (c != 3) return isl_make_error("set-aref: arity");
   return isl_seq_set(a[0], a[1], a[2], "set-aref: bad array");
 }
 
@@ -1429,27 +1487,61 @@ static IslValue *prim_instancep(IslEnv *env, int32_t argc, IslValue **argv) {
   if (!obj || obj->tag != ISL_V_INSTANCE || !cls || cls->tag != ISL_V_CLASS) return g_false;
   return (isl_class_distance(obj->as.inst.cls, cls) >= 0) ? g_true : g_false;
 }
-/* Pick and call the most specific applicable method of a generic. */
+/* Active generic-call context, so call-next-method / next-method-p can walk the
+   sorted list of applicable primary methods. */
+typedef struct MethodCtx {
+  IslValue **fns; int n; int idx;
+  IslValue **argv; int32_t argc;
+  struct MethodCtx *next;
+} MethodCtx;
+static MethodCtx *g_method_ctx = NULL;
+
+/* Sort applicable methods (most specific first) and call the first one, with a
+   context that call-next-method can advance through. */
 static IslValue *isl_generic_call(IslEnv *env, IslValue *gen, int32_t argc, IslValue **argv) {
   IslValue *argcls = (argc > 0 && argv[0] && argv[0]->tag == ISL_V_INSTANCE)
                          ? argv[0]->as.inst.cls : NULL;
-  int best = -1;
-  IslValue *bestfn = NULL;
-  for (int i = 0; i < gen->as.gen.n; i++) {
+  int total = gen->as.gen.n;
+  IslValue **fns = (IslValue **)malloc((size_t)(total ? total : 1) * sizeof(IslValue *));
+  int *dist = (int *)malloc((size_t)(total ? total : 1) * sizeof(int));
+  int m = 0;
+  for (int i = 0; i < total; i++) {
     IslValue *spec = gen->as.gen.specs[i];
     int d;
-    if (!spec) {
-      d = 1000000; /* unspecialized: least specific */
-    } else if (argcls) {
-      d = isl_class_distance(argcls, spec);
-      if (d < 0) continue;
-    } else {
-      continue;
-    }
-    if (best < 0 || d < best) { best = d; bestfn = gen->as.gen.fns[i]; }
+    if (!spec) { d = 1000000; }
+    else if (argcls) { d = isl_class_distance(argcls, spec); if (d < 0) continue; }
+    else { continue; }
+    fns[m] = gen->as.gen.fns[i]; dist[m] = d; m++;
   }
-  if (!bestfn) return isl_make_error("no applicable method");
-  return (IslValue *)isl_rt_call(env, bestfn, argc, argv);
+  if (m == 0) { free(fns); free(dist); return isl_make_error("no applicable method"); }
+  for (int i = 1; i < m; i++) { /* insertion sort by distance asc */
+    IslValue *f = fns[i]; int d = dist[i]; int j = i - 1;
+    while (j >= 0 && dist[j] > d) { fns[j+1] = fns[j]; dist[j+1] = dist[j]; j--; }
+    fns[j+1] = f; dist[j+1] = d;
+  }
+  MethodCtx ctx;
+  ctx.fns = fns; ctx.n = m; ctx.idx = 0; ctx.argv = argv; ctx.argc = argc; ctx.next = g_method_ctx;
+  g_method_ctx = &ctx;
+  IslValue *r = (IslValue *)isl_rt_call(env, fns[0], argc, argv);
+  g_method_ctx = ctx.next;
+  free(fns); free(dist);
+  return r;
+}
+static IslValue *prim_call_next_method(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)argc; (void)argv;
+  MethodCtx *ctx = g_method_ctx;
+  if (!ctx) return isl_make_error("call-next-method: no method context");
+  if (ctx->idx + 1 >= ctx->n) return isl_make_error("call-next-method: no next method");
+  int saved = ctx->idx;
+  ctx->idx = saved + 1;
+  IslValue *r = (IslValue *)isl_rt_call(env, ctx->fns[ctx->idx], ctx->argc, ctx->argv);
+  ctx->idx = saved;
+  return r;
+}
+static IslValue *prim_next_method_p(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env; (void)argc; (void)argv;
+  MethodCtx *ctx = g_method_ctx;
+  return (ctx && ctx->idx + 1 < ctx->n) ? g_true : g_false;
 }
 
 /* ---- dynamic (special) variables ---- */
@@ -1746,6 +1838,20 @@ static void isl_write_value(IslValue *v, int readable) {
     case ISL_V_GENERIC:
       printf("#<generic-function %s>", v->as.gen.name);
       break;
+    case ISL_V_ARRAY:
+      /* match the interpreter's internal display: #(isl-array (d...) #(flat...)) */
+      printf("#(isl-array (");
+      for (int d = 0; d < v->as.arr.ndim; d++) {
+        if (d) printf(" ");
+        printf("%lld", (long long)v->as.arr.dims[d]);
+      }
+      printf(") #(");
+      for (int64_t j = 0; j < v->as.arr.len; j++) {
+        if (j) printf(" ");
+        isl_write_value(v->as.arr.items[j], readable);
+      }
+      printf("))");
+      break;
     case ISL_V_BOOL:
       printf(v->as.b ? "#t" : "#f");
       break;
@@ -1813,6 +1919,14 @@ void *isl_rt_make_float(void *p) {
 /* Build a character literal from its code point. */
 void *isl_rt_make_char(int64_t cp) {
   return isl_make_char(cp);
+}
+
+/* Build a vector literal #(...) from an array of n element values. */
+void *isl_rt_vector(int32_t n, void *arrp) {
+  IslValue **items = (IslValue **)arrp;
+  IslValue *v = isl_make_vector_n(n, (IslValue *)isl_rt_nil());
+  for (int32_t i = 0; i < n; i++) v->as.vec.items[i] = items[i];
+  return v;
 }
 
 void *isl_rt_make_symbol(void *p) {
@@ -2003,6 +2117,7 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "create-array", isl_make_primitive("create-array", prim_create_array));
   isl_define_raw(env, "elt", isl_make_primitive("elt", prim_elt));
   isl_define_raw(env, "aref", isl_make_primitive("aref", prim_aref));
+  isl_define_raw(env, "array-dimensions", isl_make_primitive("array-dimensions", prim_array_dimensions));
   isl_define_raw(env, "vector-ref", isl_make_primitive("vector-ref", prim_aref));
   isl_define_raw(env, "set-elt", isl_make_primitive("set-elt", prim_set_elt));
   isl_define_raw(env, "set-aref", isl_make_primitive("set-aref", prim_set_aref));
@@ -2049,6 +2164,8 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "%slot-write", isl_make_primitive("%slot-write", prim_slot_write));
   isl_define_raw(env, "class-of", isl_make_primitive("class-of", prim_class_of));
   isl_define_raw(env, "instancep", isl_make_primitive("instancep", prim_instancep));
+  isl_define_raw(env, "call-next-method", isl_make_primitive("call-next-method", prim_call_next_method));
+  isl_define_raw(env, "next-method-p", isl_make_primitive("next-method-p", prim_next_method_p));
   /* class-name designators usable as the second argument to convert */
   isl_define_raw(env, "<integer>",   (IslValue *)isl_rt_make_symbol((void *)"<integer>"));
   isl_define_raw(env, "<float>",     (IslValue *)isl_rt_make_symbol((void *)"<float>"));

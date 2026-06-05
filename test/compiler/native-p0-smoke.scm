@@ -63,10 +63,10 @@
 (check-output "format-mix" "(format (standard-output) \"~A=~X~%\" 255 255)"
               "255=ff")
 
-;; 2. まだネイティブ未対応の構文は「黙って誤った値」を返さず、必ず非 0 終了で
+;; 2. まだコンパイラ未対応の構文は「黙って誤った値」を返さず、必ず非 0 終了で
 ;;    失敗する（誤出力を error へ格下げする P0 の原則を維持）。ほぼ全機能が
-;;    実装済みのため、残る未対応（ベクタリテラル #(...) の定数構築）で検証する。
-(check-fails-loudly "vector-literal-not-silent" "(print '#(1 2 3))")
+;;    実装済みのため、残るフロントエンド未対応（setf の汎用 place）で検証する。
+(check-fails-loudly "setf-place-not-silent" "(setf x 9)")
 
 (when (file-exists? *tmp*) (sys-unlink *tmp*))
 

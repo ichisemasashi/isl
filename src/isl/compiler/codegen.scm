@@ -211,6 +211,26 @@
        (emit-const-build carn (car v) cg-ref)
        (emit-const-build cdrn (cdr v) cg-ref)
        (list (indent 2 (string-append dst " = call ptr @isl_rt_cons(ptr " carn ", ptr " cdrn ")"))))))
+   ((vector? v)
+    ;; quoted vector literal #(...): build each element, then assemble.
+    (let* ((n (vector-length v))
+           (arr (cg-next-name! cg-ref))
+           (arr-type (string-append "[" (number->string (max n 1)) " x ptr]")))
+      (let loop ((i 0)
+                 (acc (list (indent 2 (string-append arr " = alloca " arr-type)))))
+        (if (= i n)
+            (append acc
+                    (list (indent 2 (string-append dst " = call ptr @isl_rt_vector(i32 "
+                                                   (number->string n) ", ptr " arr ")"))))
+            (let* ((elt (cg-next-name! cg-ref))
+                   (elt-lines (emit-const-build elt (vector-ref v i) cg-ref))
+                   (slot (cg-next-name! cg-ref)))
+              (loop (+ i 1)
+                    (append acc elt-lines
+                            (list (indent 2 (string-append slot " = getelementptr inbounds "
+                                                           arr-type ", ptr " arr ", i64 0, i64 "
+                                                           (number->string i)))
+                                  (indent 2 (string-append "store ptr " elt ", ptr " slot))))))))))
    (else
     (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")"))))))
 
@@ -526,6 +546,7 @@
    "declare ptr @isl_rt_make_int(i64)"
    "declare ptr @isl_rt_make_float(ptr)"
    "declare ptr @isl_rt_make_char(i64)"
+   "declare ptr @isl_rt_vector(i32, ptr)"
    "declare ptr @isl_rt_make_symbol(ptr)"
    "declare ptr @isl_rt_make_string(ptr)"
    "declare ptr @isl_rt_nil()"
