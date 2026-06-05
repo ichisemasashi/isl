@@ -155,6 +155,28 @@ native-gap-probe 49/49・compiler 45/46（`runtime-m7-oracle` は本作業以前
 | ✅ R3 | `runtime-eval-special` を 33 個の `rt-eval-<form>` へ | 746 行 → 37 行ディスパッチャ |
 | ✅ R4 | `normalize-special` を 38 個の `normalize-special-<form>` へ | 369 行 → 薄いディスパッチャ |
 | ✅ R5 | `make-initial-env` を 4 補助へ分離 / `lower-expr` の special 枝を分離 | 240→54 行 / 150→81 行 |
+| ✅ R6 | core.scm / runtime.scm を Gauche `include` で関心事別ファイルへ分割 | 下表参照 |
+
+### R6 後のファイル構成
+
+| ファイル | 行数 | 内容 |
+|---------|------|------|
+| `core.scm` | 3503（←7412） | モジュール宣言 + 評価器コア + 4 include |
+| `core/primitives.scm` | 3304 | 組込みプリミティブ登録（install-* 群、平坦な登録列） |
+| `core/bootstrap.scm` | 273 | make-initial-env と初期化補助 |
+| `core/reader.scm` | 191 | ISLISP リーダ層と REPL |
+| `core/conditions.scm` | 165 | 条件/配列/プロパティ/クラス階層/動的変数のデータ表現 |
+| `runtime.scm` | 932（←5221） | モジュール宣言 + 値表現/評価ループ等のコア + 2 include |
+| `runtime/primitives.scm` | 3156 | 組込みプリミティブ登録（平坦な登録列） |
+| `runtime/special-forms.scm` | 1145 | rt-eval-* と runtime-eval-special |
+
+各 include ファイルは `select-module` 後に展開されるため名前空間は不変。
+Gauche の `include` はインクルード元ファイル基準で相対パス解決される（PoC で確認）。
+
+> 残: `primitives.scm`(3304) / `runtime/primitives.scm`(3156) は平坦な登録列で
+> 単一関心事のため許容（§3 の注記）。`core.scm`(3503) の評価器コアは
+> パッケージ/CLOS/評価が密に結合した心臓部で、さらなる分割は高リスクのため
+> 現状維持とした（必要なら evaluator/clos/packages への分割は将来検討）。
 
 **R5 残（軽微・任意）**: `render-format`(138)・`runtime-eval-top`(124)・
 `make-runtime-state`(93) は単一責務で凝集度が高く、`eval-special`(121) は既に
