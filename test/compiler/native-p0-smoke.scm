@@ -67,10 +67,11 @@
 ;;    失敗する（誤出力を error へ格下げする P0 の原則を維持）。
 ;;    実装済みの構文は native-loop/nonlocal/data/closure-smoke 等で検証する。
 ;;    ここでは未対応が安定している CLOS / dynamic を使う。
+;; CLOS（defclass/defgeneric/defmethod）はネイティブ未対応の代表として使う。
 (check-fails-loudly "defclass-not-silent"
   "(defclass <p> () ((x :initarg :x :accessor px))) (print (px (make-instance '<p> :x 1)))")
-(check-fails-loudly "handler-case-not-silent"
-  "(print (handler-case (error \"boom\") (<error> (c) 'caught)))")
+(check-fails-loudly "defmethod-not-silent"
+  "(defclass <a> () ()) (defgeneric g (o)) (defmethod g ((o <a>)) 1) (print (g (make-instance '<a>)))")
 
 (when (file-exists? *tmp*) (sys-unlink *tmp*))
 

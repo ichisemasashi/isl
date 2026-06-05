@@ -204,9 +204,15 @@
 (define (set-env-bindings! env bindings) (vector-set! env 2 bindings))
 
 (define (runtime-resolve-symbol sym)
-  (if (symbol? sym)
-      (with-module isl.core (resolve-symbol-in-package sym))
-      sym))
+  (cond
+   ((not (symbol? sym)) sym)
+   ;; Compiler-internal operators (lowering artifacts such as %handler-case,
+   ;; %catch, %dynamic-get) use a reserved `%` prefix and bypass package
+   ;; resolution, so they bind/look-up consistently in any current package.
+   ((let ((s (symbol->string sym)))
+      (and (> (string-length s) 0) (char=? (string-ref s 0) #\%)))
+    sym)
+   (else (with-module isl.core (resolve-symbol-in-package sym)))))
 
 (define (env-define! env sym val)
   (set! sym (runtime-resolve-symbol sym))
@@ -745,6 +751,29 @@
         (if (null? rest)
             (host->runtime-value acc)
             (loop xs (op acc (runtime-number (car rest) who)) (cdr rest))))))
+
+;; Module-level handler-case tag matcher (shared by the %handler-case primitive
+;; that top-level handler-case lowers into).  `tag` is a resolved class symbol.
+(define (rt-htag-match? tag cond-obj)
+  (cond
+   ((or (eq? tag 't) (eq? tag 'otherwise)) #t)
+   (else
+    (with-module isl.core
+      (let ((bare (symbol-base-name tag)))
+        (if (isl-condition? cond-obj)
+            (or (isl-subclassp? (isl-condition-class cond-obj) tag)
+                (and (string=? bare "error")
+                     (isl-subclassp? (isl-condition-class cond-obj)
+                                     (resolve-binding-symbol '<error>)))
+                (and (string=? bare "serious-condition")
+                     (isl-subclassp? (isl-condition-class cond-obj)
+                                     (resolve-binding-symbol '<serious-condition>)))
+                (and (string=? bare "condition")
+                     (isl-subclassp? (isl-condition-class cond-obj)
+                                     (resolve-binding-symbol '<condition>))))
+            (or (string=? bare "error")
+                (string=? bare "condition")
+                (string=? bare "serious-condition"))))))))
 
 (define (install-primitives! env)
   (define (def name proc)
@@ -1350,6 +1379,27 @@
       (unless (= (length args) 2)
         (runtime-raise 'arity "assure expects 2 arguments" args))
       (cadr args)))
+  ;; top-level handler-case lowers to
+  ;;   (%handler-case body-thunk class1 handler1 class2 handler2 ...)
+  ;; with the clauses as flat alternating arguments.
+  (def '%handler-case
+    (lambda (args state)
+      (let ((body (car args))
+            (clauses (cdr args)))
+        (guard (e
+                ((or (nonlocal-return? e) (throw-signal? e) (go-signal? e)) (raise e))
+                (else
+                 (let loop ((cs clauses))
+                   (if (or (null? cs) (null? (cdr cs)))
+                       (raise e)
+                       (let* ((class-sym (runtime-value->host (car cs)))
+                              (handler (cadr cs))
+                              (tag (with-module isl.core
+                                     (resolve-binding-symbol class-sym))))
+                         (if (rt-htag-match? tag e)
+                             (runtime-apply handler (list (host->runtime-value e)) state)
+                             (loop (cddr cs))))))))
+          (runtime-apply body '() state)))))
   (def 'not
     (lambda (args state)
       (unless (= (length args) 1)

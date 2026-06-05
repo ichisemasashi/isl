@@ -47,9 +47,9 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 
 `native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
 P0+P1（and/or/case・数値・非局所制御・float・setq/ループ/unwind-protect・flet/labels）
-+ P2/P3（文字・文字列・ベクタ・the/convert/dynamic）実施後:
-**44 SAME / 5 未対応 / 0 誤出力**。残る未対応は CLOS（defclass/defgeneric/defmethod）
-と例外（handler-case/ゼロ除算の `<division-by-zero>` 捕捉）のみ。
++ P2/P3（文字・文字列・ベクタ・the/convert/dynamic・handler-case/例外）実施後:
+**46 SAME / 3 未対応 / 0 誤出力**。残る未対応は CLOS（defclass/defgeneric/defmethod）
+のみ。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
@@ -131,8 +131,13 @@ frontend は認識するが codegen が "unsupported operation" を出す:
 - ✅ **ベクタ/1 次元配列**: `ISL_V_VECTOR` を追加。`vector`、`create-vector`、
   `create-array`(rank-1)、`elt`/`aref`/`vector-ref`、`set-elt`/`set-aref`、
   `length`、印字（`#(...)`）。多次元配列はインタプリタのみ（native は rank-1）。
-- ⬜ **例外**: `handler-case`、ゼロ除算の `<division-by-zero>` 捕捉が未対応
-  （非局所脱出基盤の上に構築。`error`/コンディションのネイティブ表現が必要）。
+- ✅ **例外**: `handler-case` / `error` / ゼロ除算の `<division-by-zero>` 捕捉 …
+  **対応済み**。条件のネイティブ表現（`ISL_V_CONDITION`：クラス＋メッセージ＋
+  irritants）を追加し、`error` は `<simple-error>` を、`/`・`mod` のゼロ除算は
+  `<division-by-zero>` を `isl_signal` で送出。handler-case は exit スタックの
+  ハンドラフレーム（kind=3）に巻き戻し、クラス階層でディスパッチ。途中の
+  unwind-protect cleanup も実行。非一致節は外側へ再シグナル。返り値として
+  伝播したエラーも捕捉。
 
 ### P2/P3 — オブジェクト・動的・型注釈
 

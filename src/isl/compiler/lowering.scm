@@ -172,6 +172,7 @@
         ((eq? sop 'dynamic)
          (lower-expr (mk-call '%dynamic-get (list 'const (car payload))) st label))
         ((eq? sop 'dynamic-let) (lower-dynamic-let payload st label))
+        ((eq? sop 'handler-case) (lower-handler-case payload st label))
         ((eq? sop 'unwind-protect)
          (lower-expr (list 'call (list 'var '%unwind-protect)
                            (list 'lambda '() (car payload))
@@ -603,6 +604,32 @@
          (form (list 'special 'let
                      (list let-binds
                            (list 'special 'unwind-protect (list protected (list cleanup)))))))
+    (lower-expr form st label)))
+
+;; ---- handler-case ----
+;; (handler-case body (class var hbody...) ...) lowers to a call
+;;   (%handler-case body-thunk class1 handler1 class2 handler2 ...)
+;; where each handler is a one-argument closure bound to the condition.  The
+;; clauses are passed as flat alternating arguments (not as a cons list) so the
+;; handler closures keep their function identity in both backends.
+(define (lower-handler-case payload st label)
+  (let* ((body (car payload))
+         (clauses (cadr payload))
+         (clause-args
+          (apply append
+                 (map (lambda (cl)
+                        (let* ((class (car cl))
+                               ;; the handler is always called with the condition;
+                               ;; if the clause omits its variable use a throwaway.
+                               (var (let ((v (cadr cl)))
+                                      (if (symbol? v) v (fresh-loop-sym st "cond"))))
+                               (hbody (cddr cl)))
+                          (list (list 'const class)
+                                (list 'lambda (list var) (flet-fn-body hbody)))))
+                      clauses)))
+         (form (cons 'call
+                     (cons (list 'var '%handler-case)
+                           (cons (list 'lambda '() body) clause-args)))))
     (lower-expr form st label)))
 
 (define (lower-expr-to-cfg expr)
