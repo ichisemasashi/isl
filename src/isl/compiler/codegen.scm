@@ -214,6 +214,96 @@
    (else
     (list (indent 2 (string-append dst " = call ptr @isl_rt_unsupported(ptr " (str-ptr "unsupported const") ")"))))))
 
+;; ---- CLOS code generation (native-only; the IR interpreter keeps its own
+;; CLOS via runtime-eval-special, so the shared lowering is left untouched) ----
+(define (emit-mksym name cg-ref)
+  ;; returns (values reg lines) that materialise a symbol value
+  (let ((reg (cg-next-name! cg-ref)))
+    (values reg
+            (list (indent 2 (string-append reg " = call ptr @isl_rt_make_symbol(ptr "
+                                           (str-ptr name) ")"))))))
+
+(define (emit-defgeneric dst payload cg-ref)
+  (receive (nsym nlines) (emit-mksym (symbol->string (car payload)) cg-ref)
+    (append nlines
+            (list (indent 2 (string-append dst " = call ptr @isl_rt_defgeneric(ptr %env, ptr " nsym ")"))))))
+
+(define (emit-defmethod dst payload cg-ref)
+  ;; payload = (name qualifier param-specs body)
+  (let* ((name (list-ref payload 0))
+         (param-specs (list-ref payload 2))
+         (body (list-ref payload 3))
+         (params (map (lambda (ps) (if (pair? ps) (car ps) ps)) param-specs))
+         (spec (let ((p0 (and (pair? param-specs) (car param-specs))))
+                 (if (and (pair? p0) (pair? (cdr p0))) (cadr p0) #f))))
+    (receive (fname arity) (cg-enqueue-lambda! params body)
+      (receive (nsym nlines) (emit-mksym (symbol->string name) cg-ref)
+        (receive (ssym slines) (emit-mksym (if spec (symbol->string spec) "") cg-ref)
+          (let ((clo (cg-next-name! cg-ref)))
+            (append
+             nlines slines
+             (list
+              (indent 2 (string-append clo " = call ptr @isl_rt_make_closure(ptr @" fname
+                                       ", i32 " (number->string arity) ", ptr %env)"))
+              (indent 2 (string-append dst " = call ptr @isl_rt_defmethod(ptr %env, ptr "
+                                       nsym ", ptr " ssym ", ptr " clo ")"))))))))))
+
+;; define an accessor reader `(lambda (obj) (%slot-read obj 'slot))` as a global
+(define (emit-accessor-def reader-name slot-name cg-ref)
+  (receive (fname arity)
+      (cg-enqueue-lambda! (list 'obj)
+                          (list 'call (list 'var '%slot-read)
+                                (list 'var 'obj) (list 'const slot-name)))
+    (receive (rsym rlines) (emit-mksym (symbol->string reader-name) cg-ref)
+      (let ((clo (cg-next-name! cg-ref)))
+        (append
+         (list (indent 2 (string-append clo " = call ptr @isl_rt_make_closure(ptr @" fname
+                                        ", i32 " (number->string arity) ", ptr %env)")))
+         rlines
+         (list (indent 2 (string-append "call void @isl_rt_define(ptr %env, ptr " rsym ", ptr " clo ")"))))))))
+
+(define (emit-defclass dst payload cg-ref)
+  ;; payload = (name supers slot-specs); slot-spec = (slot-spec name initform initarg readers writers)
+  (let* ((name (list-ref payload 0))
+         (supers (list-ref payload 1))
+         (slot-specs (list-ref payload 2)))
+    (receive (nsym nlines) (emit-mksym (symbol->string name) cg-ref)
+      (append
+       nlines
+       (list (indent 2 (string-append "call ptr @isl_rt_class_new(ptr %env, ptr " nsym ")")))
+       ;; superclasses
+       (apply append
+              (map (lambda (sup)
+                     (receive (ss sl) (emit-mksym (symbol->string sup) cg-ref)
+                       (append sl (list (indent 2 (string-append
+                                                   "call ptr @isl_rt_class_add_super(ptr %env, ptr "
+                                                   nsym ", ptr " ss ")"))))))
+                   supers))
+       ;; slots
+       (apply append
+              (map (lambda (sp)
+                     (let ((sname (list-ref sp 1))
+                           (initarg (list-ref sp 3)))
+                       (receive (slsym sll) (emit-mksym (symbol->string sname) cg-ref)
+                         (receive (iasym ial)
+                             (emit-mksym (if initarg (symbol->string initarg) "") cg-ref)
+                           (append sll ial
+                                   (list (indent 2 (string-append
+                                                    "call ptr @isl_rt_class_add_slot(ptr %env, ptr "
+                                                    nsym ", ptr " slsym ", ptr " iasym ")"))))))))
+                   slot-specs))
+       ;; finalize (result is the class name; bind to dst)
+       (list (indent 2 (string-append dst " = call ptr @isl_rt_class_finalize(ptr %env, ptr " nsym ")")))
+       ;; accessor readers
+       (apply append
+              (map (lambda (sp)
+                     (let ((sname (list-ref sp 1))
+                           (readers (list-ref sp 4)))
+                       (apply append
+                              (map (lambda (r) (emit-accessor-def r sname cg-ref))
+                                   (if (list? readers) readers '())))))
+                   slot-specs))))))
+
 (define (emit-rhs dst rhs params cg-ref)
   (let ((op (car rhs)))
     (cond
@@ -251,6 +341,12 @@
                                        ", i32 "
                                        (number->string arity)
                                        ", ptr %env)")))))
+     ((and (eq? op 'special) (eq? (cadr rhs) 'defgeneric))
+      (emit-defgeneric dst (caddr rhs) cg-ref))
+     ((and (eq? op 'special) (eq? (cadr rhs) 'defmethod))
+      (emit-defmethod dst (caddr rhs) cg-ref))
+     ((and (eq? op 'special) (eq? (cadr rhs) 'defclass))
+      (emit-defclass dst (caddr rhs) cg-ref))
      ((eq? op 'special)
       ;; A special form that lowering left intact (e.g. while/setq/tagbody/
       ;; dotimes/case/and/or/block/catch) is not yet runnable by the native
@@ -439,6 +535,12 @@
    "declare ptr @isl_rt_lookup_param(ptr, i32)"
    "declare ptr @isl_rt_set(ptr, ptr, ptr)"
    "declare ptr @isl_rt_dyn_set(ptr, ptr)"
+   "declare ptr @isl_rt_class_new(ptr, ptr)"
+   "declare ptr @isl_rt_class_add_super(ptr, ptr, ptr)"
+   "declare ptr @isl_rt_class_add_slot(ptr, ptr, ptr, ptr)"
+   "declare ptr @isl_rt_class_finalize(ptr, ptr)"
+   "declare ptr @isl_rt_defgeneric(ptr, ptr)"
+   "declare ptr @isl_rt_defmethod(ptr, ptr, ptr, ptr)"
    "declare ptr @isl_rt_call(ptr, ptr, i32, ptr)"
    "declare i1 @isl_rt_truthy(ptr)"
    "declare ptr @isl_rt_unsupported(ptr)"

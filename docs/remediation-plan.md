@@ -46,10 +46,10 @@ ISLISP (ISO/IEC 13816) への準拠度を、インタプリタとコンパイラ
 ## 2. ネイティブ AOT バックエンド（最優先領域）
 
 `native-gap-probe.scm` の初期結果: **17 SAME / 26 未対応 / 6 誤出力（全 49）**。
-P0+P1（and/or/case・数値・非局所制御・float・setq/ループ/unwind-protect・flet/labels）
-+ P2/P3（文字・文字列・ベクタ・the/convert/dynamic・handler-case/例外）実施後:
-**46 SAME / 3 未対応 / 0 誤出力**。残る未対応は CLOS（defclass/defgeneric/defmethod）
-のみ。
+全 P0〜P3（制御・数値・float・データ型・the/convert/dynamic・例外・CLOS）実施後:
+**49 SAME / 0 未対応 / 0 誤出力 / 0 DIFF（全 49 項目）**。native-gap-probe の全項目が
+インタプリタと出力一致。残るは些末な未対応のみ（ベクタリテラル `#(...)` の定数構築、
+多次元配列の native 構築、CLOS の高度機能）で、いずれも誤出力ではなく明示エラー化済み。
 
 対応済み（SAME）: 整数演算, 有理数, `<`, `if`, `cond`, `let`/`let*`,
 `defun`+再帰, クロージャ, `funcall`, `apply`, `cons`/`list`, `mapcar`,
@@ -141,8 +141,15 @@ frontend は認識するが codegen が "unsupported operation" を出す:
 
 ### P2/P3 — オブジェクト・動的・型注釈
 
-- ⬜ **CLOS**: `defclass`/`make-instance`/`defmethod` が native では未対応。
-  最も重い。後段（JIT/インタプリタへフォールバックする手もある）。
+- ✅ **CLOS**: `defclass`/`defgeneric`/`defmethod`/`make-instance`/`create`/
+  アクセサ/`class-of`/`instancep` … **対応済み**。ネイティブに ISL_V_CLASS/
+  INSTANCE/GENERIC を追加し、クラスレジストリ・スロット継承・クラス階層に基づく
+  最特定メソッドディスパッチを実装。defclass/defgeneric/defmethod は **ネイティブ
+  codegen のみ**（emit-rhs で本体・アクセサを cg-enqueue-lambda! で outline）で
+  処理し、共有 lowering と JIT の CLOS には一切触れない（JIT は従来どおり
+  runtime-eval-special でフル CLOS）。
+  既知の制限: `call-next-method`、`:before`/`:after`/`:around` 修飾子、多重
+  ディスパッチ、setf アクセサは未実装（単一ディスパッチ・読み取りアクセサのみ）。
 - ✅ `dynamic`/`dynamic-let`/`defdynamic`, `the`/`assure`, `convert` … **対応済み**。
   動的変数は専用テーブル（`%dynamic-get`/`%dynamic-set`、defdynamic は
   `ll-define-dynamic` で起動時初期化）。dynamic-let は値保存＋unwind-protect で

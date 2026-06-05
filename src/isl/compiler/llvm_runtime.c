@@ -17,6 +17,8 @@ void *isl_rt_true(void);
 void *isl_rt_false(void);
 void *isl_rt_make_int(int64_t x);
 void *isl_rt_make_symbol(void *p);
+void *isl_rt_lookup(void *envp, void *keyp);
+void isl_rt_define(void *envp, void *symp, void *valuep);
 
 typedef enum {
   ISL_V_INT,
@@ -25,6 +27,9 @@ typedef enum {
   ISL_V_CHAR,
   ISL_V_VECTOR,
   ISL_V_CONDITION,
+  ISL_V_CLASS,
+  ISL_V_INSTANCE,
+  ISL_V_GENERIC,
   ISL_V_BOOL,
   ISL_V_NIL,
   ISL_V_SYMBOL,
@@ -68,6 +73,17 @@ struct IslValue {
       const char *msg;
       struct IslValue *irritants;
     } cond;       /* ISL_V_CONDITION: a signaled condition */
+    struct IslClass *klass;       /* ISL_V_CLASS */
+    struct {
+      struct IslValue *cls;       /* the instance's class value */
+      struct IslValue **vals;     /* slot values, parallel to class effective slots */
+    } inst;       /* ISL_V_INSTANCE */
+    struct {
+      const char *name;
+      struct IslValue **specs;    /* per-method specializer class value (or NULL) */
+      struct IslValue **fns;      /* per-method handler closure */
+      int n;
+    } gen;        /* ISL_V_GENERIC */
     IslFunction *fn;
     struct {
       IslValue *car;
@@ -571,6 +587,7 @@ static void isl_write_value(IslValue *v, int readable);
 static void isl_format_radix(IslValue *v, int radix);
 static void isl_format_double(char *out, size_t outsz, double d);
 static IslValue *isl_str_value(const char *s);
+static IslValue *isl_generic_call(IslEnv *env, IslValue *gen, int32_t argc, IslValue **argv);
 
 static IslValue *prim_print(IslEnv *env, int32_t argc, IslValue **argv) {
   (void)env;
@@ -1227,6 +1244,214 @@ static IslValue *prim_condition_message(IslEnv *env, int32_t argc, IslValue **ar
   return isl_str_value(isl_cond_message(argv[0]));
 }
 
+/* ---- CLOS: classes / instances / generic functions ---- */
+typedef struct IslClass {
+  const char *name;
+  IslValue **supers; int nsupers;
+  const char **slots; const char **initargs; int nslots;   /* effective */
+  const char **own_slots; const char **own_initargs; int nown;
+  int finalized;
+} IslClass;
+
+static IslValue **g_classes = NULL;
+static int g_nclasses = 0, g_classcap = 0;
+
+static IslValue *isl_find_class(const char *name) {
+  for (int i = 0; i < g_nclasses; i++)
+    if (strcmp(g_classes[i]->as.klass->name, name) == 0) return g_classes[i];
+  return NULL;
+}
+static void isl_register_class(IslValue *c) {
+  if (g_nclasses == g_classcap) {
+    g_classcap = g_classcap ? g_classcap * 2 : 8;
+    g_classes = (IslValue **)realloc(g_classes, (size_t)g_classcap * sizeof(IslValue *));
+  }
+  g_classes[g_nclasses++] = c;
+}
+
+void *isl_rt_class_new(void *envp, void *namep) {
+  (void)envp;
+  IslValue *nm = (IslValue *)namep;
+  IslValue *ex = isl_find_class(nm->as.str);
+  if (ex) { IslClass *k = ex->as.klass; k->nsupers = 0; k->nown = 0; k->finalized = 0; return namep; }
+  IslClass *k = (IslClass *)calloc(1, sizeof(IslClass));
+  k->name = isl_strdup(nm->as.str);
+  IslValue *cv = isl_alloc_value(ISL_V_CLASS);
+  cv->as.klass = k;
+  isl_register_class(cv);
+  return namep;
+}
+void *isl_rt_class_add_super(void *envp, void *namep, void *superp) {
+  (void)envp;
+  IslValue *cv = isl_find_class(((IslValue *)namep)->as.str);
+  IslValue *sv = isl_find_class(((IslValue *)superp)->as.str);
+  if (cv && sv) {
+    IslClass *k = cv->as.klass;
+    k->supers = (IslValue **)realloc(k->supers, (size_t)(k->nsupers + 1) * sizeof(IslValue *));
+    k->supers[k->nsupers++] = sv;
+  }
+  return namep;
+}
+void *isl_rt_class_add_slot(void *envp, void *namep, void *slotp, void *initargp) {
+  (void)envp;
+  IslValue *cv = isl_find_class(((IslValue *)namep)->as.str);
+  if (cv) {
+    IslClass *k = cv->as.klass;
+    k->own_slots = (const char **)realloc(k->own_slots, (size_t)(k->nown + 1) * sizeof(char *));
+    k->own_initargs = (const char **)realloc(k->own_initargs, (size_t)(k->nown + 1) * sizeof(char *));
+    k->own_slots[k->nown] = isl_strdup(((IslValue *)slotp)->as.str);
+    IslValue *ia = (IslValue *)initargp;
+    k->own_initargs[k->nown] = (ia && ia->tag == ISL_V_SYMBOL) ? isl_strdup(ia->as.str) : NULL;
+    k->nown++;
+  }
+  return namep;
+}
+void *isl_rt_class_finalize(void *envp, void *namep) {
+  (void)envp;
+  IslValue *cv = isl_find_class(((IslValue *)namep)->as.str);
+  if (!cv) return namep;
+  IslClass *k = cv->as.klass;
+  int total = k->nown;
+  for (int i = 0; i < k->nsupers; i++) total += k->supers[i]->as.klass->nslots;
+  k->slots = (const char **)calloc((size_t)(total ? total : 1), sizeof(char *));
+  k->initargs = (const char **)calloc((size_t)(total ? total : 1), sizeof(char *));
+  int idx = 0;
+  for (int i = 0; i < k->nsupers; i++) {
+    IslClass *s = k->supers[i]->as.klass;
+    for (int j = 0; j < s->nslots; j++) { k->slots[idx] = s->slots[j]; k->initargs[idx] = s->initargs[j]; idx++; }
+  }
+  for (int j = 0; j < k->nown; j++) { k->slots[idx] = k->own_slots[j]; k->initargs[idx] = k->own_initargs[j]; idx++; }
+  k->nslots = idx;
+  k->finalized = 1;
+  return namep;
+}
+/* distance from cls up to target through superclasses, or -1 if unrelated */
+static int isl_class_distance(IslValue *cls, IslValue *target) {
+  if (cls == target) return 0;
+  if (!cls || cls->tag != ISL_V_CLASS) return -1;
+  int best = -1;
+  IslClass *k = cls->as.klass;
+  for (int i = 0; i < k->nsupers; i++) {
+    int d = isl_class_distance(k->supers[i], target);
+    if (d >= 0 && (best < 0 || d + 1 < best)) best = d + 1;
+  }
+  return best;
+}
+
+void *isl_rt_defgeneric(void *envp, void *namep) {
+  IslValue *g = (IslValue *)isl_rt_lookup(envp, namep);
+  if (g && g->tag == ISL_V_GENERIC) return namep; /* keep existing methods */
+  IslValue *nm = (IslValue *)namep;
+  g = isl_alloc_value(ISL_V_GENERIC);
+  g->as.gen.name = isl_strdup(nm->as.str);
+  g->as.gen.specs = NULL; g->as.gen.fns = NULL; g->as.gen.n = 0;
+  isl_rt_define(envp, namep, g);
+  return namep;
+}
+void *isl_rt_defmethod(void *envp, void *namep, void *specp, void *closurep) {
+  IslValue *g = (IslValue *)isl_rt_lookup(envp, namep);
+  if (!g || g->tag != ISL_V_GENERIC) {
+    IslValue *nm = (IslValue *)namep;
+    g = isl_alloc_value(ISL_V_GENERIC);
+    g->as.gen.name = isl_strdup(nm->as.str);
+    g->as.gen.specs = NULL; g->as.gen.fns = NULL; g->as.gen.n = 0;
+    isl_rt_define(envp, namep, g);
+  }
+  IslValue *spec = (IslValue *)specp;
+  IslValue *speccls = NULL;
+  if (spec && spec->tag == ISL_V_SYMBOL && spec->as.str[0]) speccls = isl_find_class(spec->as.str);
+  int n = g->as.gen.n;
+  g->as.gen.specs = (IslValue **)realloc(g->as.gen.specs, (size_t)(n + 1) * sizeof(IslValue *));
+  g->as.gen.fns = (IslValue **)realloc(g->as.gen.fns, (size_t)(n + 1) * sizeof(IslValue *));
+  g->as.gen.specs[n] = speccls;
+  g->as.gen.fns[n] = (IslValue *)closurep;
+  g->as.gen.n = n + 1;
+  return namep;
+}
+
+/* (make-instance class [:initarg val]...) / (create class ...) */
+static IslValue *prim_make_instance(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc < 1) return isl_make_error("make-instance: arity");
+  IslValue *cls = argv[0];
+  if (cls && cls->tag == ISL_V_SYMBOL) cls = isl_find_class(cls->as.str);
+  if (!cls || cls->tag != ISL_V_CLASS) return isl_make_error("make-instance: unknown class");
+  IslClass *k = cls->as.klass;
+  IslValue *obj = isl_alloc_value(ISL_V_INSTANCE);
+  obj->as.inst.cls = cls;
+  obj->as.inst.vals = k->nslots ? (IslValue **)calloc((size_t)k->nslots, sizeof(IslValue *)) : NULL;
+  for (int i = 0; i < k->nslots; i++) obj->as.inst.vals[i] = (IslValue *)isl_rt_nil();
+  for (int32_t a = 1; a + 1 < argc; a += 2) {
+    IslValue *ia = argv[a];
+    if (ia && ia->tag == ISL_V_SYMBOL)
+      for (int i = 0; i < k->nslots; i++)
+        if (k->initargs[i] && strcmp(k->initargs[i], ia->as.str) == 0) { obj->as.inst.vals[i] = argv[a + 1]; break; }
+  }
+  return obj;
+}
+/* (%slot-read instance slot-name) */
+static IslValue *prim_slot_read(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("slot accessor: arity");
+  IslValue *obj = argv[0], *slot = argv[1];
+  if (!obj || obj->tag != ISL_V_INSTANCE) return isl_make_error("slot accessor: not an instance");
+  if (!slot || slot->tag != ISL_V_SYMBOL) return isl_make_error("slot accessor: bad slot");
+  IslClass *k = obj->as.inst.cls->as.klass;
+  for (int i = 0; i < k->nslots; i++)
+    if (strcmp(k->slots[i], slot->as.str) == 0) return obj->as.inst.vals[i];
+  return isl_make_error("slot accessor: no such slot");
+}
+/* (%slot-write value instance slot-name) */
+static IslValue *prim_slot_write(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 3) return isl_make_error("slot writer: arity");
+  IslValue *val = argv[0], *obj = argv[1], *slot = argv[2];
+  if (!obj || obj->tag != ISL_V_INSTANCE) return isl_make_error("slot writer: not an instance");
+  if (!slot || slot->tag != ISL_V_SYMBOL) return isl_make_error("slot writer: bad slot");
+  IslClass *k = obj->as.inst.cls->as.klass;
+  for (int i = 0; i < k->nslots; i++)
+    if (strcmp(k->slots[i], slot->as.str) == 0) { obj->as.inst.vals[i] = val; return val; }
+  return isl_make_error("slot writer: no such slot");
+}
+/* (class-of x) — only instances carry a class here; others return nil. */
+static IslValue *prim_class_of(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 1) return isl_make_error("class-of: arity");
+  if (argv[0] && argv[0]->tag == ISL_V_INSTANCE) return argv[0]->as.inst.cls;
+  return (IslValue *)isl_rt_nil();
+}
+/* (instancep x class) */
+static IslValue *prim_instancep(IslEnv *env, int32_t argc, IslValue **argv) {
+  (void)env;
+  if (argc != 2) return isl_make_error("instancep: arity");
+  IslValue *obj = argv[0], *cls = argv[1];
+  if (cls && cls->tag == ISL_V_SYMBOL) cls = isl_find_class(cls->as.str);
+  if (!obj || obj->tag != ISL_V_INSTANCE || !cls || cls->tag != ISL_V_CLASS) return g_false;
+  return (isl_class_distance(obj->as.inst.cls, cls) >= 0) ? g_true : g_false;
+}
+/* Pick and call the most specific applicable method of a generic. */
+static IslValue *isl_generic_call(IslEnv *env, IslValue *gen, int32_t argc, IslValue **argv) {
+  IslValue *argcls = (argc > 0 && argv[0] && argv[0]->tag == ISL_V_INSTANCE)
+                         ? argv[0]->as.inst.cls : NULL;
+  int best = -1;
+  IslValue *bestfn = NULL;
+  for (int i = 0; i < gen->as.gen.n; i++) {
+    IslValue *spec = gen->as.gen.specs[i];
+    int d;
+    if (!spec) {
+      d = 1000000; /* unspecialized: least specific */
+    } else if (argcls) {
+      d = isl_class_distance(argcls, spec);
+      if (d < 0) continue;
+    } else {
+      continue;
+    }
+    if (best < 0 || d < best) { best = d; bestfn = gen->as.gen.fns[i]; }
+  }
+  if (!bestfn) return isl_make_error("no applicable method");
+  return (IslValue *)isl_rt_call(env, bestfn, argc, argv);
+}
+
 /* ---- dynamic (special) variables ---- */
 typedef struct DynVar {
   const char *name;
@@ -1512,6 +1737,15 @@ static void isl_write_value(IslValue *v, int readable) {
     case ISL_V_CONDITION:
       printf("#<condition %s: %s>", v->as.cond.cls, v->as.cond.msg);
       break;
+    case ISL_V_CLASS:
+      printf("#<class %s>", v->as.klass->name);
+      break;
+    case ISL_V_INSTANCE:
+      printf("#<instance of %s>", v->as.inst.cls->as.klass->name);
+      break;
+    case ISL_V_GENERIC:
+      printf("#<generic-function %s>", v->as.gen.name);
+      break;
     case ISL_V_BOOL:
       printf(v->as.b ? "#t" : "#f");
       break;
@@ -1662,6 +1896,8 @@ void *isl_rt_call(void *envp, void *fnp, int32_t argc, void *argvp) {
   IslValue *fnv = (IslValue *)fnp;
   IslValue **argv = (IslValue **)argvp;
   if (!fnv || fnv->tag == ISL_V_ERROR) return fnv;
+  if (fnv->tag == ISL_V_GENERIC)
+    return isl_generic_call(env, fnv, argc, argv);
   if (fnv->tag != ISL_V_FUNCTION || !fnv->as.fn) {
     return isl_make_error("attempt to call non-function");
   }
@@ -1806,6 +2042,13 @@ void isl_rt_install_primitives(void *envp) {
   isl_define_raw(env, "error", isl_make_primitive("error", prim_error));
   isl_define_raw(env, "%handler-case", isl_make_primitive("%handler-case", prim_handler_case));
   isl_define_raw(env, "condition-message", isl_make_primitive("condition-message", prim_condition_message));
+  /* CLOS runtime primitives */
+  isl_define_raw(env, "make-instance", isl_make_primitive("make-instance", prim_make_instance));
+  isl_define_raw(env, "create", isl_make_primitive("create", prim_make_instance));
+  isl_define_raw(env, "%slot-read", isl_make_primitive("%slot-read", prim_slot_read));
+  isl_define_raw(env, "%slot-write", isl_make_primitive("%slot-write", prim_slot_write));
+  isl_define_raw(env, "class-of", isl_make_primitive("class-of", prim_class_of));
+  isl_define_raw(env, "instancep", isl_make_primitive("instancep", prim_instancep));
   /* class-name designators usable as the second argument to convert */
   isl_define_raw(env, "<integer>",   (IslValue *)isl_rt_make_symbol((void *)"<integer>"));
   isl_define_raw(env, "<float>",     (IslValue *)isl_rt_make_symbol((void *)"<float>"));
