@@ -27,7 +27,16 @@
           ;; Phase 8: format engine (used by compiler runtime)
           render-format display-to-string write-to-string
           ;; macrolet support (used by compiler frontend)
-          make-frame frame-define! make-macro macroexpand*))
+          make-frame frame-define! make-macro macroexpand*
+          ;; R7: core/runtime 共通ユーティリティ（compiler runtime と共有）
+          make-go-signal go-signal? go-signal-tag
+          score<? score=?
+          gauche-make-tls gauche-tls-bind gauche-tls-accept gauche-tls-close
+          gauche-tls-load-certificate gauche-tls-load-private-key
+          gauche-connection-input-port gauche-connection-output-port
+          gauche-connection-close
+          gauche-make-thread gauche-thread-start! gauche-thread-join! gauche-thread?
+          gauche-make-mutex gauche-mutex-lock! gauche-mutex-unlock! gauche-mutex?))
 
 (select-module isl.core)
 

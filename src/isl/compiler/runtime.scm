@@ -20,24 +20,8 @@
 
 (select-module isl.compiler.runtime)
 
-;; Keep references to Gauche TLS procedures before defining ISL primitives.
-(define gauche-make-tls make-tls)
-(define gauche-tls-bind tls-bind)
-(define gauche-tls-accept tls-accept)
-(define gauche-tls-close tls-close)
-(define gauche-tls-load-certificate tls-load-certificate)
-(define gauche-tls-load-private-key tls-load-private-key)
-(define gauche-connection-input-port connection-input-port)
-(define gauche-connection-output-port connection-output-port)
-(define gauche-connection-close connection-close)
-(define gauche-make-thread make-thread)
-(define gauche-thread-start! thread-start!)
-(define gauche-thread-join! thread-join!)
-(define gauche-thread? thread?)
-(define gauche-make-mutex make-mutex)
-(define gauche-mutex-lock! mutex-lock!)
-(define gauche-mutex-unlock! mutex-unlock!)
-(define gauche-mutex? mutex?)
+;; gauche-* ラッパ・make-go-signal/go-signal?/go-signal-tag・score<?/score=? は
+;; isl.core に集約し (use isl.core) 経由で取り込む（R7: core/runtime 重複排除）。
 
 ;; Runtime error object shared by frontend/backend paths.
 (define (make-runtime-error code message details)
@@ -77,15 +61,7 @@
 (define (throw-signal-tag s) (vector-ref s 1))
 (define (throw-signal-value s) (vector-ref s 2))
 
-(define (make-go-signal tag)
-  (vector 'go-signal tag))
-
-(define (go-signal? obj)
-  (and (vector? obj)
-       (= (vector-length obj) 2)
-       (eq? (vector-ref obj 0) 'go-signal)))
-
-(define (go-signal-tag s) (vector-ref s 1))
+;; make-go-signal / go-signal? / go-signal-tag は isl.core から取り込む（R7）。
 
 ;; Dynamic nonlocal target stacks.
 (define *runtime-catch-stack* '())
@@ -604,16 +580,7 @@
                           (loop (cdr supers) best)))
                     (loop (cdr supers) best))))))))))
 
-(define (score<? a b)
-  (let loop ((xs a) (ys b))
-    (cond
-     ((null? xs) #f)
-     ((< (car xs) (car ys)) #t)
-     ((> (car xs) (car ys)) #f)
-     (else (loop (cdr xs) (cdr ys))))))
-
-(define (score=? a b)
-  (equal? a b))
+;; score<? / score=? は isl.core から取り込む（R7）。
 
 ;; Map a native host value to its rt-class object via the runtime env.
 (define (rt-native-value->class-obj val env)
