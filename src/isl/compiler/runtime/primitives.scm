@@ -558,6 +558,124 @@
       (let ((path (runtime-string (car args) "directory-path-p")))
         (host->runtime-value (and (file-exists? path)
                                   (eq? (file-type path) 'directory) #t)))))
+  (def 'file-symlink-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "file-symlink-p expects 1 argument" args))
+      (let ((path (runtime-string (car args) "file-symlink-p")))
+        (host->runtime-value (and (file-exists? path)
+                                  (eq? (file-type path :follow-link? #f) 'symlink) #t)))))
+  (def 'command-available-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "command-available-p expects 1 argument" args))
+      (host->runtime-value
+       (if (command-available? (runtime-string (car args) "command-available-p")) #t '()))))
+  (def 'glob-newest-first
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "glob-newest-first expects 1 argument" args))
+      (host->runtime-value
+       (sort (sys-glob (runtime-string (car args) "glob-newest-first"))
+             (lambda (a b) (> (file-mtime a) (file-mtime b)))))))
+  (def 'copy-file-to-stdout
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "copy-file-to-stdout expects 1 argument" args))
+      (call-with-input-file (runtime-string (car args) "copy-file-to-stdout")
+        (lambda (in) (copy-port in (current-output-port))))
+      (host->runtime-value #t)))
+  (def 'copy-stdin-to-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "copy-stdin-to-file expects 1 argument" args))
+      (call-with-output-file (runtime-string (car args) "copy-stdin-to-file")
+        (lambda (out) (copy-port (current-input-port) out)) :if-exists :supersede)
+      (host->runtime-value #t)))
+  (def 'base64-encode-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "base64-encode-file expects 1 argument" args))
+      (host->runtime-value
+       (call-with-input-file (runtime-string (car args) "base64-encode-file")
+         (lambda (in) (base64-encode-string (port->string in) :line-width #f))))))
+  (def 'generate-token
+    (lambda (args state)
+      (host->runtime-value (uuid->string (uuid4)))))
+  (def 'uname
+    (lambda (args state)
+      (host->runtime-value (sys-uname))))
+  (def 'sleep-seconds
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "sleep-seconds expects 1 argument" args))
+      (let ((s (runtime-number (car args) "sleep-seconds")))
+        (when (< s 0)
+          (runtime-raise 'domain "sleep-seconds must be non-negative" s))
+        (sys-nanosleep (inexact->exact (round (* s 1000000000))))
+        (host->runtime-value #t))))
+  (def 'exit
+    (lambda (args state)
+      (apply exit (map runtime-value->host args))))
+  ;; ---- 日付（UTC, srfi.19）----
+  (def 'date-utc-format
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "date-utc-format expects 1 argument" args))
+      (host->runtime-value
+       (date->string (time-utc->date (current-time time-utc) 0)
+                     (runtime-string (car args) "date-utc-format")))))
+  (def 'date-utc-iso8601
+    (lambda (args state)
+      (host->runtime-value
+       (date->string (time-utc->date (current-time time-utc) 0)
+                     "~Y-~m-~dT~H:~M:~SZ"))))
+  (def 'date-http-from-epoch
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "date-http-from-epoch expects 1 argument" args))
+      (let ((epoch (runtime-number (car args) "date-http-from-epoch")))
+        (host->runtime-value
+         (date->string (time-utc->date (make-time time-utc 0 epoch) 0)
+                       (http-date-format))))))
+  (def 'epoch-from-http-date
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "epoch-from-http-date expects 1 argument" args))
+      (host->runtime-value
+       (http-date->utc-seconds (runtime-string (car args) "epoch-from-http-date")))))
+  ;; ---- list アクセサ sixth..tenth ----
+  (def 'sixth   (lambda (args state) (rt-list-ref args 5 "sixth")))
+  (def 'seventh (lambda (args state) (rt-list-ref args 6 "seventh")))
+  (def 'eighth  (lambda (args state) (rt-list-ref args 7 "eighth")))
+  (def 'ninth   (lambda (args state) (rt-list-ref args 8 "ninth")))
+  (def 'tenth   (lambda (args state) (rt-list-ref args 9 "tenth")))
+  ;; ---- div（floor 除算）----
+  (def 'div
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "div expects 2 arguments" args))
+      (let ((a (runtime-number (car args) "div"))
+            (b (runtime-number (cadr args) "div")))
+        (if (zero? b)
+            (runtime-raise 'arithmetic-error "div: division by zero" args)
+            (host->runtime-value (inexact->exact (floor (/ a b))))))))
+  ;; ---- string（char/string/symbol または複数 char → 文字列）----
+  (def 'string
+    (lambda (args state)
+      (cond
+       ((null? args) (host->runtime-value ""))
+       ((null? (cdr args))
+        (let ((x (runtime-value->host (car args))))
+          (host->runtime-value
+           (cond
+            ((char? x) (string x))
+            ((string? x) x)
+            ((symbol? x) (symbol->string x))
+            (else (runtime-raise 'type-error "string: needs char/string/symbol" x))))))
+       (else
+        (host->runtime-value
+         (list->string (map (lambda (a) (rt-char a "string")) args)))))))
   (def 'get-universal-time
     (lambda (args state)
       (unless (= (length args) 0)

@@ -5,7 +5,10 @@
   (use gauche.threads)
   (use gauche.fcntl)
   (use rfc.tls)
+  (use rfc.base64)
+  (use rfc.uuid)
   (use file.util)
+  (use srfi.19)
   (use srfi-1)
   (use srfi-13)
   (export make-runtime-state
@@ -752,6 +755,15 @@
                (integer? (list-ref ts 4)) (> (list-ref ts 4) 0))
           (list-ref ts 4)
           100))))
+
+;; nth list accessor for sixth..tenth primitives (args = single rt list).
+(define (rt-list-ref args n who)
+  (unless (= (length args) 1)
+    (runtime-raise 'arity (string-append who " expects 1 argument") args))
+  (let ((lst (runtime-list (car args) who)))
+    (if (> (length lst) n)
+        (list-ref lst n)
+        (runtime-raise 'domain (string-append who ": list too short") lst))))
 
 (include "runtime/primitives.scm")
 (include "runtime/special-forms.scm")
