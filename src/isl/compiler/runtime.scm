@@ -5,6 +5,7 @@
   (use gauche.threads)
   (use gauche.fcntl)
   (use rfc.tls)
+  (use file.util)
   (use srfi-1)
   (use srfi-13)
   (export make-runtime-state
@@ -741,6 +742,16 @@
             (or (string=? bare "error")
                 (string=? bare "condition")
                 (string=? bare "serious-condition"))))))))
+
+;; clock ticks per second (sys-times[4]) or fallback 100; used by
+;; get-internal-real-time / get-internal-run-time primitives.
+(define (rt-internal-time-units)
+  (guard (e (else 100))
+    (let ((ts (sys-times)))
+      (if (and (list? ts) (>= (length ts) 5)
+               (integer? (list-ref ts 4)) (> (list-ref ts 4) 0))
+          (list-ref ts 4)
+          100))))
 
 (include "runtime/primitives.scm")
 (include "runtime/special-forms.scm")

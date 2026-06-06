@@ -485,12 +485,102 @@
         (runtime-raise 'arity "system expects 1 argument" args))
       (let ((cmd (runtime-string (car args) "system")))
         (host->runtime-value (sys-system cmd)))))
+  ;; ---- ファイルシステム操作（インタプリタ core.scm と同等） ----
+  (def 'make-directory*
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "make-directory* expects 1 argument" args))
+      (make-directory* (runtime-string (car args) "make-directory*"))
+      (host->runtime-value #t)))
+  (def 'delete-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "delete-file expects 1 argument" args))
+      (let ((path (runtime-string (car args) "delete-file")))
+        (if (file-exists? path)
+            (begin (sys-unlink path) (host->runtime-value #t))
+            (host->runtime-value '())))))
+  (def 'rename-file
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "rename-file expects 2 arguments" args))
+      (sys-rename (runtime-string (car args) "rename-file")
+                  (runtime-string (cadr args) "rename-file"))
+      (host->runtime-value #t)))
+  (def 'copy-file
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "copy-file expects 2 arguments" args))
+      (copy-file (runtime-string (car args) "copy-file")
+                 (runtime-string (cadr args) "copy-file"))
+      (host->runtime-value #t)))
+  (def 'chmod-file
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "chmod-file expects 2 arguments" args))
+      (let ((path (runtime-string (car args) "chmod-file"))
+            (mode (runtime-string (cadr args) "chmod-file")))
+        (sys-chmod path (or (string->number mode 8)
+                            (runtime-raise 'domain "chmod-file mode must be an octal string" mode)))
+        (host->runtime-value #t))))
+  (def 'directory-list
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "directory-list expects 1 argument" args))
+      (host->runtime-value
+       (directory-list (runtime-string (car args) "directory-list") :children? #t))))
+  (def 'glob
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "glob expects 1 argument" args))
+      (host->runtime-value (sys-glob (runtime-string (car args) "glob")))))
+  (def 'file-size
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "file-size expects 1 argument" args))
+      (host->runtime-value (file-size (runtime-string (car args) "file-size")))))
+  (def 'file-readable-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "file-readable-p expects 1 argument" args))
+      (let ((path (runtime-string (car args) "file-readable-p")))
+        (host->runtime-value (and (file-exists? path) (file-is-readable? path) #t)))))
+  (def 'file-executable-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "file-executable-p expects 1 argument" args))
+      (let ((path (runtime-string (car args) "file-executable-p")))
+        (host->runtime-value (and (file-exists? path) (file-is-executable? path) #t)))))
+  (def 'directory-path-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "directory-path-p expects 1 argument" args))
+      (let ((path (runtime-string (car args) "directory-path-p")))
+        (host->runtime-value (and (file-exists? path)
+                                  (eq? (file-type path) 'directory) #t)))))
   (def 'get-universal-time
     (lambda (args state)
       (unless (= (length args) 0)
         (runtime-raise 'arity "get-universal-time expects 0 arguments" args))
       ;; Unix epoch(1970-01-01) -> CL/ISL universal-time(1900-01-01)
       (host->runtime-value (+ (inexact->exact (floor (sys-time))) 2208988800))))
+  ;; ---- 内部時間（インタプリタ core.scm と同等） ----
+  (def 'internal-time-units-per-second
+    (lambda (args state)
+      (host->runtime-value (rt-internal-time-units))))
+  (def 'get-internal-real-time
+    (lambda (args state)
+      (host->runtime-value
+       (inexact->exact (floor (* (sys-time) (rt-internal-time-units)))))))
+  (def 'get-internal-run-time
+    (lambda (args state)
+      (host->runtime-value
+       (guard (e (else 0))
+         (let ((ts (sys-times)))
+           (if (and (list? ts) (>= (length ts) 2)
+                    (integer? (list-ref ts 0)) (integer? (list-ref ts 1)))
+               (+ (list-ref ts 0) (list-ref ts 1))
+               0))))))
   (def 'append
     (lambda (args state)
       (host->runtime-value (apply append (map (lambda (x) (runtime-list x "append")) args)))))
