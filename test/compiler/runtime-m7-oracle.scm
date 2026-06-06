@@ -3,11 +3,15 @@
 (use isl.compiler.runner)
 (use isl.compiler.runtime)
 
-(define ienv (make-initial-env 'strict))
-
+;; Each case is self-contained, so evaluate it in a FRESH interpreter env —
+;; symmetric with the JIT side (run-forms builds a fresh runtime state per
+;; call).  A shared env cannot survive interleaved run-forms calls because
+;; make-initial-env resets module-global CLOS/package state (*class-table*,
+;; *current-package*, ...), which would invalidate the interpreter's
+;; pre-registered initialize-object method between cases.
 (define (eval-interpreter forms)
   (guard (e (else (list 'error e)))
-    (list 'ok (eval-islisp (cons 'progn forms) ienv))))
+    (list 'ok (eval-islisp (cons 'progn forms) (make-initial-env 'strict)))))
 
 (define (eval-runtime forms)
   (guard (e (else (list 'error e)))
