@@ -2839,6 +2839,25 @@
         (unless (and (integer? n) (exact? n) (>= n 0) (<= n #x10FFFF))
           (runtime-raise 'type-error "integer-to-char: argument must be a valid integer code" n))
         (host->runtime-value (integer->char n)))))
+  ;; Scheme 風の別名（char-to-integer / integer-to-char と同義）
+  (def 'char->integer
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "char->integer expects 1 argument" args))
+      (let ((c (runtime-value->host (car args))))
+        (cond
+         ((char? c) (host->runtime-value (char->integer c)))
+         ((and (string? c) (= (string-length c) 1))
+          (host->runtime-value (char->integer (string-ref c 0))))
+         (else (runtime-raise 'type-error "char->integer: argument must be a character" c))))))
+  (def 'integer->char
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "integer->char expects 1 argument" args))
+      (let ((n (runtime-value->host (car args))))
+        (unless (and (integer? n) (exact? n) (>= n 0) (<= n #x10FFFF))
+          (runtime-raise 'type-error "integer->char: argument must be a valid integer code" n))
+        (host->runtime-value (integer->char n)))))
   ;; ISLISP §17.4: string-to-list, list-to-string
   (def 'string-to-list
     (lambda (args state)
