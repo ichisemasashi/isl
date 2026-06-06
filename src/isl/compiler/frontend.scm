@@ -43,7 +43,42 @@
             (if (= (length expanded) 1)
                 (car expanded)
                 (cons 'progn expanded)))))
-      (eval-islisp (list 'macroexpand (list 'quote form)) env)))
+      ;; Recursively expand macros at every level (macroexpand-all).  The
+      ;; interpreter's `macroexpand` only expands the outermost form, so a
+      ;; nested user macro such as (print (my-macro ...)) would otherwise reach
+      ;; the IR as a plain call and fail at runtime.  We expand the top form to
+      ;; a fixpoint, then walk evaluated subforms — skipping quoted data.
+      (fe-expand-all form env)))
+
+;; Expand `form` (and all evaluated subforms) until no macro remains.
+;; Uses single-step `macroexpand-1` guarded against errors: a form whose head
+;; is a macro is expanded one step and re-walked; a non-macro head is left in
+;; place and its subforms are walked.  Guarding keeps malformed input (e.g. a
+;; bad let binding) untouched so the downstream IR/runtime reports its own
+;; precise error instead of an expansion-time package-resolution failure.
+(define (fe-expand-all form env)
+  (cond
+   ((not (pair? form)) form)
+   ((not (symbol? (car form))) (fe-expand-list form env))  ; e.g. ((lambda ..) ..)
+   ((eq? (car form) 'quote) form)                          ; never expand quoted data
+   ((eq? (car form) 'quasiquote) form)                     ; leave quasiquote as-is
+   ((and (eq? (car form) 'macrolet) (>= (length form) 2))
+    (frontend-macroexpand form env))                       ; nested macrolet
+   (else
+    (let ((step (guard (e (else #f))
+                  (eval-islisp (list 'macroexpand-1 (list 'quote form)) env))))
+      (cond
+       ((not step) form)                                   ; expansion errored → leave as-is
+       ((equal? step form) (fe-expand-list form env))      ; not a macro → walk subforms
+       (else (fe-expand-all step env)))))))                ; macro → re-walk expansion
+
+;; Recursively expand each element of a (possibly improper) list.
+(define (fe-expand-list lst env)
+  (let loop ((xs lst) (acc '()))
+    (cond
+     ((null? xs) (reverse acc))
+     ((pair? xs) (loop (cdr xs) (cons (fe-expand-all (car xs) env) acc)))
+     (else (append (reverse acc) xs)))))   ; dotted tail (rest-param symbol)
 
 (define (frontend-normalize expanded-form)
   (normalize-top-level-form expanded-form))
