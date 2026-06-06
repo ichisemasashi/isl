@@ -51,10 +51,14 @@
                (for-each
                 (lambda (f)
                   (let ((result (run-file f profile)))
-                    (display f)
-                    (display " => ")
-                    (write result)
-                    (newline)))
+                    ;; Print the final value to STDERR so a program's own
+                    ;; stdout output stays clean (e.g. md2html writes HTML to
+                    ;; stdout and is compared byte-for-byte).
+                    (let ((e (current-error-port)))
+                      (display f e)
+                      (display " => " e)
+                      (write result e)
+                      (newline e))))
                 files)
                0))))
       (else

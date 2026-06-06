@@ -36,7 +36,9 @@
           gauche-connection-input-port gauche-connection-output-port
           gauche-connection-close
           gauche-make-thread gauche-thread-start! gauche-thread-join! gauche-thread?
-          gauche-make-mutex gauche-mutex-lock! gauche-mutex-unlock! gauche-mutex?))
+          gauche-make-mutex gauche-mutex-lock! gauche-mutex-unlock! gauche-mutex?
+          ;; JIT 全アプリ対応で runtime が再利用する core ヘルパ
+          command-available? http-date-format http-date->utc-seconds))
 
 (select-module isl.core)
 

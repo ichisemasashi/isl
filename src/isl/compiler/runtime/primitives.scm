@@ -485,12 +485,220 @@
         (runtime-raise 'arity "system expects 1 argument" args))
       (let ((cmd (runtime-string (car args) "system")))
         (host->runtime-value (sys-system cmd)))))
+  ;; ---- ファイルシステム操作（インタプリタ core.scm と同等） ----
+  (def 'make-directory*
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "make-directory* expects 1 argument" args))
+      (make-directory* (runtime-string (car args) "make-directory*"))
+      (host->runtime-value #t)))
+  (def 'delete-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "delete-file expects 1 argument" args))
+      (let ((path (runtime-string (car args) "delete-file")))
+        (if (file-exists? path)
+            (begin (sys-unlink path) (host->runtime-value #t))
+            (host->runtime-value '())))))
+  (def 'rename-file
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "rename-file expects 2 arguments" args))
+      (sys-rename (runtime-string (car args) "rename-file")
+                  (runtime-string (cadr args) "rename-file"))
+      (host->runtime-value #t)))
+  (def 'copy-file
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "copy-file expects 2 arguments" args))
+      (copy-file (runtime-string (car args) "copy-file")
+                 (runtime-string (cadr args) "copy-file"))
+      (host->runtime-value #t)))
+  (def 'chmod-file
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "chmod-file expects 2 arguments" args))
+      (let ((path (runtime-string (car args) "chmod-file"))
+            (mode (runtime-string (cadr args) "chmod-file")))
+        (sys-chmod path (or (string->number mode 8)
+                            (runtime-raise 'domain "chmod-file mode must be an octal string" mode)))
+        (host->runtime-value #t))))
+  (def 'directory-list
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "directory-list expects 1 argument" args))
+      (host->runtime-value
+       (directory-list (runtime-string (car args) "directory-list") :children? #t))))
+  (def 'glob
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "glob expects 1 argument" args))
+      (host->runtime-value (sys-glob (runtime-string (car args) "glob")))))
+  (def 'file-size
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "file-size expects 1 argument" args))
+      (host->runtime-value (file-size (runtime-string (car args) "file-size")))))
+  (def 'file-readable-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "file-readable-p expects 1 argument" args))
+      (let ((path (runtime-string (car args) "file-readable-p")))
+        (host->runtime-value (and (file-exists? path) (file-is-readable? path) #t)))))
+  (def 'file-executable-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "file-executable-p expects 1 argument" args))
+      (let ((path (runtime-string (car args) "file-executable-p")))
+        (host->runtime-value (and (file-exists? path) (file-is-executable? path) #t)))))
+  (def 'directory-path-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "directory-path-p expects 1 argument" args))
+      (let ((path (runtime-string (car args) "directory-path-p")))
+        (host->runtime-value (and (file-exists? path)
+                                  (eq? (file-type path) 'directory) #t)))))
+  (def 'file-symlink-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "file-symlink-p expects 1 argument" args))
+      (let ((path (runtime-string (car args) "file-symlink-p")))
+        (host->runtime-value (and (file-exists? path)
+                                  (eq? (file-type path :follow-link? #f) 'symlink) #t)))))
+  (def 'command-available-p
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "command-available-p expects 1 argument" args))
+      (host->runtime-value
+       (if (command-available? (runtime-string (car args) "command-available-p")) #t '()))))
+  (def 'glob-newest-first
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "glob-newest-first expects 1 argument" args))
+      (host->runtime-value
+       (sort (sys-glob (runtime-string (car args) "glob-newest-first"))
+             (lambda (a b) (> (file-mtime a) (file-mtime b)))))))
+  (def 'copy-file-to-stdout
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "copy-file-to-stdout expects 1 argument" args))
+      (call-with-input-file (runtime-string (car args) "copy-file-to-stdout")
+        (lambda (in) (copy-port in (current-output-port))))
+      (host->runtime-value #t)))
+  (def 'copy-stdin-to-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "copy-stdin-to-file expects 1 argument" args))
+      (call-with-output-file (runtime-string (car args) "copy-stdin-to-file")
+        (lambda (out) (copy-port (current-input-port) out)) :if-exists :supersede)
+      (host->runtime-value #t)))
+  (def 'base64-encode-file
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "base64-encode-file expects 1 argument" args))
+      (host->runtime-value
+       (call-with-input-file (runtime-string (car args) "base64-encode-file")
+         (lambda (in) (base64-encode-string (port->string in) :line-width #f))))))
+  (def 'generate-token
+    (lambda (args state)
+      (host->runtime-value (uuid->string (uuid4)))))
+  (def 'uname
+    (lambda (args state)
+      (host->runtime-value (sys-uname))))
+  (def 'sleep-seconds
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "sleep-seconds expects 1 argument" args))
+      (let ((s (runtime-number (car args) "sleep-seconds")))
+        (when (< s 0)
+          (runtime-raise 'domain "sleep-seconds must be non-negative" s))
+        (sys-nanosleep (inexact->exact (round (* s 1000000000))))
+        (host->runtime-value #t))))
+  (def 'exit
+    (lambda (args state)
+      (apply exit (map runtime-value->host args))))
+  ;; ---- 日付（UTC, srfi.19）----
+  (def 'date-utc-format
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "date-utc-format expects 1 argument" args))
+      (host->runtime-value
+       (date->string (time-utc->date (current-time time-utc) 0)
+                     (runtime-string (car args) "date-utc-format")))))
+  (def 'date-utc-iso8601
+    (lambda (args state)
+      (host->runtime-value
+       (date->string (time-utc->date (current-time time-utc) 0)
+                     "~Y-~m-~dT~H:~M:~SZ"))))
+  (def 'date-http-from-epoch
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "date-http-from-epoch expects 1 argument" args))
+      (let ((epoch (runtime-number (car args) "date-http-from-epoch")))
+        (host->runtime-value
+         (date->string (time-utc->date (make-time time-utc 0 epoch) 0)
+                       (http-date-format))))))
+  (def 'epoch-from-http-date
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "epoch-from-http-date expects 1 argument" args))
+      (host->runtime-value
+       (http-date->utc-seconds (runtime-string (car args) "epoch-from-http-date")))))
+  ;; ---- list アクセサ sixth..tenth ----
+  (def 'sixth   (lambda (args state) (rt-list-ref args 5 "sixth")))
+  (def 'seventh (lambda (args state) (rt-list-ref args 6 "seventh")))
+  (def 'eighth  (lambda (args state) (rt-list-ref args 7 "eighth")))
+  (def 'ninth   (lambda (args state) (rt-list-ref args 8 "ninth")))
+  (def 'tenth   (lambda (args state) (rt-list-ref args 9 "tenth")))
+  ;; ---- div（floor 除算）----
+  (def 'div
+    (lambda (args state)
+      (unless (= (length args) 2)
+        (runtime-raise 'arity "div expects 2 arguments" args))
+      (let ((a (runtime-number (car args) "div"))
+            (b (runtime-number (cadr args) "div")))
+        (if (zero? b)
+            (runtime-raise 'arithmetic-error "div: division by zero" args)
+            (host->runtime-value (inexact->exact (floor (/ a b))))))))
+  ;; ---- string（char/string/symbol または複数 char → 文字列）----
+  (def 'string
+    (lambda (args state)
+      (cond
+       ((null? args) (host->runtime-value ""))
+       ((null? (cdr args))
+        (let ((x (runtime-value->host (car args))))
+          (host->runtime-value
+           (cond
+            ((char? x) (string x))
+            ((string? x) x)
+            ((symbol? x) (symbol->string x))
+            (else (runtime-raise 'type-error "string: needs char/string/symbol" x))))))
+       (else
+        (host->runtime-value
+         (list->string (map (lambda (a) (rt-char a "string")) args)))))))
   (def 'get-universal-time
     (lambda (args state)
       (unless (= (length args) 0)
         (runtime-raise 'arity "get-universal-time expects 0 arguments" args))
       ;; Unix epoch(1970-01-01) -> CL/ISL universal-time(1900-01-01)
       (host->runtime-value (+ (inexact->exact (floor (sys-time))) 2208988800))))
+  ;; ---- 内部時間（インタプリタ core.scm と同等） ----
+  (def 'internal-time-units-per-second
+    (lambda (args state)
+      (host->runtime-value (rt-internal-time-units))))
+  (def 'get-internal-real-time
+    (lambda (args state)
+      (host->runtime-value
+       (inexact->exact (floor (* (sys-time) (rt-internal-time-units)))))))
+  (def 'get-internal-run-time
+    (lambda (args state)
+      (host->runtime-value
+       (guard (e (else 0))
+         (let ((ts (sys-times)))
+           (if (and (list? ts) (>= (length ts) 2)
+                    (integer? (list-ref ts 0)) (integer? (list-ref ts 1)))
+               (+ (list-ref ts 0) (list-ref ts 1))
+               0))))))
   (def 'append
     (lambda (args state)
       (host->runtime-value (apply append (map (lambda (x) (runtime-list x "append")) args)))))
@@ -2748,6 +2956,25 @@
       (let ((n (runtime-value->host (car args))))
         (unless (and (integer? n) (exact? n) (>= n 0) (<= n #x10FFFF))
           (runtime-raise 'type-error "integer-to-char: argument must be a valid integer code" n))
+        (host->runtime-value (integer->char n)))))
+  ;; Scheme 風の別名（char-to-integer / integer-to-char と同義）
+  (def 'char->integer
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "char->integer expects 1 argument" args))
+      (let ((c (runtime-value->host (car args))))
+        (cond
+         ((char? c) (host->runtime-value (char->integer c)))
+         ((and (string? c) (= (string-length c) 1))
+          (host->runtime-value (char->integer (string-ref c 0))))
+         (else (runtime-raise 'type-error "char->integer: argument must be a character" c))))))
+  (def 'integer->char
+    (lambda (args state)
+      (unless (= (length args) 1)
+        (runtime-raise 'arity "integer->char expects 1 argument" args))
+      (let ((n (runtime-value->host (car args))))
+        (unless (and (integer? n) (exact? n) (>= n 0) (<= n #x10FFFF))
+          (runtime-raise 'type-error "integer->char: argument must be a valid integer code" n))
         (host->runtime-value (integer->char n)))))
   ;; ISLISP §17.4: string-to-list, list-to-string
   (def 'string-to-list
