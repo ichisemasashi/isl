@@ -1,6 +1,6 @@
-# 2.4 ★ 四則電卓を作る（isl-calc 1 周目）
+# 2.5 ★ 四則電卓を作る（isl-calc 1 周目）
 
-> スパイラル **1 周目** / 基本編 第 4 章 — 題材「isl-calc」を初めて自作する
+> スパイラル **1 周目** / 基本編 第 5 章 — 題材「isl-calc」を初めて自作する
 
 入門編（0 周目）では、REPL に `(+ 1 (* 2 3))` と打ち込むと `7` が返ってくるのを確かめました。あのとき式を評価していたのは **isl 本体のインタプリタ**です。この章では、その「式を評価する」しくみを **自分の関数として一から作り**ます。これが題材 isl-calc の出発点です。
 
@@ -18,8 +18,8 @@
 
 ## 前提知識
 
-- [2.2 リストで式を表す](02-list-as-expression.md) — `car` / `cdr` / `consp`
-- [2.3 再帰](03-recursion.md) — 基底ケースと再帰ケース
+- [2.3 リストを組み立て・分解する](03-lists.md) — `car` / `cdr` / `consp`
+- [2.4 再帰でリストをたどる](04-recursion.md) — 基底ケースと再帰ケース
 
 ---
 
@@ -239,8 +239,8 @@
 
 ## 関連
 
-- 前章: [2.3 再帰](03-recursion.md)
-- 前の周: [★ REPL で式を評価する（isl-calc 0 周目）](../01-introduction/04-first-eval-in-repl.md)
+- 前章: [2.4 再帰でリストをたどる](04-recursion.md)
+- 前の周: [★ REPL で式を評価する（isl-calc 0 周目）](../01-introduction/05-first-eval-in-repl.md)
 - 次の周: [★ CLOS で AST 評価器に作り直す（isl-calc 2 周目）](../03-intermediate/05-redesign-with-clos-ast.md)
 - 同梱コード: [`code/isl-calc-v1.lsp`](code/isl-calc-v1.lsp) / [`code/isl-calc-v1-ext.lsp`](code/isl-calc-v1-ext.lsp)
 - 参考（関数参照の文法）: `#'op` ≡ `(function op)`

@@ -21,5 +21,5 @@
 - 参照: `docs/compiler-milestones.md`、`docs/compliance-matrix.md`。
 
 ## 関連
-- 最初の周: [★ REPL で式を評価する（isl-calc 0 周目）](../../part1-core/01-introduction/04-first-eval-in-repl.md)
+- 最初の周: [★ REPL で式を評価する（isl-calc 0 周目）](../../part1-core/01-introduction/05-first-eval-in-repl.md)
 - 全体ガイド: [00-README](../../00-README.md)

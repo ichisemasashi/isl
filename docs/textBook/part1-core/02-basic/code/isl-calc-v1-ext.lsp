@@ -1,5 +1,5 @@
 ;;; isl-calc 1周目: 演習解答例（演算子テーブルの拡張）
-;;; 教科書 part1-core/02-basic/04-build-calculator.md 演習1・2 の解答例
+;;; 教科書 part1-core/02-basic/05-build-calculator.md 演習1・2 の解答例
 ;;;
 ;;; 実行: ./bin/isl docs/textBook/part1-core/02-basic/code/isl-calc-v1-ext.lsp
 ;;;
