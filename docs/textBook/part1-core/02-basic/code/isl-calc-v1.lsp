@@ -1,5 +1,5 @@
 ;;; isl-calc 1周目: 四則電卓（関数参照 #' ディスパッチ版）
-;;; 教科書 part1-core/02-basic/04-build-calculator.md の同梱コード
+;;; 教科書 part1-core/02-basic/05-build-calculator.md の同梱コード
 ;;;
 ;;; 実行: ./bin/isl docs/textBook/part1-core/02-basic/code/isl-calc-v1.lsp
 ;;;
