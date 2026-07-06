@@ -3,12 +3,12 @@
 > スパイラル **3 周目** / 標準編 第 4 章 — isl-calc を規格準拠で堅牢化する
 
 ## 学習目標
-- 2 周目の CLOS 評価器を strict プロファイルで動くよう書き直せる。
+- 2 周目のオブジェクトシステム評価器を strict プロファイルで動くよう書き直せる。
 - ゼロ除算・未定義変数・引数不足を標準コンディションで通知・捕捉できる。
 - 準拠テストの考え方で自作評価器を検証できる。
 
 ## 前提知識
-- CLOS 評価器（part1 [3.5](../../part1-core/03-intermediate/05-redesign-with-clos-ast.md)）、標準編 [S1.1](01-strict-profile.md)〜[S1.3](03-packages.md)。
+- オブジェクトシステム評価器（part1 [3.5](../../part1-core/03-intermediate/05-redesign-with-object-system-ast.md)）、標準編 [S1.1](01-strict-profile.md)〜[S1.3](03-packages.md)。
 
 ## 内容（アウトライン）
 - extended 依存を排除し、`./bin/isl --profile strict` で全機能が動くことを確認。
